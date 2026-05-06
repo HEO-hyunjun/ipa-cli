@@ -107,12 +107,11 @@ def test_base_channel_search_required() -> None:
         Incomplete().search(None, Query(raw="x"))  # type: ignore[arg-type]
 
 
-def test_setup_context_lazy_props_are_stubs(tmp_path: Path) -> None:
+def test_setup_context_lazy_props_empty_for_empty_vault(tmp_path: Path) -> None:
+    """P5: tokens / ref_graph are real (not stubs) but trivially empty."""
     ctx = SetupContext(notes=[], vault_path=tmp_path, cache_dir=tmp_path / ".cache")
-    with pytest.raises(NotImplementedError):
-        _ = ctx.tokens
-    with pytest.raises(NotImplementedError):
-        _ = ctx.ref_graph
+    assert ctx.tokens == {}
+    assert ctx.ref_graph.edges == {}
 
 
 def test_mapping_defaults_match_ipa_convention() -> None:

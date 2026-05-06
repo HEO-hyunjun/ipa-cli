@@ -40,6 +40,25 @@ class Hit:
     explanations: dict[str, dict[str, Any]] | None = None
 
 
+@dataclass(frozen=True)
+class RefGraph:
+    """Directed adjacency for ref + wikilink edges between notes.
+
+    ``edges[a]`` is the set of in-vault target ids ``a`` points at.
+    Reverse-lookup helpers cache lazily on first call.
+    """
+
+    edges: dict[NoteId, set[NoteId]]
+
+    def out_neighbors(self, note_id: NoteId) -> set[NoteId]:
+        return self.edges.get(note_id, set())
+
+    def in_neighbors(self, note_id: NoteId) -> set[NoteId]:
+        # Linear scan — small N, lazy callers. If this shows up in
+        # profiling, build a reverse index in __post_init__.
+        return {src for src, tgts in self.edges.items() if note_id in tgts}
+
+
 class SetupContext:
     """Process-once shared resources for channels.
 
@@ -76,13 +95,38 @@ class SetupContext:
 
     @cached_property
     def tokens(self) -> dict[NoteId, list[str]]:
-        """note_id → tokenized body. Filled in P5."""
-        raise NotImplementedError("SetupContext.tokens is filled in P5")
+        """note_id → lowercased word tokens drawn from markdown inline text.
+
+        Code fences and frontmatter are excluded so the BM25 vocabulary
+        and keyword-style channels stay focused on prose. Driven by
+        ``Note.inline_text`` (parse level 3 lazy).
+        """
+        import re
+
+        word_re = re.compile(r"[\w]+", re.UNICODE)
+        return {n.id: word_re.findall(n.inline_text().lower()) for n in self.notes}
 
     @cached_property
-    def ref_graph(self) -> Any:
-        """Ref/wikilink adjacency. Filled in P5."""
-        raise NotImplementedError("SetupContext.ref_graph is filled in P5")
+    def ref_graph(self) -> "RefGraph":
+        """Ref + wikilink adjacency over notes.
+
+        Edges are *directed* (note → target). Targets are matched against
+        the in-vault note id set so dangling links don't show up as
+        nodes. Wikilinks are taken from the parsed body (level 3) so
+        links inside code fences are excluded.
+        """
+        from ipa_cli.parse.links import extract_ref_targets
+
+        ids = {n.id for n in self.notes}
+        edges: dict[NoteId, set[NoteId]] = {n.id: set() for n in self.notes}
+        for n in self.notes:
+            for tgt in extract_ref_targets(n.refs(self.mapping)):
+                if tgt in ids and tgt != n.id:
+                    edges[n.id].add(tgt)
+            for tgt in n.wikilinks:
+                if tgt in ids and tgt != n.id:
+                    edges[n.id].add(tgt)
+        return RefGraph(edges=edges)
 
 
 class BaseSearchChannel:

@@ -11,6 +11,7 @@ dependencies = [
     "ruamel.yaml>=0.18",
     "PyYAML>=6.0",
     "optuna>=3.6",
+    "markdown-it-py>=4.0.0",
 ]
 
 [project.scripts]

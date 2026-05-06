@@ -662,6 +662,13 @@ def engine_search(
     hits = engine.search(Query(raw=query), weights=weights or None)
     hits = hits[:max_results]
 
+    # P5: persist any AST tokens built this run so subsequent invocations
+    # skip parsing for unchanged notes. Best-effort — failures are ignored.
+    try:
+        engine.persist_parsed_cache()
+    except Exception:
+        pass
+
     console.print(
         f"[bold]profile[/bold] {s.profile}  "
         f"[bold]channels[/bold] {len(engine.channels)}  "

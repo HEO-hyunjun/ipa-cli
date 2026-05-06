@@ -36,12 +36,36 @@ class SearchEngine:
         self._setup_done = False
 
     def setup(self) -> None:
-        """Run each channel's ``setup`` once. Safe to call multiple times."""
+        """Run each channel's ``setup`` once. Safe to call multiple times.
+
+        Before channel setup, primes ``Note._body_ast`` from the parsed
+        AST disk cache (P5). Misses are silent — channels that touch
+        ``body_ast`` will simply parse on demand.
+        """
         if self._setup_done:
             return
+        try:
+            from ipa_cli.parse.parsed_cache import prime_notes_with_cache
+
+            prime_notes_with_cache(self.ctx.notes, self.ctx.cache_dir)
+        except Exception:
+            # Cache priming is best-effort. Failures must never block
+            # the engine — fall back to lazy parsing.
+            pass
         for channel in self.channels:
             channel.setup(self.ctx)
         self._setup_done = True
+
+    def persist_parsed_cache(self) -> int:
+        """Write any AST tokens built during this run back to disk.
+
+        Returns the number of notes persisted. Notes whose ``body_ast``
+        was never accessed are skipped so cold runs don't bloat the
+        cache with un-needed entries.
+        """
+        from ipa_cli.parse.parsed_cache import persist_after_parse
+
+        return persist_after_parse(self.ctx.notes, self.ctx.cache_dir)
 
     def search(
         self,

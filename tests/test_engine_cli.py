@@ -31,9 +31,12 @@ def vault(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def isolated_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Point XDG_CONFIG_HOME at tmp so we don't touch the user's config."""
+    """Point XDG_CONFIG_HOME and XDG_CACHE_HOME at tmp so we don't touch
+    the user's config or cache directories."""
     cfg_root = tmp_path / "xdg"
+    cache_root = tmp_path / "xdg-cache"
     monkeypatch.setenv("XDG_CONFIG_HOME", str(cfg_root))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(cache_root))
     monkeypatch.delenv("IPA_PROFILE", raising=False)
     monkeypatch.delenv("IPA_VAULT_PATH", raising=False)
     return cfg_root
@@ -152,6 +155,59 @@ def test_engine_search_max_caps_results(vault: Path, isolated_config: Path) -> N
         ["--vault", str(vault), "engine", "search", "body", "--max", "1"],
     )
     assert result.exit_code == 0, result.stdout
+
+
+def test_engine_persists_parsed_cache_when_channel_uses_ast(
+    vault: Path, isolated_config: Path
+) -> None:
+    """A profile whose search.py touches Note.body_ast triggers cache persist."""
+    profile_dir = isolated_config / "ipa" / "profiles" / "ast-channel"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "search.py").write_text(
+        """from typing import ClassVar
+from ipa_cli.api.base_channels import BaseSearchChannel
+
+
+class AstChannel(BaseSearchChannel):
+    name: ClassVar[str] = "ast_probe"
+    description: ClassVar[str] = "touches body_ast to trigger parse"
+    default_weight: ClassVar[float] = 1.0
+
+    def search(self, ctx, query):
+        # Force body_ast build for every note.
+        return {n.id: float(len(n.headings)) for n in ctx.notes}
+
+
+channels = [AstChannel()]
+""",
+        encoding="utf-8",
+    )
+    config_path = isolated_config / "ipa" / "config.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "default_profile": "ast-channel",
+                "profiles": {
+                    "ast-channel": {"vault_path": str(vault)},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app, ["--profile", "ast-channel", "engine", "search", "alpha"]
+    )
+    assert result.exit_code == 0, result.stdout
+
+    # Cache lives under XDG_CACHE_HOME/ipa/{profile}/, isolated by fixture.
+    cache_root = isolated_config.parent / "xdg-cache"
+    cache_files = list(cache_root.rglob("parsed_index.pkl"))
+    assert cache_files, (
+        "parsed_index.pkl should be written when a channel touches body_ast"
+    )
 
 
 def test_engine_uses_profile_search_py(
