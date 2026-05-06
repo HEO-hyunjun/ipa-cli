@@ -22,14 +22,19 @@ from ipa_cli.api import (
 )
 from ipa_cli.builtins.conventions.default_convention import default_convention
 from ipa_cli.builtins.conventions.rules import (
+    DateFormatRule,
+    DuplicateRootRule,
     FrontmatterRequiredFieldsRule,
     IndexTitlePrefixRule,
     InvalidTypeRule,
     LocationByTypeRule,
     MissingRefRule,
+    MissingRootRule,
     NoH1Rule,
+    RefLinkTargetRule,
     RootTitlePrefixRule,
     RootTitleSuffixRule,
+    WikilinkTargetRule,
 )
 from ipa_cli.parse.note_model import Note
 from ipa_cli.parse.vault_loader import load_notes
@@ -439,6 +444,248 @@ def test_location_with_custom_folder_mapping(tmp_path: Path) -> None:
     m = Mapping(note_type="kind", inbox_dir="Inbox", project_dir="P", archive_dir="A")
     ctx = ValidationContext(vault_path=tmp_path, notes=[note], mapping=m)
     assert rule.check(ctx, note) == []
+
+
+# --- DateFormatRule (P002) -----------------------------------------------
+
+
+_IPA_DATE_PATTERN = r"\d{4}/\d{2}/\d{2} \(\w{3}\) \d{2}:\d{2}:\d{2}"
+
+
+def test_date_format_noop_when_pattern_none(tmp_path: Path) -> None:
+    rule = DateFormatRule()
+    note = Note(
+        id="x",
+        path=tmp_path / "x.md",
+        body="",
+        frontmatter={"date_created": "garbage", "date_modified": "garbage"},
+    )
+    assert rule.check(_ctx(tmp_path, Mapping()), note) == []
+
+
+def test_date_format_flags_mismatch(tmp_path: Path) -> None:
+    rule = DateFormatRule()
+    note = Note(
+        id="x",
+        path=tmp_path / "x.md",
+        body="",
+        frontmatter={
+            "date_created": "2026-05-06",
+            "date_modified": "2026/05/06 (Wed) 10:00:00",
+        },
+    )
+    m = Mapping(date_pattern=_IPA_DATE_PATTERN)
+    issues = rule.check(_ctx(tmp_path, m), note)
+    assert len(issues) == 1
+    assert "created_at" in issues[0].message
+
+
+def test_date_format_passes_when_all_match(tmp_path: Path) -> None:
+    rule = DateFormatRule()
+    note = Note(
+        id="x",
+        path=tmp_path / "x.md",
+        body="",
+        frontmatter={
+            "date_created": "2026/05/06 (Wed) 10:00:00",
+            "date_modified": "2026/05/06 (Wed) 10:01:00",
+        },
+    )
+    m = Mapping(date_pattern=_IPA_DATE_PATTERN)
+    assert rule.check(_ctx(tmp_path, m), note) == []
+
+
+def test_date_format_skips_missing_values(tmp_path: Path) -> None:
+    """Empty values are P001 territory."""
+    rule = DateFormatRule()
+    note = Note(
+        id="x",
+        path=tmp_path / "x.md",
+        body="",
+        frontmatter={"date_created": "", "date_modified": None},
+    )
+    m = Mapping(date_pattern=_IPA_DATE_PATTERN)
+    assert rule.check(_ctx(tmp_path, m), note) == []
+
+
+def test_date_format_uses_mapping_keys(tmp_path: Path) -> None:
+    rule = DateFormatRule()
+    note = Note(
+        id="x",
+        path=tmp_path / "x.md",
+        body="",
+        frontmatter={"created": "wrong", "updated": "wrong"},
+    )
+    m = Mapping(
+        created_at="created", updated_at="updated", date_pattern=r"\d{4}-\d{2}-\d{2}"
+    )
+    issues = rule.check(_ctx(tmp_path, m), note)
+    assert len(issues) == 2
+
+
+# --- RefLinkTargetRule (K001) --------------------------------------------
+
+
+def _vault_ctx(vault: Path, notes: list[Note], mapping: Mapping) -> ValidationContext:
+    return ValidationContext(vault_path=vault, notes=notes, mapping=mapping)
+
+
+def test_ref_link_target_flags_missing_ref(tmp_path: Path) -> None:
+    rule = RefLinkTargetRule()
+    a = Note(
+        id="A",
+        path=tmp_path / "A.md",
+        body="",
+        frontmatter={"type": "note", "ref": ["[[Ghost]]"]},
+    )
+    b = Note(id="B", path=tmp_path / "B.md", body="", frontmatter={"type": "index"})
+    issues = rule.check_vault(_vault_ctx(tmp_path, [a, b], Mapping()))
+    assert len(issues) == 1
+    assert issues[0].note_id == "A"
+    assert "Ghost" in issues[0].message
+
+
+def test_ref_link_target_passes_when_target_exists(tmp_path: Path) -> None:
+    rule = RefLinkTargetRule()
+    a = Note(
+        id="A",
+        path=tmp_path / "A.md",
+        body="",
+        frontmatter={"type": "note", "ref": ["[[B]]"]},
+    )
+    b = Note(id="B", path=tmp_path / "B.md", body="", frontmatter={"type": "index"})
+    assert rule.check_vault(_vault_ctx(tmp_path, [a, b], Mapping())) == []
+
+
+def test_ref_link_target_strips_anchor(tmp_path: Path) -> None:
+    rule = RefLinkTargetRule()
+    a = Note(
+        id="A",
+        path=tmp_path / "A.md",
+        body="",
+        frontmatter={"type": "note", "ref": ["[[B#section]]"]},
+    )
+    b = Note(id="B", path=tmp_path / "B.md", body="", frontmatter={"type": "index"})
+    assert rule.check_vault(_vault_ctx(tmp_path, [a, b], Mapping())) == []
+
+
+def test_ref_link_target_uses_mapping(tmp_path: Path) -> None:
+    rule = RefLinkTargetRule()
+    a = Note(
+        id="A",
+        path=tmp_path / "A.md",
+        body="",
+        frontmatter={"kind": "note", "parents": ["[[Ghost]]"]},
+    )
+    m = Mapping(note_type="kind", refs="parents")
+    issues = rule.check_vault(_vault_ctx(tmp_path, [a], m))
+    assert len(issues) == 1
+
+
+# --- WikilinkTargetRule (K002) -------------------------------------------
+
+
+def test_wikilink_target_flags_missing(tmp_path: Path) -> None:
+    rule = WikilinkTargetRule()
+    a = Note(
+        id="A",
+        path=tmp_path / "A.md",
+        body="see [[Ghost]] and [[B]]",
+        frontmatter={},
+    )
+    b = Note(id="B", path=tmp_path / "B.md", body="", frontmatter={})
+    issues = rule.check_vault(_vault_ctx(tmp_path, [a, b], Mapping()))
+    assert len(issues) == 1
+    assert "Ghost" in issues[0].message
+
+
+def test_wikilink_target_ignores_embeds(tmp_path: Path) -> None:
+    rule = WikilinkTargetRule()
+    a = Note(
+        id="A",
+        path=tmp_path / "A.md",
+        body="![[diagram.png]]",
+        frontmatter={},
+    )
+    assert rule.check_vault(_vault_ctx(tmp_path, [a], Mapping())) == []
+
+
+def test_wikilink_target_resolves_attachment(tmp_path: Path) -> None:
+    rule = WikilinkTargetRule()
+    (tmp_path / "diagram.png").write_bytes(b"")
+    a = Note(
+        id="A",
+        path=tmp_path / "A.md",
+        body="see [[diagram.png]] and [[diagram]]",
+        frontmatter={},
+    )
+    assert rule.check_vault(_vault_ctx(tmp_path, [a], Mapping())) == []
+
+
+def test_wikilink_target_strips_anchor(tmp_path: Path) -> None:
+    rule = WikilinkTargetRule()
+    a = Note(id="A", path=tmp_path / "A.md", body="see [[B#sec]]", frontmatter={})
+    b = Note(id="B", path=tmp_path / "B.md", body="", frontmatter={})
+    assert rule.check_vault(_vault_ctx(tmp_path, [a, b], Mapping())) == []
+
+
+# --- DuplicateRootRule / MissingRootRule (R001 / R002) -------------------
+
+
+def _make_md(path: Path, frontmatter: dict) -> Note:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.touch()
+    return Note(id=path.stem, path=path, body="", frontmatter=frontmatter)
+
+
+def test_missing_root_flags_folder_without_root(tmp_path: Path) -> None:
+    rule = MissingRootRule()
+    project = tmp_path / "01 Project"
+    (project / "Empty Project").mkdir(parents=True)
+    note = _make_md(project / "Has Root" / "🏷️ Has Root Root.md", {"type": "root"})
+    issues = rule.check_vault(_vault_ctx(tmp_path, [note], Mapping()))
+    assert len(issues) == 1
+    assert issues[0].note_id == "Empty Project"
+
+
+def test_missing_root_passes_when_all_have_roots(tmp_path: Path) -> None:
+    rule = MissingRootRule()
+    project = tmp_path / "01 Project"
+    note = _make_md(project / "P1" / "🏷️ P1 Root.md", {"type": "root"})
+    assert rule.check_vault(_vault_ctx(tmp_path, [note], Mapping())) == []
+
+
+def test_missing_root_skips_when_no_project_dir(tmp_path: Path) -> None:
+    rule = MissingRootRule()
+    # No 01 Project folder created; rule should skip gracefully.
+    assert rule.check_vault(_vault_ctx(tmp_path, [], Mapping())) == []
+
+
+def test_missing_root_ignores_dot_folders(tmp_path: Path) -> None:
+    rule = MissingRootRule()
+    project = tmp_path / "01 Project"
+    (project / ".hidden").mkdir(parents=True)
+    note = _make_md(project / "Real" / "🏷️ Real Root.md", {"type": "root"})
+    assert rule.check_vault(_vault_ctx(tmp_path, [note], Mapping())) == []
+
+
+def test_duplicate_root_flags_extras(tmp_path: Path) -> None:
+    rule = DuplicateRootRule()
+    project = tmp_path / "01 Project"
+    canonical = _make_md(project / "Topic" / "🏷️ Topic Root.md", {"type": "root"})
+    extra = _make_md(project / "Topic" / "🏷️ Other Root.md", {"type": "root"})
+    issues = rule.check_vault(_vault_ctx(tmp_path, [canonical, extra], Mapping()))
+    assert len(issues) == 1
+    assert issues[0].note_id == "🏷️ Other Root"
+    assert "Topic" in issues[0].message
+
+
+def test_duplicate_root_ignores_archive(tmp_path: Path) -> None:
+    rule = DuplicateRootRule()
+    archive = tmp_path / "02 Archive"
+    a = _make_md(archive / "Old" / "🏷️ Old Root.md", {"type": "root"})
+    b = _make_md(archive / "Old" / "🏷️ Older Root.md", {"type": "root"})
+    assert rule.check_vault(_vault_ctx(tmp_path, [a, b], Mapping())) == []
 
 
 # --- ipa-test-vault integration ------------------------------------------

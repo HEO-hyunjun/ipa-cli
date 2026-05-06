@@ -7,12 +7,14 @@ semantic concept.
 
 Rules ported from 1차 vault_validator:
 - P001 → ``FrontmatterRequiredFieldsRule``
+- P002 → ``DateFormatRule``
 - P003 → ``InvalidTypeRule``
 - P004 → ``MissingRefRule``
 """
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, ClassVar
 
 from ipa_cli.api.base_rules import BaseConventionRule, Issue, Severity
@@ -118,3 +120,55 @@ class MissingRefRule(BaseConventionRule):
                 )
             ]
         return []
+
+
+# Semantic fields whose values are date-like and subject to P002. We
+# intentionally only check these two — ``aliases`` / ``tags`` aren't
+# dates and ``note_type`` is enum-checked by P003.
+_DATE_SEMANTIC_FIELDS: tuple[str, ...] = ("created_at", "updated_at")
+
+
+class DateFormatRule(BaseConventionRule):
+    """Flag created_at / updated_at values that don't match ``mapping.date_pattern``.
+
+    Mirrors 1차 P002. Opt-in: when ``mapping.date_pattern`` is ``None``
+    the rule is a no-op so vaults without a fixed date convention don't
+    drown in warnings. Empty / missing values are P001's responsibility.
+    """
+
+    code: ClassVar[str] = "ipa.frontmatter.date_format"
+    severity: ClassVar[Severity] = Severity.WARN
+
+    def check(self, ctx: "ValidationContext", note: "Note") -> list[Issue]:
+        pattern = ctx.mapping.date_pattern
+        if not pattern:
+            return []
+        try:
+            compiled = re.compile(pattern)
+        except re.error:
+            return []
+
+        issues: list[Issue] = []
+        for sem_field in _DATE_SEMANTIC_FIELDS:
+            key = getattr(ctx.mapping, sem_field, None)
+            if not key:
+                continue
+            value = note.frontmatter.get(key)
+            if value is None:
+                continue
+            text = str(value).strip()
+            if not text:
+                continue
+            if not compiled.match(text):
+                issues.append(
+                    Issue(
+                        code=self.code,
+                        severity=self.severity,
+                        note_id=note.id,
+                        message=(
+                            f"{sem_field} (key {key!r}) value {text!r} "
+                            f"does not match pattern {pattern!r}"
+                        ),
+                    )
+                )
+        return issues

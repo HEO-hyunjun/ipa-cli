@@ -45,6 +45,11 @@ class Mapping:
     project_dir: str = "01 Project"
     archive_dir: str = "02 Archive"
 
+    # Optional regex used by ``DateFormatRule`` (P002). When ``None`` the
+    # date format check is skipped — opt-in per profile. 1차-style vaults
+    # set ``r"\d{4}/\d{2}/\d{2} \(\w{3}\) \d{2}:\d{2}:\d{2}"``.
+    date_pattern: str | None = None
+
     custom: dict[str, str] = field(default_factory=dict)
 
     def validate(self) -> None:
