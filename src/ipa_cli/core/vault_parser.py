@@ -15,9 +15,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-# vault root: 스크립트 위치(.claude/skills/_shared/scripts/)에서 4단계 상위
+# vault root 결정:
+#   1) IPA_VAULT_PATH 환경변수 (ipa-cli 패키지 또는 thin shim 경로에서 표준)
+#   2) 폴백: 스크립트 위치에서 4단계 상위 (레거시 _shared/scripts/ 레이아웃 호환)
+import os as _os
+
 SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_VAULT = SCRIPT_DIR.parent.parent.parent.parent
+_ENV_VAULT = _os.environ.get("IPA_VAULT_PATH")
+DEFAULT_VAULT = (
+    Path(_ENV_VAULT).expanduser()
+    if _ENV_VAULT
+    else SCRIPT_DIR.parent.parent.parent.parent
+)
 
 EXCLUDE_DIRS = {
     "90 Settings",
@@ -44,7 +53,9 @@ class VaultNote:
     ref_links: list = field(default_factory=list)  # frontmatter ref에서 추출한 노트명
     wikilinks: list = field(default_factory=list)  # 본문 [[...]] 노트명
     embeds: list = field(default_factory=list)  # 본문 ![[...]] 노트명
-    aliases: list = field(default_factory=list)  # frontmatter aliases — filename 동등 위치
+    aliases: list = field(
+        default_factory=list
+    )  # frontmatter aliases — filename 동등 위치
 
     @property
     def filename(self) -> str:
@@ -159,7 +170,11 @@ def parse_note(path: Path) -> Optional[VaultNote]:
     aliases_raw = fm.get("aliases", [])
     if isinstance(aliases_raw, str):
         aliases_raw = [aliases_raw]
-    aliases = [a for a in aliases_raw if isinstance(a, str) and a.strip()] if isinstance(aliases_raw, list) else []
+    aliases = (
+        [a for a in aliases_raw if isinstance(a, str) and a.strip()]
+        if isinstance(aliases_raw, list)
+        else []
+    )
 
     return VaultNote(
         path=path,
