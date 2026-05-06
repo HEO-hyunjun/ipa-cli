@@ -20,7 +20,9 @@ from ipa_cli.config import (
     Settings,
     list_profiles,
     load_settings,
+    read_yaml_preserving,
     set_default_profile,
+    write_yaml_preserving,
 )
 from ipa_cli.core import (
     vault_refactor,
@@ -44,8 +46,12 @@ app = typer.Typer(
 )
 config_app = typer.Typer(help="설정 조회·관리.", no_args_is_help=True)
 profile_app = typer.Typer(help="프로필 관리.", no_args_is_help=True)
+convention_app = typer.Typer(
+    help="2차 convention runtime 명령 (P3+).", no_args_is_help=True
+)
 app.add_typer(config_app, name="config")
 app.add_typer(profile_app, name="profile")
+app.add_typer(convention_app, name="convention")
 
 console = Console()
 
@@ -82,10 +88,13 @@ def _call_module(module: ModuleType, args: list[str], settings: Settings) -> int
     import os as _os
 
     new_argv = [module.__name__] + list(args)
-    # Only inject --vault when there's at least one user-supplied arg —
-    # vault_refactor uses subparsers without a root --vault flag, so
-    # injecting on an empty argv would mis-parse the path as a subcommand.
-    if args and settings.vault_path != Path() and "--vault" not in args:
+    # Inject --vault from active profile when not already present.
+    # vault_refactor uses subparsers without a root --vault flag, so for
+    # refactor we only inject when there's already at least one arg
+    # (otherwise the path parses as a subcommand). Other modules accept
+    # --vault at any position.
+    needs_vault = settings.vault_path != Path() and "--vault" not in args
+    if needs_vault and (module is not vault_refactor or args):
         new_argv += ["--vault", str(settings.vault_path)]
     old_argv = sys.argv
     old_cache_env = _os.environ.get("IPA_CACHE_DIR")
@@ -285,6 +294,121 @@ def profile_use(ctx: typer.Context, name: str = typer.Argument(...)):
     console.print(f"default profile → [cyan]{name}[/cyan] ({s.config_path})")
 
 
+# ── 2차 convention runtime (P3) ──
+
+
+@convention_app.command("check")
+def convention_check(
+    ctx: typer.Context,
+    note: str | None = typer.Option(
+        None, "--note", help="단일 노트 ID(파일 stem) 검사"
+    ),
+    scope: str = typer.Option(
+        "note",
+        "--scope",
+        help="실행 단위: note | folder | vault. 더 넓은 scope rule은 opt-in 시에만 실행.",
+    ),
+    folder: Path | None = typer.Option(
+        None, "--folder", help="--scope folder 시 대상 폴더 (vault 상대/절대 경로)"
+    ),
+    all_: bool = typer.Option(False, "--all", help="--scope vault의 별칭"),
+    summary: bool = typer.Option(
+        False, "--summary", help="이슈 본문 대신 코드·severity별 개수 요약"
+    ),
+):
+    """2차 convention runtime — 활성 프로필의 mapping/convention로 검증."""
+    from ipa_cli.api.base_rules import Severity
+    from ipa_cli.parse.vault_loader import load_notes
+    from ipa_cli.runtime.convention_loader import load_convention
+    from ipa_cli.runtime.mapping_loader import load_mapping
+    from ipa_cli.runtime.profile_loader import profile_workspace_dir
+    from ipa_cli.runtime.validator_engine import run_validator, scope_allows_rule
+
+    if all_:
+        scope = "vault"
+    if scope not in {"note", "folder", "vault"}:
+        raise typer.BadParameter(f"--scope must be note|folder|vault, got {scope!r}")
+    if scope == "folder" and folder is None:
+        raise typer.BadParameter("--scope folder는 --folder PATH 가 필요합니다")
+
+    s = _settings(ctx)
+    if s.vault_path == Path():
+        console.print(
+            "[red]vault_path 미설정. config.yaml 또는 IPA_VAULT_PATH로 지정하세요.[/red]"
+        )
+        raise typer.Exit(2)
+
+    workspace = profile_workspace_dir(s.profile)
+    workspace_arg = workspace if workspace.is_dir() else None
+
+    mapping = load_mapping(workspace_arg)
+    convention = load_convention(workspace_arg)
+    notes = load_notes(s.vault_path, mapping)
+
+    folder_resolved: Path | None = None
+    if folder is not None:
+        folder_resolved = (
+            folder if folder.is_absolute() else (s.vault_path / folder)
+        ).resolve()
+
+    issues = run_validator(
+        notes,
+        mapping,
+        convention,
+        vault_path=s.vault_path,
+        scope=scope,  # type: ignore[arg-type]
+        folder=folder_resolved,
+        target_note_id=note,
+    )
+
+    skipped = [
+        r
+        for r in convention.rules
+        if not scope_allows_rule(scope, r.default_scope)  # type: ignore[arg-type]
+    ]
+
+    console.print(
+        f"[bold]profile[/bold] {s.profile}  "
+        f"[bold]convention[/bold] {convention.name}  "
+        f"[bold]rules[/bold] {len(convention.rules)} (scoped-out: {len(skipped)})  "
+        f"[bold]notes[/bold] {len(notes)}  "
+        f"[bold]scope[/bold] {scope}"
+    )
+
+    if summary:
+        agg: dict[tuple[str, str], int] = {}
+        for issue in issues:
+            key = (issue.code, issue.severity.value)
+            agg[key] = agg.get(key, 0) + 1
+        table = Table(title=f"summary ({len(issues)} issues)")
+        table.add_column("code", style="cyan")
+        table.add_column("severity", style="magenta")
+        table.add_column("count", style="white", justify="right")
+        for (code, sev), count in sorted(agg.items()):
+            table.add_row(code, sev, str(count))
+        console.print(table)
+    else:
+        if not issues:
+            console.print("[green]no issues[/green]")
+        else:
+            for issue in issues:
+                color = {
+                    Severity.INFO: "blue",
+                    Severity.WARN: "yellow",
+                    Severity.ERROR: "red",
+                }.get(issue.severity, "white")
+                console.print(
+                    f"  [{color}]{issue.severity.value:5s}[/{color}] "
+                    f"[cyan]{issue.code}[/cyan]  "
+                    f"{issue.note_id}  "
+                    f"{issue.message}"
+                )
+            console.print(f"\nfound {len(issues)} issues")
+
+    has_error = any(i.severity == Severity.ERROR for i in issues)
+    raise typer.Exit(1 if has_error else 0)
+
+
 # ── plugin registry 조회 ──
 
 
@@ -466,17 +590,8 @@ def tune_run(
 
 def _apply_best_to_config(settings: Settings, result) -> None:
     """Write best weights/threshold/cap back to active profile in config.yaml."""
-    from ruamel.yaml import YAML
-
-    yaml = YAML()
-    yaml.preserve_quotes = True
     cfg_path = settings.config_path
-    cfg_path.parent.mkdir(parents=True, exist_ok=True)
-    if cfg_path.is_file():
-        with cfg_path.open("r", encoding="utf-8") as f:
-            data = yaml.load(f) or {}
-    else:
-        data = {}
+    data = read_yaml_preserving(cfg_path)
 
     profiles = data.setdefault("profiles", {})
     profile = profiles.setdefault(settings.profile, {})
@@ -490,8 +605,7 @@ def _apply_best_to_config(settings: Settings, result) -> None:
     if "default_profile" not in data:
         data["default_profile"] = settings.profile
 
-    with cfg_path.open("w", encoding="utf-8") as f:
-        yaml.dump(data, f)
+    write_yaml_preserving(cfg_path, data)
     console.print(
         f"[green]applied[/green] best params → {cfg_path}  (profile: {settings.profile})"
     )

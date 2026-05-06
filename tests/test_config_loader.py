@@ -190,3 +190,31 @@ def test_set_default_profile_round_trip(tmp_path: Path, clean_env: None) -> None
 
     s = load_settings(config_path=cfg, dotenv_path=tmp_path / ".env")
     assert s.profile == "work"
+
+
+def test_set_default_profile_preserves_comments(
+    tmp_path: Path, clean_env: None
+) -> None:
+    cfg = _write_yaml(
+        tmp_path / "config.yaml",
+        """\
+# top-level comment about the config
+default_profile: personal
+
+profiles:
+  personal:
+    # vault for daily notes
+    vault_path: /tmp/personal-vault
+    search:
+      threshold: 0.30  # tuned 2026-05
+  work:
+    vault_path: /tmp/work-vault
+""",
+    )
+    set_default_profile("work", config_path=cfg)
+
+    body = cfg.read_text(encoding="utf-8")
+    assert "# top-level comment about the config" in body
+    assert "# vault for daily notes" in body
+    assert "# tuned 2026-05" in body
+    assert "default_profile: work" in body

@@ -26,6 +26,7 @@ from typing import Any
 
 import yaml
 from dotenv import load_dotenv
+from ruamel.yaml import YAML
 
 from .defaults import (
     DEFAULT_MAX_RESULTS,
@@ -217,16 +218,37 @@ def list_profiles(config_path: Path | None = None) -> tuple[list[str], str | Non
     return names, raw.get("default_profile")
 
 
+def _ruamel() -> YAML:
+    """ruamel.yaml round-trip instance preserving comments and quote style."""
+    y = YAML()
+    y.preserve_quotes = True
+    return y
+
+
+def read_yaml_preserving(path: Path) -> Any:
+    """Read yaml in round-trip mode; returns CommentedMap or {} if missing."""
+    if not path.is_file():
+        return {}
+    with path.open("r", encoding="utf-8") as f:
+        data = _ruamel().load(f)
+    return data if data is not None else {}
+
+
+def write_yaml_preserving(path: Path, data: Any) -> None:
+    """Write yaml in round-trip mode (preserves comments/order/quotes)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        _ruamel().dump(data, f)
+
+
 def set_default_profile(name: str, config_path: Path | None = None) -> None:
     cfg_path = config_path or default_config_path()
-    cfg_path.parent.mkdir(parents=True, exist_ok=True)
-    raw = _read_yaml(cfg_path)
-    profiles = raw.get("profiles") or {}
+    raw = read_yaml_preserving(cfg_path)
+    profiles = raw.get("profiles") if isinstance(raw, dict) else None
     if not isinstance(profiles, dict):
         profiles = {}
+        raw["profiles"] = profiles
     if name not in profiles:
         profiles[name] = {}
-    raw["profiles"] = profiles
     raw["default_profile"] = name
-    with cfg_path.open("w", encoding="utf-8") as f:
-        yaml.safe_dump(raw, f, allow_unicode=True, sort_keys=False)
+    write_yaml_preserving(cfg_path, raw)
