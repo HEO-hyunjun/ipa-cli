@@ -1,9 +1,14 @@
 """Frontmatter convention rules.
 
-Mirrors 1차's P001 ("required field missing") but reads through the
-active ``Mapping`` so vault-specific frontmatter key naming is absorbed:
-the rule does not know whether the vault uses ``type`` or ``kind``, only
-that the mapped key must exist and be non-empty.
+Each rule reads through the active ``Mapping`` so vault-specific
+frontmatter key naming is absorbed: rules don't know whether the vault
+uses ``type`` or ``kind``, only that the mapped key carries the IPA
+semantic concept.
+
+Rules ported from 1차 vault_validator:
+- P001 → ``FrontmatterRequiredFieldsRule``
+- P003 → ``InvalidTypeRule``
+- P004 → ``MissingRefRule``
 """
 
 from __future__ import annotations
@@ -25,9 +30,17 @@ REQUIRED_SEMANTIC_FIELDS: tuple[str, ...] = (
     "updated_at",
 )
 
+# Allowed values for the ``note_type`` semantic field. These are part of
+# IPA's conceptual model (root / index / note triad) and so are not
+# Mapping-configurable.
+VALID_NOTE_TYPES: frozenset[str] = frozenset({"note", "index", "root"})
+
 
 class FrontmatterRequiredFieldsRule(BaseConventionRule):
-    """Flag notes missing required semantic frontmatter fields."""
+    """Flag notes missing required semantic frontmatter fields.
+
+    Mirrors 1차 P001.
+    """
 
     code: ClassVar[str] = "ipa.frontmatter.required_field"
     severity: ClassVar[Severity] = Severity.WARN
@@ -52,3 +65,56 @@ class FrontmatterRequiredFieldsRule(BaseConventionRule):
                     )
                 )
         return issues
+
+
+class InvalidTypeRule(BaseConventionRule):
+    """Flag notes whose ``note_type`` is not one of {note, index, root}.
+
+    Mirrors 1차 P003. Empty / missing types are P001's responsibility.
+    """
+
+    code: ClassVar[str] = "ipa.frontmatter.invalid_type"
+    severity: ClassVar[Severity] = Severity.ERROR
+
+    def check(self, ctx: "ValidationContext", note: "Note") -> list[Issue]:
+        nt = note.note_type(ctx.mapping)
+        if nt is None or nt == "":
+            return []
+        if nt not in VALID_NOTE_TYPES:
+            return [
+                Issue(
+                    code=self.code,
+                    severity=self.severity,
+                    note_id=note.id,
+                    message=(
+                        f"invalid note_type {nt!r} (allowed: "
+                        f"{sorted(VALID_NOTE_TYPES)})"
+                    ),
+                )
+            ]
+        return []
+
+
+class MissingRefRule(BaseConventionRule):
+    """Flag note/index notes that have no ref link.
+
+    Mirrors 1차 P004. Roots may legitimately have no ref.
+    """
+
+    code: ClassVar[str] = "ipa.frontmatter.missing_ref"
+    severity: ClassVar[Severity] = Severity.WARN
+
+    def check(self, ctx: "ValidationContext", note: "Note") -> list[Issue]:
+        nt = note.note_type(ctx.mapping)
+        if nt not in {"note", "index"}:
+            return []
+        if not note.refs(ctx.mapping):
+            return [
+                Issue(
+                    code=self.code,
+                    severity=self.severity,
+                    note_id=note.id,
+                    message=f"type={nt} note has no ref link",
+                )
+            ]
+        return []

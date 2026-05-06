@@ -23,7 +23,13 @@ from ipa_cli.api import (
 from ipa_cli.builtins.conventions.default_convention import default_convention
 from ipa_cli.builtins.conventions.rules import (
     FrontmatterRequiredFieldsRule,
+    IndexTitlePrefixRule,
+    InvalidTypeRule,
+    LocationByTypeRule,
+    MissingRefRule,
     NoH1Rule,
+    RootTitlePrefixRule,
+    RootTitleSuffixRule,
 )
 from ipa_cli.parse.note_model import Note
 from ipa_cli.parse.vault_loader import load_notes
@@ -204,6 +210,235 @@ def test_no_h1_fix_returns_none_when_note_missing(tmp_path: Path) -> None:
         span=Span(1, 1, 1, 4),
     )
     assert rule.fix(_format_ctx(tmp_path, Mapping(), []), issue) is None
+
+
+# --- InvalidTypeRule (P003) ----------------------------------------------
+
+
+def test_invalid_type_rule_flags_unknown_type(tmp_path: Path) -> None:
+    rule = InvalidTypeRule()
+    note = Note(
+        id="x",
+        path=tmp_path / "x.md",
+        body="",
+        frontmatter={"type": "draft"},
+    )
+    issues = rule.check(_ctx(tmp_path, Mapping()), note)
+    assert len(issues) == 1
+    assert issues[0].severity == Severity.ERROR
+    assert "draft" in issues[0].message
+
+
+def test_invalid_type_rule_passes_for_valid_types(tmp_path: Path) -> None:
+    rule = InvalidTypeRule()
+    for value in ("note", "index", "root"):
+        note = Note(
+            id="x",
+            path=tmp_path / "x.md",
+            body="",
+            frontmatter={"type": value},
+        )
+        assert rule.check(_ctx(tmp_path, Mapping()), note) == []
+
+
+def test_invalid_type_rule_skips_when_missing(tmp_path: Path) -> None:
+    """Empty / missing type is P001's territory, not P003."""
+    rule = InvalidTypeRule()
+    note = Note(id="x", path=tmp_path / "x.md", body="", frontmatter={})
+    assert rule.check(_ctx(tmp_path, Mapping()), note) == []
+
+
+def test_invalid_type_rule_uses_mapping(tmp_path: Path) -> None:
+    rule = InvalidTypeRule()
+    note = Note(
+        id="x",
+        path=tmp_path / "x.md",
+        body="",
+        frontmatter={"kind": "draft"},
+    )
+    m = Mapping(note_type="kind")
+    issues = rule.check(_ctx(tmp_path, m), note)
+    assert len(issues) == 1
+
+
+# --- MissingRefRule (P004) -----------------------------------------------
+
+
+def test_missing_ref_flags_note_without_ref(tmp_path: Path) -> None:
+    rule = MissingRefRule()
+    note = Note(
+        id="x",
+        path=tmp_path / "x.md",
+        body="",
+        frontmatter={"type": "note"},
+    )
+    issues = rule.check(_ctx(tmp_path, Mapping()), note)
+    assert len(issues) == 1
+    assert "note" in issues[0].message
+
+
+def test_missing_ref_flags_index_without_ref(tmp_path: Path) -> None:
+    rule = MissingRefRule()
+    note = Note(
+        id="x",
+        path=tmp_path / "x.md",
+        body="",
+        frontmatter={"type": "index", "ref": []},
+    )
+    assert len(rule.check(_ctx(tmp_path, Mapping()), note)) == 1
+
+
+def test_missing_ref_passes_when_ref_present(tmp_path: Path) -> None:
+    rule = MissingRefRule()
+    note = Note(
+        id="x",
+        path=tmp_path / "x.md",
+        body="",
+        frontmatter={"type": "note", "ref": ["[[A]]"]},
+    )
+    assert rule.check(_ctx(tmp_path, Mapping()), note) == []
+
+
+def test_missing_ref_skips_root(tmp_path: Path) -> None:
+    rule = MissingRefRule()
+    note = Note(
+        id="x",
+        path=tmp_path / "x.md",
+        body="",
+        frontmatter={"type": "root"},
+    )
+    assert rule.check(_ctx(tmp_path, Mapping()), note) == []
+
+
+# --- Title rules (T001 / T002 / T003) ------------------------------------
+
+
+def test_root_title_prefix_flags_missing_emoji(tmp_path: Path) -> None:
+    rule = RootTitlePrefixRule()
+    note = Note(
+        id="My Project Root",
+        path=tmp_path / "My Project Root.md",
+        body="",
+        frontmatter={"type": "root"},
+    )
+    assert len(rule.check(_ctx(tmp_path, Mapping()), note)) == 1
+
+
+def test_root_title_prefix_passes_with_emoji(tmp_path: Path) -> None:
+    rule = RootTitlePrefixRule()
+    note = Note(
+        id="🏷️ My Project Root",
+        path=tmp_path / "🏷️ My Project Root.md",
+        body="",
+        frontmatter={"type": "root"},
+    )
+    assert rule.check(_ctx(tmp_path, Mapping()), note) == []
+
+
+def test_root_title_prefix_skips_non_root(tmp_path: Path) -> None:
+    rule = RootTitlePrefixRule()
+    note = Note(
+        id="some note",
+        path=tmp_path / "some note.md",
+        body="",
+        frontmatter={"type": "note"},
+    )
+    assert rule.check(_ctx(tmp_path, Mapping()), note) == []
+
+
+def test_root_title_suffix_flags_missing_root_word(tmp_path: Path) -> None:
+    rule = RootTitleSuffixRule()
+    note = Note(
+        id="🏷️ Archive Index",
+        path=tmp_path / "🏷️ Archive Index.md",
+        body="",
+        frontmatter={"type": "root"},
+    )
+    assert len(rule.check(_ctx(tmp_path, Mapping()), note)) == 1
+
+
+def test_root_title_suffix_passes_with_root_word(tmp_path: Path) -> None:
+    rule = RootTitleSuffixRule()
+    note = Note(
+        id="🏷️ My Project Root",
+        path=tmp_path / "x.md",
+        body="",
+        frontmatter={"type": "root"},
+    )
+    assert rule.check(_ctx(tmp_path, Mapping()), note) == []
+
+
+def test_index_title_prefix_flags_missing(tmp_path: Path) -> None:
+    rule = IndexTitlePrefixRule()
+    note = Note(
+        id="My Topic",
+        path=tmp_path / "My Topic.md",
+        body="",
+        frontmatter={"type": "index"},
+    )
+    assert len(rule.check(_ctx(tmp_path, Mapping()), note)) == 1
+
+
+def test_index_title_prefix_passes(tmp_path: Path) -> None:
+    rule = IndexTitlePrefixRule()
+    note = Note(
+        id="🔖 My Topic",
+        path=tmp_path / "🔖 My Topic.md",
+        body="",
+        frontmatter={"type": "index"},
+    )
+    assert rule.check(_ctx(tmp_path, Mapping()), note) == []
+
+
+# --- LocationByTypeRule (L001) -------------------------------------------
+
+
+def test_location_note_in_inbox_passes(tmp_path: Path) -> None:
+    rule = LocationByTypeRule()
+    note_path = tmp_path / "00 Inbox" / "draft.md"
+    note_path.parent.mkdir(parents=True, exist_ok=True)
+    note_path.touch()
+    note = Note(
+        id="draft",
+        path=note_path,
+        body="",
+        frontmatter={"type": "note"},
+    )
+    ctx = ValidationContext(vault_path=tmp_path, notes=[note], mapping=Mapping())
+    assert rule.check(ctx, note) == []
+
+
+def test_location_index_in_inbox_flagged(tmp_path: Path) -> None:
+    rule = LocationByTypeRule()
+    note_path = tmp_path / "00 Inbox" / "🔖 wrong.md"
+    note_path.parent.mkdir(parents=True, exist_ok=True)
+    note_path.touch()
+    note = Note(
+        id="🔖 wrong",
+        path=note_path,
+        body="",
+        frontmatter={"type": "index"},
+    )
+    ctx = ValidationContext(vault_path=tmp_path, notes=[note], mapping=Mapping())
+    issues = rule.check(ctx, note)
+    assert len(issues) == 1
+    assert "00 Inbox" in issues[0].message
+
+
+def test_location_with_custom_folder_mapping(tmp_path: Path) -> None:
+    rule = LocationByTypeRule()
+    note_path = tmp_path / "Inbox" / "x.md"
+    note_path.parent.mkdir(parents=True, exist_ok=True)
+    note_path.touch()
+    note = Note(
+        id="x",
+        path=note_path,
+        body="",
+        frontmatter={"kind": "note"},
+    )
+    m = Mapping(note_type="kind", inbox_dir="Inbox", project_dir="P", archive_dir="A")
+    ctx = ValidationContext(vault_path=tmp_path, notes=[note], mapping=m)
+    assert rule.check(ctx, note) == []
 
 
 # --- ipa-test-vault integration ------------------------------------------
