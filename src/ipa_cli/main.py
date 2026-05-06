@@ -52,10 +52,15 @@ convention_app = typer.Typer(
 formatter_app = typer.Typer(
     help="2차 formatter runtime 명령 (P3b+).", no_args_is_help=True
 )
+engine_app = typer.Typer(
+    help="2차 search runtime 명령 (P4+). v1 'ipa search'와 공존.",
+    no_args_is_help=True,
+)
 app.add_typer(config_app, name="config")
 app.add_typer(profile_app, name="profile")
 app.add_typer(convention_app, name="convention")
 app.add_typer(formatter_app, name="formatter")
+app.add_typer(engine_app, name="engine")
 
 console = Console()
 
@@ -559,6 +564,121 @@ def _render_plan(plan_result, *, summary: bool, header_extra: str) -> None:
                 f"  [red]conflict[/red] L{a.span.start_line} "
                 f"({a.replacement!r} ⨯ {b.replacement!r})"
             )
+
+
+# ── 2차 search runtime (P4) ──
+
+
+def _build_engine(ctx: typer.Context):
+    """Resolve settings → SearchEngine over the active profile's channels."""
+    from ipa_cli.api.base_channels import SetupContext
+    from ipa_cli.parse.vault_loader import load_notes
+    from ipa_cli.runtime.mapping_loader import load_mapping
+    from ipa_cli.runtime.profile_loader import profile_workspace_dir
+    from ipa_cli.runtime.search_engine import SearchEngine
+    from ipa_cli.runtime.search_loader import load_search_channels
+
+    s = _settings(ctx)
+    if s.vault_path == Path():
+        console.print(
+            "[red]vault_path 미설정. config.yaml 또는 IPA_VAULT_PATH로 지정하세요.[/red]"
+        )
+        raise typer.Exit(2)
+
+    workspace = profile_workspace_dir(s.profile)
+    workspace_arg = workspace if workspace.is_dir() else None
+    mapping = load_mapping(workspace_arg)
+    channels = load_search_channels(workspace_arg)
+    notes = load_notes(s.vault_path, mapping)
+
+    ctx_obj = SetupContext(
+        notes=notes,
+        vault_path=s.vault_path,
+        cache_dir=s.cache_dir,
+        mapping=mapping,
+    )
+    return s, channels, SearchEngine(channels, ctx_obj), notes
+
+
+@engine_app.command("channels")
+def engine_channels(ctx: typer.Context):
+    """2차 search engine에 등록된 채널 목록 (기본 weight + 활성 weight)."""
+    s = _settings(ctx)
+    _, channels, _, _ = _build_engine(ctx)
+
+    table = Table(title=f"engine channels ({len(channels)} loaded)")
+    table.add_column("name", style="cyan")
+    table.add_column("default", style="dim", justify="right")
+    table.add_column("active", style="magenta", justify="right")
+    table.add_column("description", style="white")
+    for ch in channels:
+        active = s.search.weights.get(ch.name, ch.default_weight)
+        table.add_row(
+            ch.name,
+            f"{ch.default_weight:.4f}",
+            f"{active:.4f}",
+            ch.description,
+        )
+    console.print(table)
+
+
+def _parse_weight_overrides(items: list[str] | None) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for raw in items or []:
+        if "=" not in raw:
+            raise typer.BadParameter(f"--weight 형식: name=value (got {raw!r})")
+        k, v = raw.split("=", 1)
+        out[k.strip()] = float(v)
+    return out
+
+
+@engine_app.command("search")
+def engine_search(
+    ctx: typer.Context,
+    query: str = typer.Argument(..., help="검색 쿼리"),
+    only: str | None = typer.Option(
+        None, "--only", help="실행할 채널 화이트리스트 (콤마 구분)"
+    ),
+    weight: list[str] | None = typer.Option(
+        None, "--weight", help="채널 weight 임시 override (예: --weight body_match=0.5)"
+    ),
+    explain: bool = typer.Option(False, "--explain", help="결과별 채널 raw 점수 표시"),
+    max_results: int = typer.Option(15, "--max", help="결과 cap"),
+):
+    """SearchEngine 직접 호출. 1차 'ipa search'와 다른 ranking을 만듭니다."""
+    from ipa_cli.api.base_channels import Query
+
+    s, channels, engine, notes = _build_engine(ctx)
+
+    if only:
+        keep = {x.strip() for x in only.split(",") if x.strip()}
+        engine.channels = [c for c in engine.channels if c.name in keep]
+        if not engine.channels:
+            raise typer.BadParameter(f"--only={only}: 일치하는 채널 없음")
+
+    weights = s.search.weights or {}
+    weights = {**weights, **_parse_weight_overrides(weight)}
+
+    hits = engine.search(Query(raw=query), weights=weights or None)
+    hits = hits[:max_results]
+
+    console.print(
+        f"[bold]profile[/bold] {s.profile}  "
+        f"[bold]channels[/bold] {len(engine.channels)}  "
+        f"[bold]notes[/bold] {len(notes)}  "
+        f"[bold]hits[/bold] {len(hits)}"
+    )
+    if not hits:
+        console.print("[yellow]no hits[/yellow]")
+        raise typer.Exit(0)
+
+    for h in hits:
+        console.print(f"  [{h.score:.4f}] [cyan]{h.note_id}[/cyan]")
+        if explain and h.explanations:
+            for ch_name, payload in sorted(h.explanations.items()):
+                console.print(
+                    f"      [dim]{ch_name}[/dim] raw={payload.get('raw', 0.0):.4f}"
+                )
 
 
 # ── plugin registry 조회 ──
