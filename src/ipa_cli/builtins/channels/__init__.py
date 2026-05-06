@@ -1,16 +1,18 @@
 """Builtin search channels.
 
-iter1 ports the cheapest channels from 1차 ``unified_search``:
-``keyword`` (token AND match) and ``filename`` (exact/substring/no-space).
-The heavier BM25, jamo trigram, related and project channels arrive in
-later P4 iters so the engine surface can be exercised without dragging
-in their indexing cost.
+iter1 ports keyword + filename match. iter2 adds the BM25-trigram body
+channel and the index/root child propagation channel. Heavier graph
+walks (related, project) and the graded fuzzy fallback ship in iter3.
 """
 
+from ipa_cli.builtins.channels.body_channel import BodyMatchChannel
+from ipa_cli.builtins.channels.child_body_channel import ChildBodyMatchChannel
 from ipa_cli.builtins.channels.filename_channel import FilenameMatchChannel
 from ipa_cli.builtins.channels.keyword_channel import KeywordChannel
 
 __all__ = [
+    "BodyMatchChannel",
+    "ChildBodyMatchChannel",
     "FilenameMatchChannel",
     "KeywordChannel",
 ]

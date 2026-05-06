@@ -19,7 +19,10 @@ from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from ipa_cli.api.mappings import Mapping
+
 if TYPE_CHECKING:
+    from ipa_cli.parse.bm25 import BM25Artifact
     from ipa_cli.parse.note_model import Note
 
 NoteId = str
@@ -50,10 +53,26 @@ class SetupContext:
         notes: list["Note"],
         vault_path: Path,
         cache_dir: Path,
+        mapping: Mapping | None = None,
     ) -> None:
         self.notes = notes
         self.vault_path = vault_path
         self.cache_dir = cache_dir
+        # Vault-aware channels (e.g. ChildBodyMatchChannel reading ref
+        # type) need the mapping to absorb frontmatter key naming.
+        # Default keeps iter1 callers and tests working without changes.
+        self.mapping = mapping if mapping is not None else Mapping()
+
+    @cached_property
+    def bm25_artifact(self) -> "BM25Artifact":
+        """Trigram BM25 index over (note.id + body).
+
+        Built lazily so channels that don't need body matching never pay
+        the indexing cost. Uses ``cache_dir`` for pickle persistence.
+        """
+        from ipa_cli.parse.bm25 import build_bm25
+
+        return build_bm25(self.notes, self.cache_dir)
 
     @cached_property
     def tokens(self) -> dict[NoteId, list[str]]:

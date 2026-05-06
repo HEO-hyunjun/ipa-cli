@@ -4,15 +4,26 @@ Returned by ``runtime.search_loader.load_search_channels`` when a profile
 has no ``search.py``. Users start here and either extend the list in
 their own ``search.py`` or replace it entirely.
 
-iter1 set is intentionally minimal so the engine can be exercised
-without BM25 / jamo trigram dependencies.
+iter2 adds BM25-trigram + child body propagation. The four channels
+together cover most of 1차's signal — graded fuzzy / related / project
+arrive in iter3.
 """
 
 from __future__ import annotations
 
 from ipa_cli.api.base_channels import BaseSearchChannel
-from ipa_cli.builtins.channels import FilenameMatchChannel, KeywordChannel
+from ipa_cli.builtins.channels import (
+    BodyMatchChannel,
+    ChildBodyMatchChannel,
+    FilenameMatchChannel,
+    KeywordChannel,
+)
 
 
 def default_channels() -> list[BaseSearchChannel]:
-    return [KeywordChannel(), FilenameMatchChannel()]
+    return [
+        KeywordChannel(),
+        FilenameMatchChannel(),
+        BodyMatchChannel(),
+        ChildBodyMatchChannel(),
+    ]
