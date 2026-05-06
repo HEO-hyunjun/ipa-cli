@@ -868,26 +868,43 @@ def tune_run(
 
 
 def _apply_best_to_config(settings: Settings, result) -> None:
-    """Write best weights/threshold/cap back to active profile in config.yaml."""
-    cfg_path = settings.config_path
-    data = read_yaml_preserving(cfg_path)
+    """P6: persist tune result as immutable artifact + flip active pointer.
 
-    profiles = data.setdefault("profiles", {})
-    profile = profiles.setdefault(settings.profile, {})
-    search = profile.setdefault("search", {})
-    search["threshold"] = round(result.best_threshold, 4)
-    search["max_results"] = result.best_cap
-    weights = search.setdefault("weights", {})
-    for k, v in result.best_weights.items():
-        weights[k] = round(v, 4)
-
-    if "default_profile" not in data:
-        data["default_profile"] = settings.profile
-
-    write_yaml_preserving(cfg_path, data)
-    console.print(
-        f"[green]applied[/green] best params → {cfg_path}  (profile: {settings.profile})"
+    Saves ``tune/results/{timestamp}.json`` (immutable) and updates
+    ``profiles.<profile>.tune.result_file`` in config.yaml via ruamel
+    round-trip. Past results stay on disk for rollback via ``ipa tune use``.
+    """
+    from ipa_cli.tune import (
+        TuneResult,
+        save_result,
+        timestamp_filename,
+        write_active_result_filename,
     )
+
+    artifact = TuneResult(
+        threshold=round(result.best_threshold, 4),
+        max_results=int(result.best_cap),
+        weights={k: round(float(v), 4) for k, v in result.best_weights.items()},
+        study={
+            "n_trials": int(result.n_trials),
+            "best_loss": float(result.best_loss),
+            "saved_at": _utc_now_iso(),
+        },
+    )
+    fname = timestamp_filename()
+    saved_path = save_result(settings.profile, artifact, filename=fname)
+    write_active_result_filename(settings.profile, fname, settings.config_path)
+
+    console.print(
+        f"[green]applied[/green] tune result → {saved_path}\n"
+        f"  pointer: profiles.{settings.profile}.tune.result_file = {fname}"
+    )
+
+
+def _utc_now_iso() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
 
 
 @tune_app.command("analyze")
@@ -951,6 +968,113 @@ def tune_analyze(
             risky_str,
         )
     console.print(cand)
+
+
+@tune_app.command("eval")
+def tune_eval(
+    ctx: typer.Context,
+    testset_path: Path | None = typer.Option(
+        None, "--testset", help="testset.json 경로 (default: env > project > xdg)"
+    ),
+):
+    """현재 활성 search params로 baseline loss/metrics 측정 (튜닝 안 함)."""
+    s = _settings(ctx)
+    ts, notes, idx = _load_testset_with_notes(s, testset_path)
+    regression = ts.get("cases", [])
+    scenario = [c for c in (ts.get("scenario_cases") or []) if c.get("queries")]
+
+    from ipa_cli.core import vault_search
+
+    base_w = dict(vault_search._CHANNEL_WEIGHTS)
+    merged = dict(base_w)
+    merged.update(s.search.weights)
+    vault_search._CHANNEL_WEIGHTS.update(merged)
+    try:
+        loss, metrics = compute_loss(
+            notes,
+            idx,
+            regression,
+            scenario,
+            s.search.threshold,
+            s.search.max_results,
+        )
+    finally:
+        vault_search._CHANNEL_WEIGHTS.clear()
+        vault_search._CHANNEL_WEIGHTS.update(base_w)
+
+    table = Table(title=f"baseline (loss {loss:.2f})  profile={s.profile}")
+    table.add_column("key", style="cyan")
+    table.add_column("value", style="white")
+    table.add_row("threshold", f"{s.search.threshold:.4f}")
+    table.add_row("max_results", str(s.search.max_results))
+    table.add_row("reg hit", f"{metrics.reg_hit}/{len(regression)}")
+    table.add_row("scn hit", f"{metrics.scn_hit}/{len(scenario)}")
+    table.add_row("avg_rank", f"{metrics.avg_rank:.2f}")
+    console.print(table)
+
+
+@tune_app.command("list")
+def tune_list(ctx: typer.Context):
+    """profile의 tune/results history (newest first, ★ = active)."""
+    from ipa_cli.tune import list_results, read_active_result_filename
+
+    s = _settings(ctx)
+    history = list_results(s.profile)
+    active = read_active_result_filename(s.profile, s.config_path)
+
+    if not history:
+        console.print(
+            f"[dim]no tune results yet for profile '{s.profile}'. "
+            "Run `ipa tune --apply` to create the first one.[/dim]"
+        )
+        return
+
+    table = Table(title=f"tune results ({len(history)})  profile={s.profile}")
+    table.add_column("active", style="green")
+    table.add_column("filename", style="cyan")
+    for name in history:
+        marker = "★" if name == active else ""
+        table.add_row(marker, name)
+    console.print(table)
+    if active and active not in history:
+        console.print(
+            f"[yellow]warning[/yellow] active pointer '{active}' "
+            "doesn't match any file in results dir. "
+            "search will fall back to builtin defaults."
+        )
+
+
+@tune_app.command("use")
+def tune_use(
+    ctx: typer.Context,
+    filename: str = typer.Argument(
+        ..., help="활성화할 result 파일명 (예: 2026-05-06T21-30-00.json)"
+    ),
+):
+    """profile.yaml의 tune.result_file 포인터를 <filename>으로 갱신."""
+    from ipa_cli.tune import (
+        list_results,
+        load_result,
+        write_active_result_filename,
+    )
+
+    s = _settings(ctx)
+    target = filename if filename.endswith(".json") else f"{filename}.json"
+
+    if target not in list_results(s.profile):
+        raise typer.BadParameter(
+            f"'{target}' not found in tune/results for profile '{s.profile}'. "
+            "Use `ipa tune list` to see available files."
+        )
+
+    # Sanity check: ensure the file is loadable JSON.
+    load_result(s.profile, target)
+
+    write_active_result_filename(s.profile, target, s.config_path)
+    console.print(
+        f"[green]switched[/green] active tune result → {target}\n"
+        f"  pointer: profiles.{s.profile}.tune.result_file = {target}"
+    )
 
 
 if __name__ == "__main__":

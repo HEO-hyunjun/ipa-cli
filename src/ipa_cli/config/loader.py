@@ -179,6 +179,12 @@ def load_settings(
 
     sources.update(_apply_env_overrides(merged))
 
+    # P6: profile.tune.result_file points at an immutable JSON under
+    # ``tune/results/`` whose contents override search params (below env,
+    # above yaml). Missing/invalid pointer falls back silently — caller
+    # CLI emits the warning so the loader stays mute.
+    _apply_active_tune_result(active_profile, cfg_path, merged, sources)
+
     if vault is not None:
         merged["vault_path"] = str(vault)
         sources["vault_path"] = "cli"
@@ -208,6 +214,41 @@ def load_settings(
         search=search,
         source_map=sources,
     )
+
+
+def _apply_active_tune_result(
+    profile: str,
+    config_path: Path,
+    merged: dict[str, Any],
+    sources: dict[str, str],
+) -> None:
+    """Read the active tune result JSON (if any) and merge into ``merged``.
+
+    Called from ``load_settings`` between yaml/env overrides and CLI
+    overrides so:
+      yaml < tune_result < env < cli
+    Missing/invalid pointer is silently skipped — the CLI prints the
+    user-facing warning when needed.
+    """
+    # Late import to avoid circular dependency at module import time.
+    from ipa_cli.tune.results import resolve_active_result
+
+    try:
+        result = resolve_active_result(profile, config_path)
+    except Exception:
+        return
+    if result is None:
+        return
+
+    search_section = merged.setdefault("search", {})
+    search_section["threshold"] = result.threshold
+    search_section["max_results"] = result.max_results
+    weights = search_section.setdefault("weights", {})
+    weights.update(result.weights)
+    sources["search.threshold"] = "tune_result"
+    sources["search.max_results"] = "tune_result"
+    for k in result.weights:
+        sources[f"search.weights.{k}"] = "tune_result"
 
 
 def list_profiles(config_path: Path | None = None) -> tuple[list[str], str | None]:

@@ -192,6 +192,74 @@ def test_set_default_profile_round_trip(tmp_path: Path, clean_env: None) -> None
     assert s.profile == "work"
 
 
+def test_active_tune_result_overrides_yaml_search(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clean_env: None
+) -> None:
+    """P6: profile.tune.result_file 포인터의 값이 yaml search params를 덮어쓴다."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+
+    cfg = tmp_path / "xdg" / "ipa" / "config.yaml"
+    _write_yaml(
+        cfg,
+        """
+default_profile: work
+profiles:
+  work:
+    vault_path: /tmp/work-vault
+    search:
+      threshold: 0.99
+    tune:
+      result_file: 2026-05-06T21-30-00.json
+""",
+    )
+
+    # Drop the pointed-at result file under the profile's tune/results dir.
+    from ipa_cli.tune import TuneResult, save_result
+
+    save_result(
+        "work",
+        TuneResult(
+            threshold=0.31,
+            max_results=8,
+            weights={"fuzzy": 0.18, "body_match": 0.30},
+            study={"n_trials": 1000, "best_loss": 14.2},
+        ),
+        filename="2026-05-06T21-30-00.json",
+    )
+
+    s = load_settings(config_path=cfg, dotenv_path=tmp_path / ".env")
+    assert s.search.threshold == 0.31  # tune_result wins over yaml's 0.99
+    assert s.search.max_results == 8
+    assert s.search.weights["fuzzy"] == 0.18
+    assert s.search.weights["body_match"] == 0.30
+    assert s.source_map["search.threshold"] == "tune_result"
+
+
+def test_active_tune_result_missing_file_falls_back_to_yaml(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clean_env: None
+) -> None:
+    """포인터는 있는데 파일이 사라진 경우: yaml로 fallback (crash 안 함)."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+
+    cfg = tmp_path / "xdg" / "ipa" / "config.yaml"
+    _write_yaml(
+        cfg,
+        """
+default_profile: work
+profiles:
+  work:
+    search:
+      threshold: 0.42
+    tune:
+      result_file: never-existed.json
+""",
+    )
+
+    s = load_settings(config_path=cfg, dotenv_path=tmp_path / ".env")
+    # Pointer-but-no-file → yaml value sticks, no exception.
+    assert s.search.threshold == 0.42
+
+
 def test_set_default_profile_preserves_comments(
     tmp_path: Path, clean_env: None
 ) -> None:
