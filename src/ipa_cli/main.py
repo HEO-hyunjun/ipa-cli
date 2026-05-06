@@ -28,6 +28,7 @@ from ipa_cli.core import (
     vault_traversal,
     vault_validator,
 )
+from ipa_cli.plugins import get_channels, get_refactors, get_rules
 
 app = typer.Typer(
     name="ipa",
@@ -276,6 +277,56 @@ def profile_use(ctx: typer.Context, name: str = typer.Argument(...)):
     s = _settings(ctx)
     set_default_profile(name, s.config_path)
     console.print(f"default profile → [cyan]{name}[/cyan] ({s.config_path})")
+
+
+# ── plugin registry 조회 ──
+
+
+@app.command("list-channels")
+def list_channels(ctx: typer.Context):
+    """등록된 search 채널 목록 (빌트인 + 향후 외부 plugin)."""
+    s = _settings(ctx)
+    channels = get_channels()
+    table = Table(title=f"search channels ({len(channels)} registered)")
+    table.add_column("name", style="cyan")
+    table.add_column("weight", style="magenta", justify="right")
+    table.add_column("active", style="green", justify="right")
+    table.add_column("description", style="white")
+    for name, ch in channels.items():
+        active = s.search.weights.get(name, 0.0)
+        table.add_row(
+            name,
+            f"{ch.weight:.4f}" if ch.weight is not None else "—",
+            f"{active:.4f}",
+            ch.description,
+        )
+    console.print(table)
+
+
+@app.command("list-rules")
+def list_rules():
+    """등록된 validator 룰 목록."""
+    rules = get_rules()
+    table = Table(title=f"validator rules ({len(rules)} registered)")
+    table.add_column("id", style="cyan")
+    table.add_column("category", style="magenta")
+    table.add_column("description", style="white")
+    for rid in sorted(rules):
+        r = rules[rid]
+        table.add_row(r.id, r.category, r.description)
+    console.print(table)
+
+
+@app.command("list-refactors")
+def list_refactors():
+    """등록된 refactor 커맨드 목록."""
+    refs = get_refactors()
+    table = Table(title=f"refactor commands ({len(refs)} registered)")
+    table.add_column("name", style="cyan")
+    table.add_column("description", style="white")
+    for name, cmd in refs.items():
+        table.add_row(name, cmd.description)
+    console.print(table)
 
 
 # ── 후속 stub ──
