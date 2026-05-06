@@ -1,15 +1,16 @@
 """ipa CLI entrypoint.
 
-S1: Typer scaffold + subprocess passthrough to existing _shared/scripts/*.
+S1: Typer scaffold + subprocess passthrough to _shared/scripts/*.
 S2: --profile/--vault global options, ipa config show, ipa profile list/use/current.
-S3+: replace passthrough with owned modules; add tune/plugin loading.
+S3: subprocess 제거. core 모듈을 직접 호출 (argv injection).
+S4+: plugin loading, tune.
 """
 
 from __future__ import annotations
 
-import os
-import subprocess
+import sys
 from pathlib import Path
+from types import ModuleType
 
 import typer
 from rich.console import Console
@@ -20,6 +21,12 @@ from ipa_cli.config import (
     list_profiles,
     load_settings,
     set_default_profile,
+)
+from ipa_cli.core import (
+    vault_refactor,
+    vault_search,
+    vault_traversal,
+    vault_validator,
 )
 
 app = typer.Typer(
@@ -56,32 +63,43 @@ def _settings(ctx: typer.Context) -> Settings:
     return ctx.obj
 
 
-def _resolve_scripts_dir() -> Path:
-    """Locate _shared/scripts (S1 passthrough target)."""
-    if (env_dir := os.environ.get("IPA_SCRIPTS_DIR")) and Path(env_dir).is_dir():
-        return Path(env_dir)
-    symlink = Path.home() / "ipa" / ".claude" / "skills" / "_shared" / "scripts"
-    if symlink.is_dir():
-        return symlink
-    if vault := os.environ.get("IPA_VAULT_PATH"):
-        candidate = Path(vault) / ".claude" / "skills" / "_shared" / "scripts"
-        if candidate.is_dir():
-            return candidate
-    raise typer.BadParameter(
-        "Could not locate _shared/scripts. Set IPA_SCRIPTS_DIR or IPA_VAULT_PATH, "
-        "or create ~/ipa symlink to your vault."
-    )
+def _call_module(module: ModuleType, args: list[str], settings: Settings) -> int:
+    """Invoke a core module's main() with synthetic argv. Returns exit code.
+
+    The legacy scripts use argparse and sys.exit; we splice argv, swallow
+    SystemExit, and inject the active vault path when not already specified.
+    Cache directory is exported as IPA_CACHE_DIR so notes_cache writes
+    under the active profile (avoids pickle collision with the legacy
+    `~/.cache/vault_search/notes_meta.pkl` file).
+    """
+    import os as _os
+
+    new_argv = [module.__name__] + list(args)
+    # Only inject --vault when there's at least one user-supplied arg —
+    # vault_refactor uses subparsers without a root --vault flag, so
+    # injecting on an empty argv would mis-parse the path as a subcommand.
+    if args and settings.vault_path != Path() and "--vault" not in args:
+        new_argv += ["--vault", str(settings.vault_path)]
+    old_argv = sys.argv
+    old_cache_env = _os.environ.get("IPA_CACHE_DIR")
+    sys.argv = new_argv
+    _os.environ["IPA_CACHE_DIR"] = str(settings.cache_dir)
+    try:
+        module.main()
+        return 0
+    except SystemExit as e:
+        if e.code is None:
+            return 0
+        return int(e.code) if isinstance(e.code, int) else 1
+    finally:
+        sys.argv = old_argv
+        if old_cache_env is None:
+            _os.environ.pop("IPA_CACHE_DIR", None)
+        else:
+            _os.environ["IPA_CACHE_DIR"] = old_cache_env
 
 
-def _passthrough(script: str, args: list[str], settings: Settings) -> int:
-    scripts_dir = _resolve_scripts_dir()
-    cmd = ["python3", str(scripts_dir / script), *args]
-    if settings.vault_path != Path() and "--vault" not in args:
-        cmd += ["--vault", str(settings.vault_path)]
-    return subprocess.call(cmd)
-
-
-# ── 기존 스크립트 passthrough ──
+# ── core 모듈 직접 호출 ──
 
 
 @app.command()
@@ -97,7 +115,7 @@ def search(
     show_all: bool = typer.Option(False, "--all", help="threshold/cap 무시"),
     reasons: bool = typer.Option(False, "--reasons", help="채널별 매칭 사유 표시"),
 ):
-    """통합 검색. (S1: vault_search.py passthrough)"""
+    """통합 검색."""
     if not query:
         raise typer.BadParameter("검색 쿼리를 1개 이상 지정해주세요")
     s = _settings(ctx)
@@ -111,7 +129,7 @@ def search(
         args.append("--all")
     if reasons:
         args.append("--reasons")
-    raise typer.Exit(_passthrough("vault_search.py", args, s))
+    raise typer.Exit(_call_module(vault_search, args, s))
 
 
 @app.command()
@@ -121,13 +139,13 @@ def view(
     section: str | None = typer.Option(None, "--section", help="특정 섹션만"),
     full: bool = typer.Option(False, "--full", help="전체 본문"),
 ):
-    """노트 보기. (S1: vault_search.py --view passthrough)"""
+    """노트 보기."""
     args = ["--view", note]
     if section:
         args += ["--section", section]
     if full:
         args.append("--full")
-    raise typer.Exit(_passthrough("vault_search.py", args, _settings(ctx)))
+    raise typer.Exit(_call_module(vault_search, args, _settings(ctx)))
 
 
 @app.command()
@@ -138,7 +156,7 @@ def traversal(
     siblings: str | None = typer.Option(None, "--siblings", help="형제 노트"),
     root: str | None = typer.Option(None, "--root", help="소속 root"),
 ):
-    """계층 탐색. (S1: vault_traversal.py passthrough)"""
+    """계층 탐색."""
     args: list[str] = []
     for flag, val in [
         ("--up", up),
@@ -150,7 +168,7 @@ def traversal(
             args += [flag, val]
     if not args:
         raise typer.BadParameter("--up/--down/--siblings/--root 중 하나를 지정해주세요")
-    raise typer.Exit(_passthrough("vault_traversal.py", args, _settings(ctx)))
+    raise typer.Exit(_call_module(vault_traversal, args, _settings(ctx)))
 
 
 @app.command()
@@ -162,7 +180,7 @@ def validator(
     fix: bool = typer.Option(False, "--fix", help="자동 수정"),
     dry_run: bool = typer.Option(False, "--dry-run", help="수정 미리보기"),
 ):
-    """vault 구조 검증. (S1: vault_validator.py passthrough)"""
+    """vault 구조 검증."""
     args: list[str] = []
     if note:
         args += ["--note", note]
@@ -174,15 +192,15 @@ def validator(
         args.append("--fix")
     if dry_run:
         args.append("--dry-run")
-    raise typer.Exit(_passthrough("vault_validator.py", args, _settings(ctx)))
+    raise typer.Exit(_call_module(vault_validator, args, _settings(ctx)))
 
 
 @app.command(
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True}
 )
 def refactor(ctx: typer.Context):
-    """vault 일괄 수정. (S1: vault_refactor.py passthrough — 모든 인자 전달)"""
-    raise typer.Exit(_passthrough("vault_refactor.py", list(ctx.args), _settings(ctx)))
+    """vault 일괄 수정 (모든 인자를 vault_refactor에 그대로 전달)."""
+    raise typer.Exit(_call_module(vault_refactor, list(ctx.args), _settings(ctx)))
 
 
 # ── config / profile ──
