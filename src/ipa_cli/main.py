@@ -49,9 +49,13 @@ profile_app = typer.Typer(help="프로필 관리.", no_args_is_help=True)
 convention_app = typer.Typer(
     help="2차 convention runtime 명령 (P3+).", no_args_is_help=True
 )
+formatter_app = typer.Typer(
+    help="2차 formatter runtime 명령 (P3b+).", no_args_is_help=True
+)
 app.add_typer(config_app, name="config")
 app.add_typer(profile_app, name="profile")
 app.add_typer(convention_app, name="convention")
+app.add_typer(formatter_app, name="formatter")
 
 console = Console()
 
@@ -407,6 +411,154 @@ def convention_check(
 
     has_error = any(i.severity == Severity.ERROR for i in issues)
     raise typer.Exit(1 if has_error else 0)
+
+
+# ── 2차 formatter runtime (P3b) ──
+
+
+def _resolve_formatter_inputs(
+    ctx: typer.Context,
+    *,
+    scope: str,
+    folder: Path | None,
+    all_: bool,
+    note: str | None,
+):
+    """Shared loader: settings, mapping, convention, notes, validator issues."""
+    from ipa_cli.parse.vault_loader import load_notes
+    from ipa_cli.runtime.convention_loader import load_convention
+    from ipa_cli.runtime.mapping_loader import load_mapping
+    from ipa_cli.runtime.profile_loader import profile_workspace_dir
+    from ipa_cli.runtime.validator_engine import run_validator
+
+    if all_:
+        scope = "vault"
+    if scope not in {"note", "folder", "vault"}:
+        raise typer.BadParameter(f"--scope must be note|folder|vault, got {scope!r}")
+    if scope == "folder" and folder is None:
+        raise typer.BadParameter("--scope folder는 --folder PATH 가 필요합니다")
+
+    s = _settings(ctx)
+    if s.vault_path == Path():
+        console.print(
+            "[red]vault_path 미설정. config.yaml 또는 IPA_VAULT_PATH로 지정하세요.[/red]"
+        )
+        raise typer.Exit(2)
+
+    workspace = profile_workspace_dir(s.profile)
+    workspace_arg = workspace if workspace.is_dir() else None
+    mapping = load_mapping(workspace_arg)
+    convention = load_convention(workspace_arg)
+    notes = load_notes(s.vault_path, mapping)
+
+    folder_resolved: Path | None = None
+    if folder is not None:
+        folder_resolved = (
+            folder if folder.is_absolute() else (s.vault_path / folder)
+        ).resolve()
+
+    issues = run_validator(
+        notes,
+        mapping,
+        convention,
+        vault_path=s.vault_path,
+        scope=scope,  # type: ignore[arg-type]
+        folder=folder_resolved,
+        target_note_id=note,
+    )
+    return s, mapping, convention, notes, issues
+
+
+@formatter_app.command("plan")
+def formatter_plan(
+    ctx: typer.Context,
+    note: str | None = typer.Option(None, "--note", help="단일 노트 ID 검사"),
+    scope: str = typer.Option("note", "--scope", help="note | folder | vault"),
+    folder: Path | None = typer.Option(None, "--folder", help="--scope folder 시 대상"),
+    all_: bool = typer.Option(False, "--all", help="--scope vault 별칭"),
+    summary: bool = typer.Option(False, "--summary", help="개수 요약"),
+):
+    """변경 계획 미리보기 (적용 안 함). conflict는 plan 단계에서 보고."""
+    from ipa_cli.runtime.formatter_engine import plan as run_plan
+
+    s, mapping, convention, notes, issues = _resolve_formatter_inputs(
+        ctx, scope=scope, folder=folder, all_=all_, note=note
+    )
+    plan_result = run_plan(issues, convention, mapping, notes, s.vault_path)
+    _render_plan(plan_result, summary=summary, header_extra=f"profile {s.profile}")
+
+
+@formatter_app.command("apply")
+def formatter_apply(
+    ctx: typer.Context,
+    note: str | None = typer.Option(None, "--note", help="단일 노트 ID 적용"),
+    scope: str = typer.Option("note", "--scope", help="note | folder | vault"),
+    folder: Path | None = typer.Option(None, "--folder", help="--scope folder 시 대상"),
+    all_: bool = typer.Option(False, "--all", help="--scope vault 별칭"),
+    summary: bool = typer.Option(False, "--summary", help="개수 요약"),
+):
+    """변경을 디스크에 적용. conflict patch는 자동 제외 (먼저 plan 보세요)."""
+    from ipa_cli.runtime.formatter_engine import apply as run_apply
+    from ipa_cli.runtime.formatter_engine import plan as run_plan
+
+    s, mapping, convention, notes, issues = _resolve_formatter_inputs(
+        ctx, scope=scope, folder=folder, all_=all_, note=note
+    )
+    plan_result = run_plan(issues, convention, mapping, notes, s.vault_path)
+    if plan_result.total_patches == 0 and plan_result.total_conflicts == 0:
+        console.print("[green]no patches to apply[/green]")
+        raise typer.Exit(0)
+
+    _render_plan(plan_result, summary=summary, header_extra=f"apply on {s.profile}")
+    apply_result = run_apply(plan_result)
+
+    console.print(
+        f"\n[bold]applied[/bold] {len(apply_result.updated_notes)} note(s); "
+        f"errors {len(apply_result.errors)}"
+    )
+    for note_id, msg in apply_result.errors:
+        console.print(f"  [red]error[/red] {note_id}: {msg}")
+    raise typer.Exit(1 if apply_result.errors else 0)
+
+
+def _render_plan(plan_result, *, summary: bool, header_extra: str) -> None:
+    console.print(
+        f"[bold]{header_extra}[/bold]  "
+        f"[bold]patches[/bold] {plan_result.total_patches}  "
+        f"[bold]conflicts[/bold] {plan_result.total_conflicts}  "
+        f"[bold]notes[/bold] {len(plan_result.plans_by_note)}"
+    )
+
+    if summary:
+        if plan_result.total_patches == 0 and plan_result.total_conflicts == 0:
+            console.print("[green]no changes planned[/green]")
+            return
+        table = Table(title="patch summary by note")
+        table.add_column("note", style="cyan")
+        table.add_column("patches", justify="right")
+        table.add_column("conflicts", justify="right", style="red")
+        for np in plan_result.plans_by_note.values():
+            table.add_row(np.note_id, str(len(np.patches)), str(len(np.conflicts)))
+        console.print(table)
+        return
+
+    if not plan_result.plans_by_note:
+        console.print("[green]no changes planned[/green]")
+        return
+
+    for np in plan_result.plans_by_note.values():
+        console.print(f"\n[cyan]{np.note_id}[/cyan]  ({np.path})")
+        for patch in np.patches:
+            span = patch.span
+            console.print(
+                f"  [green]+[/green] L{span.start_line}:{span.start_col}-{span.end_col}  "
+                f"→ {patch.replacement!r}"
+            )
+        for a, b in np.conflicts:
+            console.print(
+                f"  [red]conflict[/red] L{a.span.start_line} "
+                f"({a.replacement!r} ⨯ {b.replacement!r})"
+            )
 
 
 # ── plugin registry 조회 ──

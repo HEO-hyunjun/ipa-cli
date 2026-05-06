@@ -11,10 +11,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, ClassVar
 
-from ipa_cli.api.base_rules import BaseConventionRule, Issue, Severity, Span
+from ipa_cli.api.base_rules import BaseConventionRule, Issue, Patch, Severity, Span
 
 if TYPE_CHECKING:
-    from ipa_cli.api.context import ValidationContext
+    from ipa_cli.api.context import FormatContext, ValidationContext
     from ipa_cli.parse.note_model import Note
 
 
@@ -45,3 +45,27 @@ class NoH1Rule(BaseConventionRule):
                     )
                 )
         return issues
+
+    def fix(self, ctx: "FormatContext", issue: Issue) -> list[Patch] | None:
+        if issue.span is None:
+            return None
+        note = next((n for n in ctx.notes if n.id == issue.note_id), None)
+        if note is None:
+            return None
+        body_lines = note.body.splitlines()
+        line_idx = issue.span.start_line - 1
+        if line_idx < 0 or line_idx >= len(body_lines):
+            return None
+        line = body_lines[line_idx]
+        if not line.startswith("# ") or line.startswith("## "):
+            return None
+        new_line = "## " + line[2:]
+        return [
+            Patch(
+                note_id=issue.note_id,
+                span=Span(
+                    issue.span.start_line, 1, issue.span.start_line, len(line) + 1
+                ),
+                replacement=new_line,
+            )
+        ]

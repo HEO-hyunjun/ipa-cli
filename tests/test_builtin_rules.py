@@ -11,7 +11,15 @@ from pathlib import Path
 
 import pytest
 
-from ipa_cli.api import Convention, Mapping, Severity, ValidationContext
+from ipa_cli.api import (
+    Convention,
+    FormatContext,
+    Issue,
+    Mapping,
+    Severity,
+    Span,
+    ValidationContext,
+)
 from ipa_cli.builtins.conventions.default_convention import default_convention
 from ipa_cli.builtins.conventions.rules import (
     FrontmatterRequiredFieldsRule,
@@ -147,6 +155,55 @@ def test_no_h1_handles_tilde_fence(tmp_path: Path) -> None:
     issues = rule.check(_ctx(tmp_path, Mapping()), note)
     assert len(issues) == 1
     assert issues[0].span.start_line == 4
+
+
+# --- NoH1Rule.fix --------------------------------------------------------
+
+
+def _format_ctx(vault: Path, mapping: Mapping, notes: list[Note]) -> FormatContext:
+    return FormatContext(vault_path=vault, notes=notes, mapping=mapping)
+
+
+def test_no_h1_fix_returns_h2_patch(tmp_path: Path) -> None:
+    rule = NoH1Rule()
+    note = Note(
+        id="x",
+        path=tmp_path / "x.md",
+        body="# Heading\nbody",
+        frontmatter={},
+    )
+    issues = rule.check(_ctx(tmp_path, Mapping()), note)
+    assert len(issues) == 1
+    patches = rule.fix(_format_ctx(tmp_path, Mapping(), [note]), issues[0])
+    assert patches is not None
+    assert len(patches) == 1
+    assert patches[0].replacement == "## Heading"
+    assert patches[0].span.start_line == 1
+
+
+def test_no_h1_fix_returns_none_when_span_missing(tmp_path: Path) -> None:
+    rule = NoH1Rule()
+    note = Note(id="x", path=tmp_path / "x.md", body="# H", frontmatter={})
+    bogus = Issue(
+        code=rule.code,
+        severity=rule.severity,
+        note_id=note.id,
+        message="x",
+        span=None,
+    )
+    assert rule.fix(_format_ctx(tmp_path, Mapping(), [note]), bogus) is None
+
+
+def test_no_h1_fix_returns_none_when_note_missing(tmp_path: Path) -> None:
+    rule = NoH1Rule()
+    issue = Issue(
+        code=rule.code,
+        severity=rule.severity,
+        note_id="ghost",
+        message="x",
+        span=Span(1, 1, 1, 4),
+    )
+    assert rule.fix(_format_ctx(tmp_path, Mapping(), []), issue) is None
 
 
 # --- ipa-test-vault integration ------------------------------------------
