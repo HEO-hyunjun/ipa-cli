@@ -29,6 +29,12 @@ from ipa_cli.core import (
     vault_validator,
 )
 from ipa_cli.plugins import get_channels, get_refactors, get_rules
+from ipa_cli.tune import (
+    analyze_threshold,
+    filter_excluded,
+    load_testset,
+    run_study,
+)
 
 app = typer.Typer(
     name="ipa",
@@ -332,11 +338,226 @@ def list_refactors():
 # ── 후속 stub ──
 
 
-@app.command()
-def tune():
-    """Optuna search weight 튜닝. (S5 예정)"""
-    typer.echo("ipa tune — S5에서 구현 예정", err=True)
-    raise typer.Exit(2)
+tune_app = typer.Typer(
+    help="Optuna 튜닝 (weight + threshold + cap) 및 분포 진단.",
+    invoke_without_command=True,
+    no_args_is_help=False,
+)
+app.add_typer(tune_app, name="tune")
+
+
+def _parse_fixed(items: list[str] | None) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for raw in items or []:
+        if "=" not in raw:
+            raise typer.BadParameter(f"--fix 형식: name=value (got '{raw}')")
+        k, v = raw.split("=", 1)
+        out[k.strip()] = float(v)
+    return out
+
+
+def _parse_only(value: str | None) -> list[str] | None:
+    if not value:
+        return None
+    return [s.strip() for s in value.split(",") if s.strip()]
+
+
+def _load_testset_with_notes(s: Settings, testset_path: Path | None):
+    """Common boilerplate for tune commands."""
+    from ipa_cli.core.vault_parser import build_note_index, scan_vault
+
+    if s.vault_path == Path():
+        raise typer.BadParameter(
+            "vault_path 미설정. config.yaml 또는 IPA_VAULT_PATH로 지정하세요."
+        )
+    ts = load_testset(testset_path)
+    notes = scan_vault(s.vault_path)
+    notes = filter_excluded(notes, ts.get("exclude_filenames"))
+    idx = build_note_index(notes)
+    return ts, notes, idx
+
+
+@tune_app.callback(invoke_without_command=True)
+def tune_run(
+    ctx: typer.Context,
+    trials: int = typer.Option(200, "--trials", "-n", help="Optuna trial 수"),
+    apply_best: bool = typer.Option(
+        False, "--apply", help="best weights를 활성 profile config.yaml에 write-back"
+    ),
+    fix: list[str] = typer.Option(
+        None, "--fix", help="채널 weight 고정 (예: --fix body_match=0.30)"
+    ),
+    only: str | None = typer.Option(
+        None, "--only", help="튜닝할 채널 화이트리스트 (콤마 구분)"
+    ),
+    tune_threshold: bool = typer.Option(
+        True,
+        "--tune-threshold/--no-tune-threshold",
+        help="threshold도 튜닝 (default: ON)",
+    ),
+    tune_cap: bool = typer.Option(
+        True, "--tune-cap/--no-tune-cap", help="cap (max_results)도 튜닝 (default: ON)"
+    ),
+    testset_path: Path | None = typer.Option(
+        None, "--testset", help="testset.json 경로 (default: env > project > xdg)"
+    ),
+    no_persist: bool = typer.Option(
+        False, "--no-persist", help="study sqlite 영속화 끄고 in-memory만"
+    ),
+):
+    """채널 weight + threshold + cap을 동시 튜닝하는 TPE study."""
+    if ctx.invoked_subcommand is not None:
+        return  # subcommand가 직접 처리
+
+    s = _settings(ctx)
+    ts, notes, idx = _load_testset_with_notes(s, testset_path)
+    regression = ts.get("cases", [])
+    scenario = [c for c in (ts.get("scenario_cases") or []) if c.get("queries")]
+
+    console.print(
+        f"[bold]vault[/bold] {s.vault_path}  "
+        f"[bold]notes[/bold] {len(notes)}  "
+        f"[bold]regression[/bold] {len(regression)}  "
+        f"[bold]scenario[/bold] {len(scenario)}"
+    )
+
+    fixed_weights = _parse_fixed(fix)
+    only_keys = _parse_only(only)
+    study_dir = None if no_persist else s.cache_dir
+
+    def _on_trial(i: int, loss: float, best: float) -> None:
+        if loss <= best:  # only print when we improve or equal
+            console.print(f"  trial {i:4d}  loss={loss:8.2f}  ★ best={best:.2f}")
+
+    result = run_study(
+        notes,
+        idx,
+        regression,
+        scenario,
+        n_trials=trials,
+        tune_threshold=tune_threshold,
+        tune_cap=tune_cap,
+        fixed_weights=fixed_weights,
+        only_keys=only_keys,
+        fixed_threshold=s.search.threshold,
+        fixed_cap=s.search.max_results,
+        study_dir=study_dir,
+        on_trial=_on_trial,
+    )
+
+    table = Table(
+        title=f"BEST after {result.n_trials} trials  (loss {result.best_loss:.2f})"
+    )
+    table.add_column("key", style="cyan")
+    table.add_column("value", style="white")
+    table.add_row("threshold", f"{result.best_threshold:.4f}")
+    table.add_row("cap", str(result.best_cap))
+    for k, v in result.best_weights.items():
+        table.add_row(f"weights.{k}", f"{v:.4f}")
+    table.add_row("reg hit", f"{result.best_metrics.reg_hit}/{len(regression)}")
+    table.add_row("scn hit", f"{result.best_metrics.scn_hit}/{len(scenario)}")
+    table.add_row("avg_rank", f"{result.best_metrics.avg_rank:.2f}")
+    console.print(table)
+    console.print(f"[dim]storage: {result.storage_url}[/dim]")
+
+    if apply_best:
+        _apply_best_to_config(s, result)
+
+
+def _apply_best_to_config(settings: Settings, result) -> None:
+    """Write best weights/threshold/cap back to active profile in config.yaml."""
+    from ruamel.yaml import YAML
+
+    yaml = YAML()
+    yaml.preserve_quotes = True
+    cfg_path = settings.config_path
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    if cfg_path.is_file():
+        with cfg_path.open("r", encoding="utf-8") as f:
+            data = yaml.load(f) or {}
+    else:
+        data = {}
+
+    profiles = data.setdefault("profiles", {})
+    profile = profiles.setdefault(settings.profile, {})
+    search = profile.setdefault("search", {})
+    search["threshold"] = round(result.best_threshold, 4)
+    search["max_results"] = result.best_cap
+    weights = search.setdefault("weights", {})
+    for k, v in result.best_weights.items():
+        weights[k] = round(v, 4)
+
+    if "default_profile" not in data:
+        data["default_profile"] = settings.profile
+
+    with cfg_path.open("w", encoding="utf-8") as f:
+        yaml.dump(data, f)
+    console.print(
+        f"[green]applied[/green] best params → {cfg_path}  (profile: {settings.profile})"
+    )
+
+
+@tune_app.command("analyze")
+def tune_analyze(
+    ctx: typer.Context,
+    testset_path: Path | None = typer.Option(
+        None, "--testset", help="testset.json 경로"
+    ),
+    top_n: int = typer.Option(10, "--top", help="각 케이스의 score 수집 깊이"),
+):
+    """Threshold 분포 분석 (정답·noise 점수 percentile + X 후보 시뮬)."""
+    s = _settings(ctx)
+    ts, notes, idx = _load_testset_with_notes(s, testset_path)
+    result = analyze_threshold(notes, idx, ts, top_n=top_n)
+
+    console.print(
+        f"[bold]cases[/bold] {result.n_cases}  "
+        f"[bold]hit[/bold] {result.n_hit_cases}  "
+        f"[bold]miss[/bold] {result.n_miss_cases}"
+    )
+
+    def _dist_table(title: str, dist) -> Table | None:
+        if dist is None:
+            return None
+        t = Table(title=title)
+        t.add_column("stat", style="cyan")
+        t.add_column("score", style="white", justify="right")
+        for label, value in [
+            ("count", dist.count),
+            ("min", f"{dist.minimum:.3f}"),
+            ("P05", f"{dist.p05:.3f}"),
+            ("P25", f"{dist.p25:.3f}"),
+            ("median", f"{dist.median:.3f}"),
+            ("P75", f"{dist.p75:.3f}"),
+            ("P95", f"{dist.p95:.3f}"),
+            ("max", f"{dist.maximum:.3f}"),
+        ]:
+            t.add_row(label, str(value))
+        return t
+
+    if t := _dist_table("정답 점수 (살려야 할 score)", result.correct_dist):
+        console.print(t)
+    if t := _dist_table("Noise 점수 (자르고 싶은 score)", result.noise_dist):
+        console.print(t)
+
+    cand = Table(title="X 후보별 시뮬레이션")
+    cand.add_column("X", justify="right", style="cyan")
+    cand.add_column("cut hit", justify="right", style="red")
+    cand.add_column("cut noise", justify="right", style="green")
+    cand.add_column("avg pass", justify="right")
+    cand.add_column("risky ids (≤5)", style="dim")
+    for row in result.candidates:
+        risky_str = " ".join(row.risky_ids[:5]) + (
+            "..." if len(row.risky_ids) > 5 else ""
+        )
+        cand.add_row(
+            f"{row.x:.2f}",
+            str(row.cut_hit),
+            str(row.cut_noise),
+            f"{row.avg_after:.2f}",
+            risky_str,
+        )
+    console.print(cand)
 
 
 if __name__ == "__main__":

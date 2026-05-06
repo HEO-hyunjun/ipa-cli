@@ -1,0 +1,41 @@
+{
+  "version": "v1",
+  "description": "Schema example for ipa tune. Replace with your own cases referencing real notes in your vault. Path is configurable via --testset or config.yaml [tune.testset_path].",
+  "exclude_filenames": [
+    "evaluation_artifact_note"
+  ],
+  "exclude_reason": "Notes that contain testset query keywords by construction (e.g. evaluation reports) should be excluded so they cannot trivially match.",
+  "metric": {
+    "hit": "target_filename appears in vault_search top-cap results AND its score >= threshold",
+    "rank": "1-based position within the (threshold-filtered, capped) result list",
+    "loss": "regression_miss * 100 + scenario_miss * 50 + avg_rank"
+  },
+  "cases": [
+    {
+      "id": "EX_REG_1",
+      "queries": ["example regression query 1"],
+      "target_filename": "Some Note Title",
+      "baseline_rank": 3,
+      "comment": "regression case: a single query → a single target. miss = target not in top-cap or below threshold."
+    },
+    {
+      "id": "EX_REG_2",
+      "queries": ["another keyword", "second variant"],
+      "target_filename": "Another Note",
+      "baseline_rank": 1,
+      "comment": "Multiple queries OR'd together. baseline_rank documents the score the current weights produce."
+    }
+  ],
+  "scenario_cases": [
+    {
+      "id": "EX_SCN_1",
+      "category": "fragment_recall",
+      "user_utterance": "free-form natural-language query a user might actually type",
+      "queries": ["fragment", "recall"],
+      "target_filenames": ["Note A", "Note B"],
+      "recall_mode": "top10",
+      "recall_threshold": 1,
+      "comment": "scenario case: multiple acceptable targets; recall_threshold=1 means hit if at least 1 target is in top10."
+    }
+  ]
+}
