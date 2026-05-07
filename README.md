@@ -168,17 +168,30 @@ directly — **it does not invoke `ipa`**. The two codebases evolved from
 the same scripts but are now independent copies.
 
 The legacy `ipa search` / `view` / `traversal` / `validator` / `refactor`
-commands now run on the same service layer as `engine` / `convention` /
-`formatter`. The synthetic-argv adapter is gone — each command routes
-through a dedicated `runtime/*` module (`runtime/view.py`,
-`runtime/traversal.py`, `runtime/legacy_validator_view.py`,
-`runtime/search.py`, `runtime/refactor.py`). The 1차↔2차 rule-code map
-is in [`docs/legacy-validator-rule-map.md`](docs/legacy-validator-rule-map.md);
-the refactor subcommand matrix lives in
+commands now route through dedicated `runtime/*` entrypoints instead of
+the old synthetic-argv adapter. How much of each command is
+re-implemented on the new service layer vs. delegated to the parity
+oracle differs:
+
+| Command            | Routing                              | Internal logic                                                         |
+|--------------------|--------------------------------------|------------------------------------------------------------------------|
+| `list-channels`    | `main.py` → `default_channels()`     | New service (no `_legacy` calls).                                      |
+| `list-rules`       | `main.py` → `default_convention()`   | New service.                                                           |
+| `list-refactors`   | `main.py` → `BUILTIN_REFACTORS`      | New service.                                                           |
+| `view`             | `runtime/view.py`                    | Calls `_legacy.vault_search` render helpers — port to `parse/Note` is a follow-up. |
+| `traversal`        | `runtime/traversal.py`               | New service: `parse.vault_loader.load_notes` + `Note.refs/wikilinks`.  |
+| `validator`        | `runtime/legacy_validator_view.py`   | New service: `validator_engine` + `formatter_engine` with 1차 code projection. |
+| `search`           | `runtime/search.py`                  | New service: `SearchEngine` + multi-query summation.                   |
+| `refactor`         | `runtime/refactor.py`                | Argparse dispatcher delegating to `_legacy.vault_refactor.cmd_*` — port to `formatter_engine` is a follow-up. |
+
+The 1차↔2차 rule-code map is in
+[`docs/legacy-validator-rule-map.md`](docs/legacy-validator-rule-map.md);
+the refactor subcommand migration matrix is in
 [`docs/legacy-refactor-subcommands.md`](docs/legacy-refactor-subcommands.md).
-The original script algorithms remain available under the internal
-`ipa_cli._legacy` package as a parity oracle for tests; the public
-`ipa_cli.core` surface no longer exists.
+The original script algorithms live under the internal
+`ipa_cli._legacy` package — the public `ipa_cli.core` surface no longer
+exists, but `_legacy` is still load-bearing for `view` and `refactor`
+plus every characterization test that compares against the 1차 oracle.
 
 ## Layout
 
