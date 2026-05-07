@@ -784,6 +784,46 @@ def _filter_excluded(notes: list, exclude_filenames: list[str] | None) -> list:
     return [n for n in notes if n.id not in excl]
 
 
+def _study_fingerprint(
+    *,
+    regression_cases: list[dict],
+    scenario_cases: list[dict],
+    channel_names: list[str],
+    only_keys: list[str] | None,
+    fixed_weights: dict[str, float],
+    tune_threshold: bool,
+    tune_cap: bool,
+    fixed_threshold: float,
+    fixed_cap: int,
+) -> str:
+    """testset/채널/옵션 기반 12자리 fingerprint.
+
+    동일 fingerprint면 sqlite study가 resume되고 다르면 별도 sub-dir에
+    새 study가 만들어진다. 이전 testset의 best trial이 다른 testset의
+    best로 누수되는 것을 막는다.
+    """
+    import hashlib
+    import json
+
+    payload = {
+        "reg": sorted(
+            json.dumps(c, sort_keys=True, default=str) for c in regression_cases
+        ),
+        "scn": sorted(
+            json.dumps(c, sort_keys=True, default=str) for c in scenario_cases
+        ),
+        "ch": sorted(channel_names),
+        "only": sorted(only_keys) if only_keys else None,
+        "fix": sorted(fixed_weights.items()),
+        "tune_threshold": tune_threshold,
+        "tune_cap": tune_cap,
+        "fixed_threshold": fixed_threshold if not tune_threshold else None,
+        "fixed_cap": fixed_cap if not tune_cap else None,
+    }
+    serialized = json.dumps(payload, sort_keys=True, default=str)
+    return hashlib.sha1(serialized.encode("utf-8")).hexdigest()[:12]
+
+
 @tune_app.callback(invoke_without_command=True)
 def tune_run(
     ctx: typer.Context,
@@ -845,7 +885,21 @@ def tune_run(
 
     fixed_weights = _parse_fixed(fix)
     only_keys = _parse_only(only)
-    study_dir = None if no_persist else s.cache_dir
+    if no_persist:
+        study_dir = None
+    else:
+        fp = _study_fingerprint(
+            regression_cases=regression,
+            scenario_cases=scenario,
+            channel_names=[c.name for c in engine.channels],
+            only_keys=only_keys,
+            fixed_weights=fixed_weights,
+            tune_threshold=tune_threshold,
+            tune_cap=tune_cap,
+            fixed_threshold=s.search.threshold,
+            fixed_cap=s.search.max_results,
+        )
+        study_dir = s.cache_dir / "tune-studies" / fp
 
     def _on_trial(i: int, loss: float, best: float) -> None:
         if loss <= best:  # only print when we improve or equal

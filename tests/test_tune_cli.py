@@ -11,7 +11,7 @@ import pytest
 import yaml
 from typer.testing import CliRunner
 
-from ipa_cli.main import app
+from ipa_cli.main import _study_fingerprint, app
 from ipa_cli.tune import TuneResult, save_result
 
 
@@ -100,3 +100,77 @@ def test_tune_use_appends_json_suffix_implicitly(isolated_xdg: Path) -> None:
     assert result.exit_code == 0, result.stdout
     after = yaml.safe_load(cfg.read_text(encoding="utf-8"))
     assert after["tune"]["result_file"] == "alpha.json"
+
+
+# --- _study_fingerprint -----------------------------------------------------
+
+
+def _fp(**overrides) -> str:
+    """Convenience builder with sane defaults for fingerprint tests."""
+    base = dict(
+        regression_cases=[{"id": "r1", "queries": ["q"], "target_filename": "A"}],
+        scenario_cases=[],
+        channel_names=["body_match", "fuzzy"],
+        only_keys=None,
+        fixed_weights={},
+        tune_threshold=True,
+        tune_cap=True,
+        fixed_threshold=0.30,
+        fixed_cap=10,
+    )
+    base.update(overrides)
+    return _study_fingerprint(**base)
+
+
+def test_study_fingerprint_stable_for_identical_inputs() -> None:
+    assert _fp() == _fp()
+
+
+def test_study_fingerprint_changes_with_regression_testset() -> None:
+    other = [{"id": "r2", "queries": ["other"], "target_filename": "B"}]
+    assert _fp() != _fp(regression_cases=other)
+
+
+def test_study_fingerprint_changes_with_scenario_testset() -> None:
+    scn = [
+        {
+            "id": "s1",
+            "queries": ["q"],
+            "target_filenames": ["A"],
+            "recall_mode": "top10",
+        }
+    ]
+    assert _fp() != _fp(scenario_cases=scn)
+
+
+def test_study_fingerprint_changes_with_channel_set() -> None:
+    assert _fp() != _fp(channel_names=["body_match"])
+
+
+def test_study_fingerprint_changes_with_only_keys_and_fixed_weights() -> None:
+    assert _fp() != _fp(only_keys=["body_match"])
+    assert _fp() != _fp(fixed_weights={"body_match": 0.42})
+
+
+def test_study_fingerprint_changes_with_tune_flags_and_fixed_values() -> None:
+    assert _fp() != _fp(tune_threshold=False)
+    assert _fp() != _fp(tune_cap=False)
+    # When tune_threshold=False, fixed_threshold becomes part of the
+    # fingerprint so different fixed values stay isolated.
+    a = _fp(tune_threshold=False, fixed_threshold=0.20)
+    b = _fp(tune_threshold=False, fixed_threshold=0.40)
+    assert a != b
+
+
+def test_study_fingerprint_stable_across_orderings() -> None:
+    """Channel name list / case list ordering is normalised internally."""
+    a = _fp(channel_names=["fuzzy", "body_match"])
+    b = _fp(channel_names=["body_match", "fuzzy"])
+    assert a == b
+    cases_a = [
+        {"id": "r1", "queries": ["q1"], "target_filename": "A"},
+        {"id": "r2", "queries": ["q2"], "target_filename": "B"},
+    ]
+    assert _fp(regression_cases=cases_a) == _fp(
+        regression_cases=list(reversed(cases_a))
+    )
