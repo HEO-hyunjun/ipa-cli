@@ -14,9 +14,9 @@ import io
 from contextlib import redirect_stdout
 from pathlib import Path
 
-from ipa_cli.core.notes_cache import scan_vault_cached
-from ipa_cli.core.vault_parser import build_note_index
-from ipa_cli.core.vault_refactor import (
+from ipa_cli._legacy.notes_cache import scan_vault_cached
+from ipa_cli._legacy.vault_parser import build_note_index
+from ipa_cli._legacy.vault_refactor import (
     build_filter,
     cmd_ref_add,
     cmd_ref_remove,

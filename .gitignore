@@ -8,3 +8,7 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Test fixture caches written by SearchEngine/BM25 channels.
+tests/fixtures/**/.cache/
+tests/fixtures/**/*.pkl

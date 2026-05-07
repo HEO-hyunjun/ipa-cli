@@ -2,40 +2,34 @@
 
 Surface:
   - ``ipa search / view / traversal / validator / refactor`` — legacy
-    surface backed by ``ipa_cli.core`` modules
+    surface, now routed through ``runtime/*`` modules built on the same
+    parse + service layer as ``engine`` / ``convention`` / ``formatter``.
   - ``ipa convention check`` / ``ipa formatter plan/apply`` — engine-
-    based replacements built on the same vault
-  - ``ipa engine search / channels`` — direct ``SearchEngine`` access
-  - ``ipa tune (run) / eval / list / use / analyze``
-  - ``ipa config show`` / ``ipa profile list / use / current``
-  - ``ipa list-channels / list-rules / list-refactors`` — builtin metadata
+    based vault validation/fix flow.
+  - ``ipa engine search / channels`` — direct ``SearchEngine`` access.
+  - ``ipa tune (run) / eval / list / use / analyze``.
+  - ``ipa config show`` / ``ipa profile list / use / current``.
+  - ``ipa list-channels / list-rules / list-refactors`` — builtin metadata.
 """
 
 from __future__ import annotations
 
 import sys
 from pathlib import Path
-from types import ModuleType
 
 import typer
 from rich.console import Console
 from rich.table import Table
 
+from ipa_cli.builtins.channels.default_channels import default_channels
+from ipa_cli.builtins.conventions.default_convention import default_convention
+from ipa_cli.builtins.refactors import BUILTIN_REFACTORS
 from ipa_cli.config import (
     Settings,
     list_profiles,
     load_settings,
     set_default_profile,
 )
-from ipa_cli.core import (
-    vault_refactor,
-    vault_search,
-    vault_traversal,
-    vault_validator,
-)
-from ipa_cli.builtins.channels.default_channels import default_channels
-from ipa_cli.builtins.conventions.default_convention import default_convention
-from ipa_cli.builtins.refactors import BUILTIN_REFACTORS
 from ipa_cli.tune import (
     analyze_threshold,
     load_testset,
@@ -98,46 +92,7 @@ def _settings(ctx: typer.Context) -> Settings:
     return ctx.obj
 
 
-def _call_module(module: ModuleType, args: list[str], settings: Settings) -> int:
-    """Invoke a core module's main() with synthetic argv. Returns exit code.
-
-    The legacy scripts use argparse and sys.exit; we splice argv, swallow
-    SystemExit, and inject the active vault path when not already
-    specified. ``IPA_CACHE_DIR`` is exported so notes_cache / bm25 caches
-    write under the active profile workspace instead of the legacy
-    ``~/.cache/vault_search/`` location.
-    """
-    import os as _os
-
-    new_argv = [module.__name__] + list(args)
-    # Inject --vault from active profile when not already present.
-    # vault_refactor uses subparsers without a root --vault flag, so for
-    # refactor we only inject when there's already at least one arg
-    # (otherwise the path parses as a subcommand). Other modules accept
-    # --vault at any position.
-    needs_vault = settings.vault_path != Path() and "--vault" not in args
-    if needs_vault and (module is not vault_refactor or args):
-        new_argv += ["--vault", str(settings.vault_path)]
-    old_argv = sys.argv
-    old_cache_env = _os.environ.get("IPA_CACHE_DIR")
-    sys.argv = new_argv
-    _os.environ["IPA_CACHE_DIR"] = str(settings.cache_dir)
-    try:
-        module.main()
-        return 0
-    except SystemExit as e:
-        if e.code is None:
-            return 0
-        return int(e.code) if isinstance(e.code, int) else 1
-    finally:
-        sys.argv = old_argv
-        if old_cache_env is None:
-            _os.environ.pop("IPA_CACHE_DIR", None)
-        else:
-            _os.environ["IPA_CACHE_DIR"] = old_cache_env
-
-
-# ── legacy core 모듈 직접 호출 ──
+# ── legacy 명령 (runtime/* 모듈로 라우팅) ──
 
 
 @app.command()

@@ -161,7 +161,7 @@ def _parse_validator_issues(stdout: str, vault: Path | None = None) -> list[Issu
     """
     import re
 
-    from ipa_cli.core.vault_validator import CATEGORIES
+    from ipa_cli._legacy.vault_validator import CATEGORIES
 
     cleaned = normalize(stdout, vault=vault)
     rows: list[IssueRow] = []

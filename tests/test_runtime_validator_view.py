@@ -10,8 +10,8 @@ import pytest
 from typer.testing import CliRunner
 
 from ipa_cli.api.mappings import Mapping
-from ipa_cli.core.vault_parser import build_note_index, scan_vault
-from ipa_cli.core.vault_validator import format_report_text, validate_vault
+from ipa_cli._legacy.vault_parser import build_note_index, scan_vault
+from ipa_cli._legacy.vault_validator import format_report_text, validate_vault
 from ipa_cli.main import app
 from ipa_cli.runtime.legacy_validator_view import (
     LEGACY_TO_NEW,

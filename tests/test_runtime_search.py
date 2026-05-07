@@ -41,9 +41,9 @@ def _legacy_oracle_ids(vault: Path, queries: list[str]) -> list[str]:
 
     Bypasses the CLI so we don't depend on the migrated stdout shape.
     """
-    from ipa_cli.core.notes_cache import scan_vault_cached
-    from ipa_cli.core.vault_parser import build_note_index
-    from ipa_cli.core.vault_search import multi_search, unified_search
+    from ipa_cli._legacy.notes_cache import scan_vault_cached
+    from ipa_cli._legacy.vault_parser import build_note_index
+    from ipa_cli._legacy.vault_search import multi_search, unified_search
 
     notes = scan_vault_cached(vault)
     index = build_note_index(notes)

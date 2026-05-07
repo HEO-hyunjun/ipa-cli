@@ -13,8 +13,9 @@ Surface:
 - `ipa tune (run) / eval / list / use / analyze` — Optuna TPE on weights
 - `ipa config show / profile list / use / current` — config introspection
 - `ipa search / view / traversal / validator / refactor` — legacy
-  commands kept for backwards compatibility (script-style argparse front
-  end; see [Vault skill compatibility](#vault-skill-compatibility) below)
+  surface now backed by `runtime/*` modules built on the same service
+  layer as `engine` / `convention` / `formatter` (see
+  [Vault skill compatibility](#vault-skill-compatibility) below)
 - `ipa list-channels / list-rules / list-refactors` — registry inspection
   (channels driving `engine search`, rules driving `convention/formatter`,
   refactor recipes for `refactor`)
@@ -167,11 +168,17 @@ directly — **it does not invoke `ipa`**. The two codebases evolved from
 the same scripts but are now independent copies.
 
 The legacy `ipa search` / `view` / `traversal` / `validator` / `refactor`
-commands are still part of this CLI; they call into `src/ipa_cli/core/`
-(a frozen copy of the original scripts) via a synthetic-argv adapter,
-and do not depend on the vault skill at all. New work is built on top of
-`engine` / `convention` / `formatter` / `tune` and gradually migrates
-the legacy surface onto the same service layer.
+commands now run on the same service layer as `engine` / `convention` /
+`formatter`. The synthetic-argv adapter is gone — each command routes
+through a dedicated `runtime/*` module (`runtime/view.py`,
+`runtime/traversal.py`, `runtime/legacy_validator_view.py`,
+`runtime/search.py`, `runtime/refactor.py`). The 1차↔2차 rule-code map
+is in [`docs/legacy-validator-rule-map.md`](docs/legacy-validator-rule-map.md);
+the refactor subcommand matrix lives in
+[`docs/legacy-refactor-subcommands.md`](docs/legacy-refactor-subcommands.md).
+The original script algorithms remain available under the internal
+`ipa_cli._legacy` package as a parity oracle for tests; the public
+`ipa_cli.core` surface no longer exists.
 
 ## Layout
 
@@ -180,10 +187,12 @@ src/ipa_cli/
   main.py            # Typer entrypoints
   api/               # public types: BaseConventionRule, BaseSearchChannel, Mapping ...
   parse/             # vault loader, markdown-it wrapper, parsed cache
-  runtime/           # profile/convention/search loaders + engines
-  builtins/          # default convention rules + search channels
+  runtime/           # service engines + legacy-surface entrypoints
+                     # (view, traversal, search, legacy_validator_view, refactor)
+  builtins/          # default convention rules + search channels + refactor metadata
   config/            # Settings resolver, defaults
   tune/              # Optuna runner, threshold dist analyzer, immutable results
+  _legacy/           # internal parity oracle (1차 scripts kept for test reference)
 ```
 
 ## Testing
@@ -192,7 +201,9 @@ src/ipa_cli/
 uv run pytest -q
 ```
 
-(294 tests at the time of writing. Hit-rate parity against your own
+(336 tests at the time of writing — including the 5-stage legacy-surface
+characterization snapshots, 1차 oracle structured-equivalence checks, and
+the new `runtime/*` unit tests. Hit-rate parity against your own
 testset depends on the vault and is measured outside CI via
 `ipa tune eval --testset`.)
 

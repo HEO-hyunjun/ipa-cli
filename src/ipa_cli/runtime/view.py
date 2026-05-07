@@ -16,8 +16,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ipa_cli.core.vault_parser import build_note_index, scan_vault
-from ipa_cli.core.vault_search import (
+from ipa_cli._legacy.vault_parser import build_note_index, scan_vault
+from ipa_cli._legacy.vault_search import (
     _build_tag_to_notes_index,
     render_full,
     render_overview,
