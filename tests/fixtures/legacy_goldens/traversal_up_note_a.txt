@@ -1,0 +1,2 @@
+Upward paths from 'Note A':
+  1. Note A → 🔖 Sample Index → 🏷️ Sample Root
