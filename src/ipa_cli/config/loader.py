@@ -2,9 +2,12 @@
 
 Profile selection priority:
   1. CLI ``--profile``
-  2. nearest ``.ipa-profile`` walking up from the current directory
-  3. process env ``IPA_PROFILE``
-  4. fail (unless ``--vault`` is used for an explicit ad-hoc run)
+  2. CLI ``--vault`` without ``--profile`` → ``adhoc`` profile (so an
+     explicit vault override doesn't silently inherit another profile's
+     ``search.py`` / ``convention.py`` / tune pointer / cache)
+  3. nearest ``.ipa-profile`` walking up from the current directory
+  4. process env ``IPA_PROFILE``
+  5. fail
 
 Value priority (highest wins):
   1. CLI overrides (``--vault`` and explicit overrides)
@@ -148,17 +151,19 @@ def _resolve_profile(
 ) -> tuple[str, str]:
     if profile:
         return profile, "cli"
+    if vault is not None:
+        # Explicit ``--vault`` without ``--profile`` means ad-hoc isolation:
+        # we deliberately skip ``.ipa-profile`` / ``IPA_PROFILE`` so the
+        # ad-hoc run never inherits another profile's search.py /
+        # convention.py / tune pointer / cache. Pair ``--profile`` with
+        # ``--vault`` to override only the vault path.
+        return "adhoc", "cli-vault"
     dot_profile = find_dotipa_profile(cwd or Path.cwd())
     if dot_profile:
         return dot_profile, ".ipa-profile"
     env_profile = os.environ.get(f"{_ENV_PREFIX}PROFILE")
     if env_profile:
         return env_profile, "env"
-    if vault is not None:
-        # ``--vault`` is already an explicit vault selection. Keep a stable
-        # ad-hoc profile name so cache/tune paths remain isolated without
-        # restoring an implicit default profile.
-        return "adhoc", "cli-vault"
     raise ValueError(
         "No IPA profile selected. Pass --profile, create a .ipa-profile file, "
         "or set IPA_PROFILE."

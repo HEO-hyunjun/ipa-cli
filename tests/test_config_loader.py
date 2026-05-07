@@ -98,6 +98,57 @@ def test_cli_vault_uses_adhoc_profile_and_beats_env(
     assert s.source_map["vault_path"] == "cli"
 
 
+def test_cli_vault_overrides_dotipa_profile(isolated_xdg: Path, tmp_path: Path) -> None:
+    """``--vault`` alone is an explicit ad-hoc run — it must skip
+    ``.ipa-profile`` so the ad-hoc vault isn't mixed with another
+    profile's search.py / convention.py / tune pointer / cache."""
+    _profile_yaml(isolated_xdg, "project", "vault_path: /from/profile\n")
+    project_dir = tmp_path / "repo"
+    project_dir.mkdir()
+    (project_dir / ".ipa-profile").write_text("project\n", encoding="utf-8")
+    s = load_settings(
+        vault="/from/cli",
+        cwd=project_dir,
+        dotenv_path=isolated_xdg / "ipa" / ".env",
+    )
+    assert s.profile == "adhoc"
+    assert s.vault_path == Path("/from/cli")
+    assert s.source_map["profile"] == "cli-vault"
+
+
+def test_cli_vault_overrides_ipa_profile_env(
+    isolated_xdg: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same isolation rule applies when ``IPA_PROFILE`` is set in env."""
+    _profile_yaml(isolated_xdg, "envprof", "vault_path: /from/env-profile\n")
+    monkeypatch.setenv("IPA_PROFILE", "envprof")
+    s = load_settings(vault="/from/cli", dotenv_path=isolated_xdg / "ipa" / ".env")
+    assert s.profile == "adhoc"
+    assert s.vault_path == Path("/from/cli")
+    assert s.source_map["profile"] == "cli-vault"
+
+
+def test_cli_profile_with_cli_vault_keeps_profile(
+    isolated_xdg: Path, tmp_path: Path
+) -> None:
+    """When both ``--profile`` and ``--vault`` are passed the explicit
+    profile wins — only ``vault_path`` is overridden."""
+    _profile_yaml(isolated_xdg, "work", "vault_path: /from/profile\n")
+    project_dir = tmp_path / "repo"
+    project_dir.mkdir()
+    (project_dir / ".ipa-profile").write_text("other\n", encoding="utf-8")
+    s = load_settings(
+        profile="work",
+        vault="/from/cli",
+        cwd=project_dir,
+        dotenv_path=isolated_xdg / "ipa" / ".env",
+    )
+    assert s.profile == "work"
+    assert s.vault_path == Path("/from/cli")
+    assert s.source_map["profile"] == "cli"
+    assert s.source_map["vault_path"] == "cli"
+
+
 def test_dotipa_profile_beats_env(
     isolated_xdg: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
