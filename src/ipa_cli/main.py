@@ -194,18 +194,15 @@ def traversal(
     root: str | None = typer.Option(None, "--root", help="소속 root"),
 ):
     """계층 탐색."""
-    args: list[str] = []
-    for flag, val in [
-        ("--up", up),
-        ("--down", down),
-        ("--siblings", siblings),
-        ("--root", root),
-    ]:
-        if val:
-            args += [flag, val]
-    if not args:
+    if not any([up, down, siblings, root]):
         raise typer.BadParameter("--up/--down/--siblings/--root 중 하나를 지정해주세요")
-    raise typer.Exit(_call_module(vault_traversal, args, _settings(ctx)))
+    from ipa_cli.runtime.traversal import render_traversal
+
+    s = _settings(ctx)
+    output = render_traversal(
+        s.vault_path, up=up, down=down, siblings=siblings, root=root
+    )
+    typer.echo(output)
 
 
 @app.command()
