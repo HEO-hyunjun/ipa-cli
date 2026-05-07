@@ -156,18 +156,21 @@ def search(
     """통합 검색 (legacy unified_search)."""
     if not query:
         raise typer.BadParameter("검색 쿼리를 1개 이상 지정해주세요")
+    from ipa_cli.runtime.search import render_search
+
     s = _settings(ctx)
     eff_threshold = threshold if threshold is not None else s.search.threshold
     eff_max = max_results if max_results is not None else s.search.max_results
-    args: list[str] = []
-    for q in query:
-        args += ["--search", q]
-    args += ["--threshold", str(eff_threshold), "--max", str(eff_max)]
-    if show_all:
-        args.append("--all")
-    if reasons:
-        args.append("--reasons")
-    raise typer.Exit(_call_module(vault_search, args, s))
+    output = render_search(
+        s.vault_path,
+        list(query),
+        threshold=eff_threshold,
+        max_results=eff_max,
+        show_all=show_all,
+        reasons=reasons,
+        weights=s.search.weights,
+    )
+    typer.echo(output)
 
 
 @app.command()
