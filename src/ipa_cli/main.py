@@ -8,7 +8,7 @@ Surface:
   - ``ipa engine search / channels`` — direct ``SearchEngine`` access
   - ``ipa tune (run) / eval / list / use / analyze``
   - ``ipa config show`` / ``ipa profile list / use / current``
-  - ``ipa list-channels / list-rules / list-refactors`` — registry view
+  - ``ipa list-channels / list-rules / list-refactors`` — builtin metadata
 """
 
 from __future__ import annotations
@@ -33,7 +33,9 @@ from ipa_cli.core import (
     vault_traversal,
     vault_validator,
 )
-from ipa_cli.plugins import get_channels, get_refactors, get_rules
+from ipa_cli.builtins.channels.default_channels import default_channels
+from ipa_cli.builtins.conventions.default_convention import default_convention
+from ipa_cli.builtins.refactors import BUILTIN_REFACTORS
 from ipa_cli.tune import (
     analyze_threshold,
     load_testset,
@@ -699,24 +701,24 @@ def engine_search(
                 )
 
 
-# ── plugin registry 조회 ──
+# ── builtin metadata 조회 ──
 
 
 @app.command("list-channels")
 def list_channels(ctx: typer.Context):
-    """등록된 search 채널 목록 (빌트인 + 향후 외부 plugin)."""
+    """builtin search 채널 목록 (default_channels()에서 가져옴)."""
     s = _settings(ctx)
-    channels = get_channels()
+    channels = default_channels()
     table = Table(title=f"search channels ({len(channels)} registered)")
     table.add_column("name", style="cyan")
     table.add_column("weight", style="magenta", justify="right")
     table.add_column("active", style="green", justify="right")
     table.add_column("description", style="white")
-    for name, ch in channels.items():
-        active = s.search.weights.get(name, 0.0)
+    for ch in channels:
+        active = s.search.weights.get(ch.name, 0.0)
         table.add_row(
-            name,
-            f"{ch.weight:.4f}" if ch.weight is not None else "—",
+            ch.name,
+            f"{ch.default_weight:.4f}",
             f"{active:.4f}",
             ch.description,
         )
@@ -725,27 +727,35 @@ def list_channels(ctx: typer.Context):
 
 @app.command("list-rules")
 def list_rules():
-    """등록된 validator 룰 목록."""
-    rules = get_rules()
+    """builtin convention 룰 목록 (default_convention().rules)."""
+    convention = default_convention()
+    rules = convention.rules
     table = Table(title=f"validator rules ({len(rules)} registered)")
-    table.add_column("id", style="cyan")
+    table.add_column("code", style="cyan")
     table.add_column("category", style="magenta")
-    table.add_column("description", style="white")
-    for rid in sorted(rules):
-        r = rules[rid]
-        table.add_row(r.id, r.category, r.description)
+    table.add_column("severity", style="yellow")
+    table.add_column("scope", style="white")
+    for r in rules:
+        # ipa.<category>.<rest> → category 추출. 다른 prefix는 통째로 표기.
+        parts = r.code.split(".", 2)
+        category = parts[1] if len(parts) >= 3 and parts[0] == "ipa" else "—"
+        table.add_row(
+            r.code,
+            category,
+            str(r.severity.value),
+            r.default_scope,
+        )
     console.print(table)
 
 
 @app.command("list-refactors")
 def list_refactors():
-    """등록된 refactor 커맨드 목록."""
-    refs = get_refactors()
-    table = Table(title=f"refactor commands ({len(refs)} registered)")
+    """builtin refactor recipe 메타데이터 (S6에서 실제 호출 가능)."""
+    table = Table(title=f"refactor commands ({len(BUILTIN_REFACTORS)} registered)")
     table.add_column("name", style="cyan")
     table.add_column("description", style="white")
-    for name, cmd in refs.items():
-        table.add_row(name, cmd.description)
+    for cmd in BUILTIN_REFACTORS:
+        table.add_row(cmd.name, cmd.description)
     console.print(table)
 
 
