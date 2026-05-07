@@ -1,0 +1,12 @@
+# Sample profile.yaml — copy this file (and the rest of sample_profile/)
+# to ~/.config/ipa/profiles/<name>/ to use it.
+#
+# vault_path supports ${VAR} interpolation against the process env.
+vault_path: ${IPA_VAULT_PATH}
+
+# tune.result_file points at one of tune/results/{timestamp}.json.
+# Leave blank for builtin defaults (threshold=0.30, max_results=10).
+# `ipa tune --apply` rewrites this pointer in-place (round-trip preserves
+# comments).
+tune:
+  result_file: ""
