@@ -766,7 +766,7 @@ def _parse_only(value: str | None) -> list[str] | None:
 
 
 def _load_testset_with_notes(s: Settings, testset_path: Path | None):
-    """Common boilerplate for tune commands."""
+    """Common boilerplate for tune commands (1차 path)."""
     from ipa_cli.core.vault_parser import build_note_index, scan_vault
 
     if s.vault_path == Path():
@@ -778,6 +778,14 @@ def _load_testset_with_notes(s: Settings, testset_path: Path | None):
     notes = filter_excluded(notes, ts.get("exclude_filenames"))
     idx = build_note_index(notes)
     return ts, notes, idx
+
+
+def _filter_excluded_v2(notes: list, exclude_filenames: list[str] | None) -> list:
+    """``filter_excluded`` analogue for 2차 ``Note`` (id-keyed)."""
+    if not exclude_filenames:
+        return notes
+    excl = set(exclude_filenames)
+    return [n for n in notes if n.id not in excl]
 
 
 @tune_app.callback(invoke_without_command=True)
@@ -808,18 +816,31 @@ def tune_run(
         False, "--no-persist", help="study sqlite 영속화 끄고 in-memory만"
     ),
 ):
-    """채널 weight + threshold + cap을 동시 튜닝하는 TPE study."""
+    """채널 weight + threshold + cap을 동시 튜닝하는 TPE study.
+
+    G7: trials reuse a single ``SearchEngine`` setup. Channel discovery,
+    scoring, and threshold/cap pruning all flow through 2차 engine — no
+    1차 ``vault_search`` global mutation between trials.
+    """
     if ctx.invoked_subcommand is not None:
         return  # subcommand가 직접 처리
 
-    s = _settings(ctx)
-    ts, notes, idx = _load_testset_with_notes(s, testset_path)
+    from ipa_cli.tune import filter_excluded as _filter_excluded_v1  # noqa: F401
+    from ipa_cli.tune.engine_runner import run_engine_study
+
+    s, _channels, engine, notes_v2 = _build_engine(ctx)
+    ts = load_testset(testset_path)
+    notes_v2 = _filter_excluded_v2(notes_v2, ts.get("exclude_filenames"))
+    # Rebuild engine context with the filtered note list so excluded
+    # entries don't enter BM25 / channel scoring.
+    engine.ctx.notes = notes_v2
     regression = ts.get("cases", [])
     scenario = [c for c in (ts.get("scenario_cases") or []) if c.get("queries")]
 
     console.print(
         f"[bold]vault[/bold] {s.vault_path}  "
-        f"[bold]notes[/bold] {len(notes)}  "
+        f"[bold]notes[/bold] {len(notes_v2)}  "
+        f"[bold]channels[/bold] {len(engine.channels)}  "
         f"[bold]regression[/bold] {len(regression)}  "
         f"[bold]scenario[/bold] {len(scenario)}"
     )
@@ -832,9 +853,8 @@ def tune_run(
         if loss <= best:  # only print when we improve or equal
             console.print(f"  trial {i:4d}  loss={loss:8.2f}  ★ best={best:.2f}")
 
-    result = run_study(
-        notes,
-        idx,
+    result = run_engine_study(
+        engine,
         regression,
         scenario,
         n_trials=trials,
@@ -977,30 +997,28 @@ def tune_eval(
         None, "--testset", help="testset.json 경로 (default: env > project > xdg)"
     ),
 ):
-    """현재 활성 search params로 baseline loss/metrics 측정 (튜닝 안 함)."""
-    s = _settings(ctx)
-    ts, notes, idx = _load_testset_with_notes(s, testset_path)
+    """현재 활성 search params로 baseline loss/metrics 측정 (튜닝 안 함).
+
+    G7: routes through 2차 ``SearchEngine`` so eval and tune share a
+    single scoring path. The engine is set up once and reused.
+    """
+    from ipa_cli.tune.engine_loss import compute_loss_v2
+
+    s, _channels, engine, notes_v2 = _build_engine(ctx)
+    ts = load_testset(testset_path)
+    notes_v2 = _filter_excluded_v2(notes_v2, ts.get("exclude_filenames"))
+    engine.ctx.notes = notes_v2
     regression = ts.get("cases", [])
     scenario = [c for c in (ts.get("scenario_cases") or []) if c.get("queries")]
 
-    from ipa_cli.core import vault_search
-
-    base_w = dict(vault_search._CHANNEL_WEIGHTS)
-    merged = dict(base_w)
-    merged.update(s.search.weights)
-    vault_search._CHANNEL_WEIGHTS.update(merged)
-    try:
-        loss, metrics = compute_loss(
-            notes,
-            idx,
-            regression,
-            scenario,
-            s.search.threshold,
-            s.search.max_results,
-        )
-    finally:
-        vault_search._CHANNEL_WEIGHTS.clear()
-        vault_search._CHANNEL_WEIGHTS.update(base_w)
+    loss, metrics = compute_loss_v2(
+        engine,
+        regression,
+        scenario,
+        weights=dict(s.search.weights) if s.search.weights else None,
+        threshold=s.search.threshold,
+        cap=s.search.max_results,
+    )
 
     table = Table(title=f"baseline (loss {loss:.2f})  profile={s.profile}")
     table.add_column("key", style="cyan")
