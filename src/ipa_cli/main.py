@@ -215,18 +215,18 @@ def validator(
     dry_run: bool = typer.Option(False, "--dry-run", help="수정 미리보기"),
 ):
     """vault 구조 검증 (legacy)."""
-    args: list[str] = []
-    if note:
-        args += ["--note", note]
-    if select:
-        args += ["--select", select]
-    if ignore:
-        args += ["--ignore", ignore]
-    if fix:
-        args.append("--fix")
-    if dry_run:
-        args.append("--dry-run")
-    raise typer.Exit(_call_module(vault_validator, args, _settings(ctx)))
+    from ipa_cli.runtime.legacy_validator_view import render_validator
+
+    s = _settings(ctx)
+    output = render_validator(
+        s.vault_path,
+        note=note,
+        select=select,
+        ignore=ignore,
+        fix=fix,
+        dry_run=dry_run,
+    )
+    typer.echo(output)
 
 
 @app.command(
