@@ -236,8 +236,12 @@ def validator(
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True}
 )
 def refactor(ctx: typer.Context):
-    """vault 일괄 수정 (legacy; 모든 인자를 vault_refactor에 그대로 전달)."""
-    raise typer.Exit(_call_module(vault_refactor, list(ctx.args), _settings(ctx)))
+    """vault 일괄 수정 (legacy; 모든 인자를 새 dispatcher에 전달)."""
+    from ipa_cli.runtime.refactor import render_refactor
+
+    s = _settings(ctx)
+    output = render_refactor(s.vault_path, list(ctx.args))
+    typer.echo(output, nl=False)
 
 
 # ── config / profile ──
