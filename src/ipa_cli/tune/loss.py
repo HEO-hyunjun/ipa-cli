@@ -52,7 +52,7 @@ class _Ranked:
     score: float
 
 
-def _nfc(s: str) -> str:
+def nfc(s: str) -> str:
     return unicodedata.normalize("NFC", s)
 
 
@@ -90,10 +90,10 @@ def evaluate_regression(
     cap: int,
 ) -> tuple[bool, int | None]:
     """Return ``(hit, rank)`` for a regression case via ``engine.search``."""
-    target = _nfc(str(case["target_filename"]))
+    target = nfc(str(case["target_filename"]))
     ranked = _multi_search(engine, case["queries"], weights, threshold, cap)
     for i, r in enumerate(ranked, 1):
-        if _nfc(r.note_id) == target:
+        if nfc(r.note_id) == target:
             return True, i
     return False, None
 
@@ -117,10 +117,10 @@ def evaluate_scenario(
         return False, None
     n_top = topn_for_mode(case.get("recall_mode", "top10"))
     ranked = _multi_search(engine, queries, weights, threshold, cap)[:n_top]
-    topn_ids = [_nfc(r.note_id) for r in ranked]
+    topn_ids = [nfc(r.note_id) for r in ranked]
 
     raw_targets = case.get("target_filenames") or [case.get("target_filename")]
-    targets = [_nfc(str(t)) for t in raw_targets if t]
+    targets = [nfc(str(t)) for t in raw_targets if t]
     recall_threshold = int(case.get("recall_threshold", 1))
 
     matched = [t for t in targets if t in topn_ids]

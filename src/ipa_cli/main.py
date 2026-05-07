@@ -777,11 +777,18 @@ def _parse_only(value: str | None) -> list[str] | None:
 
 
 def _filter_excluded(notes: list, exclude_filenames: list[str] | None) -> list:
-    """``exclude_filenames``에 해당하는 ``Note``를 제거 (id 매칭)."""
+    """``exclude_filenames``에 해당하는 ``Note``를 제거 (id 매칭).
+
+    Both sides are NFC-normalised so testsets shipped from macOS (where
+    composed Hangul filenames come back as NFD) match note ids without
+    silent fall-through.
+    """
     if not exclude_filenames:
         return notes
-    excl = set(exclude_filenames)
-    return [n for n in notes if n.id not in excl]
+    from ipa_cli.tune.loss import nfc
+
+    excl = {nfc(s) for s in exclude_filenames}
+    return [n for n in notes if nfc(n.id) not in excl]
 
 
 def _study_fingerprint(

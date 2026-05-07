@@ -15,6 +15,7 @@ from typing import Any
 from ipa_cli.api.base_channels import Query
 
 from .eval_set import topn_for_mode
+from .loss import nfc
 
 CANDIDATES = (0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.50)
 
@@ -91,6 +92,9 @@ def analyze_threshold(
 
     def _collect(case_id, queries, targets, n_top=10):
         nonlocal miss_cases
+        # NFC-normalise targets so testsets shipped from macOS (NFD-prone)
+        # match note ids from any platform.
+        targets_nfc = {nfc(str(t)) for t in targets if t}
         combined: dict[str, float] = {}
         for q in queries:
             if not q:
@@ -100,10 +104,10 @@ def analyze_threshold(
         topn = sorted(combined.items(), key=lambda x: x[1], reverse=True)[:n_top]
         target_score: float | None = None
         for note_id, score in topn:
-            if note_id in targets:
+            if nfc(note_id) in targets_nfc:
                 if target_score is None or score > target_score:
                     target_score = score
-        noise = [score for note_id, score in topn if note_id not in targets]
+        noise = [score for note_id, score in topn if nfc(note_id) not in targets_nfc]
         if target_score is not None:
             correct_scores.append(target_score)
             noise_scores.extend(noise)

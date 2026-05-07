@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import unicodedata
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from ipa_cli.main import _filter_excluded
 from ipa_cli.tune import (
     default_testset_path,
     load_testset,
@@ -15,6 +18,7 @@ from ipa_cli.tune.loss import (
     REGRESSION_MISS_PENALTY,
     SCENARIO_MISS_PENALTY,
     Metrics,
+    nfc,
 )
 
 
@@ -97,3 +101,37 @@ def test_metrics_dataclass_is_immutable() -> None:
     m = Metrics(reg_hit=20, reg_miss=4, scn_hit=28, scn_miss=2, avg_rank=1.7)
     with pytest.raises(Exception):
         m.reg_hit = 0  # type: ignore[misc]
+
+
+# --- NFC normalisation -----------------------------------------------------
+
+
+def test_nfc_normalises_decomposed_hangul() -> None:
+    nfd = unicodedata.normalize("NFD", "포레스트")
+    assert nfd != "포레스트"  # sanity: NFD form is genuinely different bytes
+    assert nfc(nfd) == "포레스트"
+    assert nfc("ascii-only") == "ascii-only"
+
+
+def test_filter_excluded_matches_across_nfd_and_nfc() -> None:
+    """``_filter_excluded`` must cope with NFD-encoded testset filenames
+    even when ``Note.id`` is NFC (the contract loss.py already follows)."""
+    name = "포레스트"
+    nfd_name = unicodedata.normalize("NFD", name)
+    nfc_name = unicodedata.normalize("NFC", name)
+
+    # Exclude listed in NFD form, note.id in NFC form → must still match.
+    notes = [SimpleNamespace(id=nfc_name), SimpleNamespace(id="other")]
+    kept = _filter_excluded(notes, [nfd_name])
+    assert [n.id for n in kept] == ["other"]
+
+    # Reverse direction — note.id in NFD, exclude in NFC.
+    notes_nfd = [SimpleNamespace(id=nfd_name), SimpleNamespace(id="other")]
+    kept2 = _filter_excluded(notes_nfd, [nfc_name])
+    assert [n.id for n in kept2] == ["other"]
+
+
+def test_filter_excluded_no_op_for_empty_list() -> None:
+    notes = [SimpleNamespace(id="A"), SimpleNamespace(id="B")]
+    assert _filter_excluded(notes, None) is notes
+    assert _filter_excluded(notes, []) is notes
