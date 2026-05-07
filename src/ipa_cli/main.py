@@ -178,12 +178,11 @@ def view(
     full: bool = typer.Option(False, "--full", help="전체 본문"),
 ):
     """노트 보기."""
-    args = ["--view", note]
-    if section:
-        args += ["--section", section]
-    if full:
-        args.append("--full")
-    raise typer.Exit(_call_module(vault_search, args, _settings(ctx)))
+    from ipa_cli.runtime.view import render_view
+
+    s = _settings(ctx)
+    output = render_view(s.vault_path, note=note, section=section, full=full)
+    typer.echo(output)
 
 
 @app.command()
