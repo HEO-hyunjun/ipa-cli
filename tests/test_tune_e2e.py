@@ -40,25 +40,20 @@ def isolated_xdg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     cfg = tmp_path / "xdg-config"
     monkeypatch.setenv("XDG_CONFIG_HOME", str(cfg))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
-    monkeypatch.delenv("IPA_PROFILE", raising=False)
+    monkeypatch.setenv("IPA_PROFILE", "tunee2e")
     monkeypatch.delenv("IPA_VAULT_PATH", raising=False)
     monkeypatch.delenv("IPA_TESTSET", raising=False)
     return cfg
 
 
 def _seed_config(isolated_xdg: Path, vault: Path, profile: str = "tunee2e") -> Path:
-    cfg = isolated_xdg / "ipa" / "config.yaml"
-    cfg.parent.mkdir(parents=True, exist_ok=True)
-    cfg.write_text(
-        yaml.safe_dump(
-            {
-                "default_profile": profile,
-                "profiles": {profile: {"vault_path": str(vault)}},
-            }
-        ),
+    profile_yaml = isolated_xdg / "ipa" / "profiles" / profile / "profile.yaml"
+    profile_yaml.parent.mkdir(parents=True, exist_ok=True)
+    profile_yaml.write_text(
+        yaml.safe_dump({"vault_path": str(vault)}),
         encoding="utf-8",
     )
-    return cfg
+    return profile_yaml
 
 
 def _write_testset(tmp_path: Path) -> Path:
@@ -106,9 +101,9 @@ def test_tune_run_apply_then_engine_search_uses_new_weights(
     assert result.exit_code == 0, result.stdout
     assert "applied" in result.stdout
 
-    # Pointer flipped in config.yaml.
+    # Pointer flipped in profile.yaml.
     after = yaml.safe_load(cfg.read_text(encoding="utf-8"))
-    pointer = after["profiles"]["tunee2e"]["tune"]["result_file"]
+    pointer = after["tune"]["result_file"]
     assert pointer.endswith(".json")
 
     # tune/results/{ts}.json exists and has the expected keys.

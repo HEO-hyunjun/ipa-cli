@@ -9,7 +9,6 @@ import pytest
 
 from ipa_cli.tune import (
     default_testset_path,
-    filter_excluded,
     load_testset,
 )
 from ipa_cli.tune.loss import (
@@ -86,26 +85,6 @@ def test_default_testset_path_picks_env_first(
     target = _fake_testset(tmp_path)
     monkeypatch.setenv("IPA_TESTSET", str(target))
     assert default_testset_path() == target
-
-
-def test_filter_excluded_drops_by_filename() -> None:
-    class _N:
-        def __init__(self, fn):
-            self.filename = fn
-
-    notes = [_N("a"), _N("b"), _N("c")]
-    out = filter_excluded(notes, ["b"])
-    assert [n.filename for n in out] == ["a", "c"]
-
-
-def test_filter_excluded_passthrough_on_empty() -> None:
-    class _N:
-        def __init__(self, fn):
-            self.filename = fn
-
-    notes = [_N("a"), _N("b")]
-    assert filter_excluded(notes, None) is notes
-    assert filter_excluded(notes, []) is notes
 
 
 def test_loss_penalty_constants() -> None:

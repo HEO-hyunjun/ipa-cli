@@ -1,9 +1,9 @@
 """Frozen Settings dataclasses.
 
 Settings is the resolved view passed to commands. It carries the active
-profile name, vault path, cache dir, config path, search settings, and
-a source map (which key came from which layer) for `ipa config show
---source` debugging.
+profile name, profile workspace, vault path, cache dir, legacy config
+path, search settings, and a source map (which key came from which layer)
+for `ipa config show --source` debugging.
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ class SearchSettings:
 @dataclass(frozen=True)
 class Settings:
     profile: str
+    profile_dir: Path
     vault_path: Path
     cache_dir: Path
     config_path: Path

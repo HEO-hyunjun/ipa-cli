@@ -1,9 +1,14 @@
 """ipa CLI entrypoint.
 
-S1: Typer scaffold + subprocess passthrough to _shared/scripts/*.
-S2: --profile/--vault global options, ipa config show, ipa profile list/use/current.
-S3: subprocess 제거. core 모듈을 직접 호출 (argv injection).
-S4+: plugin loading, tune.
+Surface:
+  - ``ipa search / view / traversal / validator / refactor`` — legacy
+    surface backed by ``ipa_cli.core`` modules
+  - ``ipa convention check`` / ``ipa formatter plan/apply`` — engine-
+    based replacements built on the same vault
+  - ``ipa engine search / channels`` — direct ``SearchEngine`` access
+  - ``ipa tune (run) / eval / list / use / analyze``
+  - ``ipa config show`` / ``ipa profile list / use / current``
+  - ``ipa list-channels / list-rules / list-refactors`` — registry view
 """
 
 from __future__ import annotations
@@ -20,9 +25,7 @@ from ipa_cli.config import (
     Settings,
     list_profiles,
     load_settings,
-    read_yaml_preserving,
     set_default_profile,
-    write_yaml_preserving,
 )
 from ipa_cli.core import (
     vault_refactor,
@@ -33,9 +36,7 @@ from ipa_cli.core import (
 from ipa_cli.plugins import get_channels, get_refactors, get_rules
 from ipa_cli.tune import (
     analyze_threshold,
-    filter_excluded,
     load_testset,
-    run_study,
 )
 
 app = typer.Typer(
@@ -46,14 +47,10 @@ app = typer.Typer(
 )
 config_app = typer.Typer(help="설정 조회·관리.", no_args_is_help=True)
 profile_app = typer.Typer(help="프로필 관리.", no_args_is_help=True)
-convention_app = typer.Typer(
-    help="2차 convention runtime 명령 (P3+).", no_args_is_help=True
-)
-formatter_app = typer.Typer(
-    help="2차 formatter runtime 명령 (P3b+).", no_args_is_help=True
-)
+convention_app = typer.Typer(help="convention runtime 명령.", no_args_is_help=True)
+formatter_app = typer.Typer(help="formatter runtime 명령.", no_args_is_help=True)
 engine_app = typer.Typer(
-    help="2차 search runtime 명령 (P4+). v1 'ipa search'와 공존.",
+    help="search runtime 명령 (channels / search).",
     no_args_is_help=True,
 )
 app.add_typer(config_app, name="config")
@@ -69,14 +66,28 @@ console = Console()
 def _global(
     ctx: typer.Context,
     profile: str | None = typer.Option(
-        None, "--profile", help="활성 프로필 (env IPA_PROFILE > config.yaml default)"
+        None, "--profile", help="활성 프로필 (.ipa-profile/IPA_PROFILE보다 우선)"
     ),
     vault: Path | None = typer.Option(
         None, "--vault", help="vault 경로 ad-hoc 지정 (profile 우회)"
     ),
 ):
     """Resolve Settings once and stash in ctx.obj for subcommands."""
-    ctx.obj = load_settings(profile=profile, vault=vault)
+    args = sys.argv[1:]
+    profile_setup_cmd = (
+        "profile" in args
+        and len(args) > args.index("profile") + 1
+        and args[args.index("profile") + 1] in {"list", "use"}
+    )
+    if ctx.resilient_parsing or "--help" in args or "-h" in args or profile_setup_cmd:
+        return
+    try:
+        settings = load_settings(profile=profile, vault=vault)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    if warning := settings.source_map.get("tune.result_file.warning"):
+        console.print(f"[yellow]warning[/yellow] {warning}")
+    ctx.obj = settings
 
 
 def _settings(ctx: typer.Context) -> Settings:
@@ -89,10 +100,10 @@ def _call_module(module: ModuleType, args: list[str], settings: Settings) -> int
     """Invoke a core module's main() with synthetic argv. Returns exit code.
 
     The legacy scripts use argparse and sys.exit; we splice argv, swallow
-    SystemExit, and inject the active vault path when not already specified.
-    Cache directory is exported as IPA_CACHE_DIR so notes_cache writes
-    under the active profile (avoids pickle collision with the legacy
-    `~/.cache/vault_search/notes_meta.pkl` file).
+    SystemExit, and inject the active vault path when not already
+    specified. ``IPA_CACHE_DIR`` is exported so notes_cache / bm25 caches
+    write under the active profile workspace instead of the legacy
+    ``~/.cache/vault_search/`` location.
     """
     import os as _os
 
@@ -124,7 +135,7 @@ def _call_module(module: ModuleType, args: list[str], settings: Settings) -> int
             _os.environ["IPA_CACHE_DIR"] = old_cache_env
 
 
-# ── core 모듈 직접 호출 ──
+# ── legacy core 모듈 직접 호출 ──
 
 
 @app.command()
@@ -140,7 +151,7 @@ def search(
     show_all: bool = typer.Option(False, "--all", help="threshold/cap 무시"),
     reasons: bool = typer.Option(False, "--reasons", help="채널별 매칭 사유 표시"),
 ):
-    """통합 검색."""
+    """통합 검색 (legacy unified_search)."""
     if not query:
         raise typer.BadParameter("검색 쿼리를 1개 이상 지정해주세요")
     s = _settings(ctx)
@@ -205,7 +216,7 @@ def validator(
     fix: bool = typer.Option(False, "--fix", help="자동 수정"),
     dry_run: bool = typer.Option(False, "--dry-run", help="수정 미리보기"),
 ):
-    """vault 구조 검증."""
+    """vault 구조 검증 (legacy)."""
     args: list[str] = []
     if note:
         args += ["--note", note]
@@ -224,7 +235,7 @@ def validator(
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True}
 )
 def refactor(ctx: typer.Context):
-    """vault 일괄 수정 (모든 인자를 vault_refactor에 그대로 전달)."""
+    """vault 일괄 수정 (legacy; 모든 인자를 vault_refactor에 그대로 전달)."""
     raise typer.Exit(_call_module(vault_refactor, list(ctx.args), _settings(ctx)))
 
 
@@ -248,9 +259,10 @@ def config_show(
 
     rows: list[tuple[str, str]] = [
         ("profile", s.profile),
+        ("profile_dir", str(s.profile_dir)),
+        ("profile_yaml", str(s.profile_dir / "profile.yaml")),
         ("vault_path", str(s.vault_path) if s.vault_path != Path() else "(unset)"),
         ("cache_dir", str(s.cache_dir)),
-        ("config_path", str(s.config_path)),
         ("search.threshold", str(s.search.threshold)),
         ("search.max_results", str(s.search.max_results)),
     ]
@@ -267,25 +279,16 @@ def config_show(
 
 @profile_app.command("list")
 def profile_list(ctx: typer.Context):
-    """config.yaml에 정의된 프로필 목록."""
-    s = _settings(ctx)
-    names, default = list_profiles(s.config_path)
+    """profile workspace 목록."""
+    names, active = list_profiles()
     if not names:
-        console.print(
-            f"[yellow]No profiles defined in[/yellow] {s.config_path} "
-            f"(using built-in defaults; active='{s.profile}')"
-        )
+        console.print("[yellow]No profiles found under[/yellow] ~/.config/ipa/profiles")
         return
-    table = Table(title=f"profiles in {s.config_path}")
+    table = Table(title="ipa profiles")
     table.add_column("name", style="cyan")
-    table.add_column("default", style="green")
-    table.add_column("active", style="magenta")
+    table.add_column("project", style="green")
     for name in names:
-        table.add_row(
-            name,
-            "✓" if name == default else "",
-            "✓" if name == s.profile else "",
-        )
+        table.add_row(name, "✓" if name == active else "")
     console.print(table)
 
 
@@ -297,13 +300,12 @@ def profile_current(ctx: typer.Context):
 
 @profile_app.command("use")
 def profile_use(ctx: typer.Context, name: str = typer.Argument(...)):
-    """default_profile을 NAME으로 변경 (config.yaml 갱신)."""
-    s = _settings(ctx)
-    set_default_profile(name, s.config_path)
-    console.print(f"default profile → [cyan]{name}[/cyan] ({s.config_path})")
+    """현재 디렉터리에 .ipa-profile을 써서 프로젝트 profile을 선택."""
+    set_default_profile(name)
+    console.print(f".ipa-profile → [cyan]{name}[/cyan] ({Path.cwd() / '.ipa-profile'})")
 
 
-# ── 2차 convention runtime (P3) ──
+# ── convention runtime ──
 
 
 @convention_app.command("check")
@@ -325,12 +327,11 @@ def convention_check(
         False, "--summary", help="이슈 본문 대신 코드·severity별 개수 요약"
     ),
 ):
-    """2차 convention runtime — 활성 프로필의 mapping/convention로 검증."""
+    """활성 프로필의 mapping/convention으로 vault를 검증한다."""
     from ipa_cli.api.base_rules import Severity
     from ipa_cli.parse.vault_loader import load_notes
     from ipa_cli.runtime.convention_loader import load_convention
     from ipa_cli.runtime.mapping_loader import load_mapping
-    from ipa_cli.runtime.profile_loader import profile_workspace_dir
     from ipa_cli.runtime.validator_engine import run_validator, scope_allows_rule
 
     if all_:
@@ -343,11 +344,11 @@ def convention_check(
     s = _settings(ctx)
     if s.vault_path == Path():
         console.print(
-            "[red]vault_path 미설정. config.yaml 또는 IPA_VAULT_PATH로 지정하세요.[/red]"
+            "[red]vault_path 미설정. profile.yaml 또는 IPA_VAULT_PATH로 지정하세요.[/red]"
         )
         raise typer.Exit(2)
 
-    workspace = profile_workspace_dir(s.profile)
+    workspace = s.profile_dir
     workspace_arg = workspace if workspace.is_dir() else None
 
     mapping = load_mapping(workspace_arg)
@@ -418,7 +419,7 @@ def convention_check(
     raise typer.Exit(1 if has_error else 0)
 
 
-# ── 2차 formatter runtime (P3b) ──
+# ── formatter runtime ──
 
 
 def _resolve_formatter_inputs(
@@ -433,7 +434,6 @@ def _resolve_formatter_inputs(
     from ipa_cli.parse.vault_loader import load_notes
     from ipa_cli.runtime.convention_loader import load_convention
     from ipa_cli.runtime.mapping_loader import load_mapping
-    from ipa_cli.runtime.profile_loader import profile_workspace_dir
     from ipa_cli.runtime.validator_engine import run_validator
 
     if all_:
@@ -446,11 +446,11 @@ def _resolve_formatter_inputs(
     s = _settings(ctx)
     if s.vault_path == Path():
         console.print(
-            "[red]vault_path 미설정. config.yaml 또는 IPA_VAULT_PATH로 지정하세요.[/red]"
+            "[red]vault_path 미설정. profile.yaml 또는 IPA_VAULT_PATH로 지정하세요.[/red]"
         )
         raise typer.Exit(2)
 
-    workspace = profile_workspace_dir(s.profile)
+    workspace = s.profile_dir
     workspace_arg = workspace if workspace.is_dir() else None
     mapping = load_mapping(workspace_arg)
     convention = load_convention(workspace_arg)
@@ -566,7 +566,7 @@ def _render_plan(plan_result, *, summary: bool, header_extra: str) -> None:
             )
 
 
-# ── 2차 search runtime (P4) ──
+# ── search runtime ──
 
 
 def _build_engine(ctx: typer.Context):
@@ -574,18 +574,17 @@ def _build_engine(ctx: typer.Context):
     from ipa_cli.api.base_channels import SetupContext
     from ipa_cli.parse.vault_loader import load_notes
     from ipa_cli.runtime.mapping_loader import load_mapping
-    from ipa_cli.runtime.profile_loader import profile_workspace_dir
     from ipa_cli.runtime.search_engine import SearchEngine
     from ipa_cli.runtime.search_loader import load_search_channels
 
     s = _settings(ctx)
     if s.vault_path == Path():
         console.print(
-            "[red]vault_path 미설정. config.yaml 또는 IPA_VAULT_PATH로 지정하세요.[/red]"
+            "[red]vault_path 미설정. profile.yaml 또는 IPA_VAULT_PATH로 지정하세요.[/red]"
         )
         raise typer.Exit(2)
 
-    workspace = profile_workspace_dir(s.profile)
+    workspace = s.profile_dir
     workspace_arg = workspace if workspace.is_dir() else None
     mapping = load_mapping(workspace_arg)
     channels = load_search_channels(workspace_arg)
@@ -602,9 +601,12 @@ def _build_engine(ctx: typer.Context):
 
 @engine_app.command("channels")
 def engine_channels(ctx: typer.Context):
-    """2차 search engine에 등록된 채널 목록 (기본 weight + 활성 weight)."""
+    """search engine에 등록된 채널 목록 (기본 weight + 활성 weight)."""
+    from ipa_cli.runtime.search_loader import load_search_channels
+
     s = _settings(ctx)
-    _, channels, _, _ = _build_engine(ctx)
+    workspace_arg = s.profile_dir if s.profile_dir.is_dir() else None
+    channels = load_search_channels(workspace_arg)
 
     table = Table(title=f"engine channels ({len(channels)} loaded)")
     table.add_column("name", style="cyan")
@@ -643,9 +645,14 @@ def engine_search(
         None, "--weight", help="채널 weight 임시 override (예: --weight body_match=0.5)"
     ),
     explain: bool = typer.Option(False, "--explain", help="결과별 채널 raw 점수 표시"),
-    max_results: int = typer.Option(15, "--max", help="결과 cap"),
+    threshold: float | None = typer.Option(
+        None, "--threshold", help="결과 컷오프 점수 (default: active profile)"
+    ),
+    max_results: int | None = typer.Option(
+        None, "--max", help="결과 cap (default: active profile)"
+    ),
 ):
-    """SearchEngine 직접 호출. 1차 'ipa search'와 다른 ranking을 만듭니다."""
+    """SearchEngine으로 vault 검색 (channel weights + threshold + cap)."""
     from ipa_cli.api.base_channels import Query
 
     s, channels, engine, notes = _build_engine(ctx)
@@ -659,10 +666,14 @@ def engine_search(
     weights = s.search.weights or {}
     weights = {**weights, **_parse_weight_overrides(weight)}
 
-    hits = engine.search(Query(raw=query), weights=weights or None)
-    hits = hits[:max_results]
+    hits = engine.search(
+        Query(raw=query),
+        weights=weights or None,
+        threshold=s.search.threshold if threshold is None else threshold,
+        cap=s.search.max_results if max_results is None else max_results,
+    )
 
-    # P5: persist any AST tokens built this run so subsequent invocations
+    # Persist any AST tokens built this run so subsequent invocations
     # skip parsing for unchanged notes. Best-effort — failures are ignored.
     try:
         engine.persist_parsed_cache()
@@ -738,7 +749,7 @@ def list_refactors():
     console.print(table)
 
 
-# ── 후속 stub ──
+# ── tune ──
 
 
 tune_app = typer.Typer(
@@ -765,23 +776,8 @@ def _parse_only(value: str | None) -> list[str] | None:
     return [s.strip() for s in value.split(",") if s.strip()]
 
 
-def _load_testset_with_notes(s: Settings, testset_path: Path | None):
-    """Common boilerplate for tune commands (1차 path)."""
-    from ipa_cli.core.vault_parser import build_note_index, scan_vault
-
-    if s.vault_path == Path():
-        raise typer.BadParameter(
-            "vault_path 미설정. config.yaml 또는 IPA_VAULT_PATH로 지정하세요."
-        )
-    ts = load_testset(testset_path)
-    notes = scan_vault(s.vault_path)
-    notes = filter_excluded(notes, ts.get("exclude_filenames"))
-    idx = build_note_index(notes)
-    return ts, notes, idx
-
-
-def _filter_excluded_v2(notes: list, exclude_filenames: list[str] | None) -> list:
-    """``filter_excluded`` analogue for 2차 ``Note`` (id-keyed)."""
+def _filter_excluded(notes: list, exclude_filenames: list[str] | None) -> list:
+    """``exclude_filenames``에 해당하는 ``Note``를 제거 (id 매칭)."""
     if not exclude_filenames:
         return notes
     excl = set(exclude_filenames)
@@ -793,7 +789,9 @@ def tune_run(
     ctx: typer.Context,
     trials: int = typer.Option(200, "--trials", "-n", help="Optuna trial 수"),
     apply_best: bool = typer.Option(
-        False, "--apply", help="best weights를 활성 profile config.yaml에 write-back"
+        False,
+        "--apply",
+        help="best params를 result JSON으로 저장하고 profile.yaml 포인터 갱신",
     ),
     fix: list[str] = typer.Option(
         None, "--fix", help="채널 weight 고정 (예: --fix body_match=0.30)"
@@ -810,7 +808,7 @@ def tune_run(
         True, "--tune-cap/--no-tune-cap", help="cap (max_results)도 튜닝 (default: ON)"
     ),
     testset_path: Path | None = typer.Option(
-        None, "--testset", help="testset.json 경로 (default: env > project > xdg)"
+        None, "--testset", help="testset NAME|PATH (default: profile tune/testsets)"
     ),
     no_persist: bool = typer.Option(
         False, "--no-persist", help="study sqlite 영속화 끄고 in-memory만"
@@ -818,28 +816,28 @@ def tune_run(
 ):
     """채널 weight + threshold + cap을 동시 튜닝하는 TPE study.
 
-    G7: trials reuse a single ``SearchEngine`` setup. Channel discovery,
-    scoring, and threshold/cap pruning all flow through 2차 engine — no
-    1차 ``vault_search`` global mutation between trials.
+    Trials reuse a single ``SearchEngine`` setup — channel discovery,
+    scoring, and threshold/cap pruning all flow through the engine, so
+    trial cost is dominated by per-channel scoring rather than index
+    rebuilds.
     """
     if ctx.invoked_subcommand is not None:
         return  # subcommand가 직접 처리
 
-    from ipa_cli.tune import filter_excluded as _filter_excluded_v1  # noqa: F401
-    from ipa_cli.tune.engine_runner import run_engine_study
+    from ipa_cli.tune.runner import run_study
 
-    s, _channels, engine, notes_v2 = _build_engine(ctx)
-    ts = load_testset(testset_path)
-    notes_v2 = _filter_excluded_v2(notes_v2, ts.get("exclude_filenames"))
+    s, _channels, engine, notes = _build_engine(ctx)
+    ts = load_testset(testset_path, profile=s.profile)
+    notes = _filter_excluded(notes, ts.get("exclude_filenames"))
     # Rebuild engine context with the filtered note list so excluded
     # entries don't enter BM25 / channel scoring.
-    engine.ctx.notes = notes_v2
+    engine.ctx.notes = notes
     regression = ts.get("cases", [])
     scenario = [c for c in (ts.get("scenario_cases") or []) if c.get("queries")]
 
     console.print(
         f"[bold]vault[/bold] {s.vault_path}  "
-        f"[bold]notes[/bold] {len(notes_v2)}  "
+        f"[bold]notes[/bold] {len(notes)}  "
         f"[bold]channels[/bold] {len(engine.channels)}  "
         f"[bold]regression[/bold] {len(regression)}  "
         f"[bold]scenario[/bold] {len(scenario)}"
@@ -853,7 +851,7 @@ def tune_run(
         if loss <= best:  # only print when we improve or equal
             console.print(f"  trial {i:4d}  loss={loss:8.2f}  ★ best={best:.2f}")
 
-    result = run_engine_study(
+    result = run_study(
         engine,
         regression,
         scenario,
@@ -888,11 +886,11 @@ def tune_run(
 
 
 def _apply_best_to_config(settings: Settings, result) -> None:
-    """P6: persist tune result as immutable artifact + flip active pointer.
+    """Persist tune result as immutable artifact + flip active pointer.
 
     Saves ``tune/results/{timestamp}.json`` (immutable) and updates
-    ``profiles.<profile>.tune.result_file`` in config.yaml via ruamel
-    round-trip. Past results stay on disk for rollback via ``ipa tune use``.
+    ``tune.result_file`` in profile.yaml via ruamel round-trip. Past
+    results stay on disk for rollback via ``ipa tune use``.
     """
     from ipa_cli.tune import (
         TuneResult,
@@ -913,11 +911,11 @@ def _apply_best_to_config(settings: Settings, result) -> None:
     )
     fname = timestamp_filename()
     saved_path = save_result(settings.profile, artifact, filename=fname)
-    write_active_result_filename(settings.profile, fname, settings.config_path)
+    write_active_result_filename(settings.profile, fname)
 
     console.print(
         f"[green]applied[/green] tune result → {saved_path}\n"
-        f"  pointer: profiles.{settings.profile}.tune.result_file = {fname}"
+        f"  pointer: {settings.profile_dir / 'profile.yaml'} tune.result_file = {fname}"
     )
 
 
@@ -931,14 +929,21 @@ def _utc_now_iso() -> str:
 def tune_analyze(
     ctx: typer.Context,
     testset_path: Path | None = typer.Option(
-        None, "--testset", help="testset.json 경로"
+        None, "--testset", help="testset NAME|PATH"
     ),
     top_n: int = typer.Option(10, "--top", help="각 케이스의 score 수집 깊이"),
 ):
-    """Threshold 분포 분석 (정답·noise 점수 percentile + X 후보 시뮬)."""
-    s = _settings(ctx)
-    ts, notes, idx = _load_testset_with_notes(s, testset_path)
-    result = analyze_threshold(notes, idx, ts, top_n=top_n)
+    """Threshold 분포 분석 (정답·noise 점수 percentile + 후보 X 시뮬)."""
+    s, _channels, engine, notes = _build_engine(ctx)
+    ts = load_testset(testset_path, profile=s.profile)
+    notes = _filter_excluded(notes, ts.get("exclude_filenames"))
+    engine.ctx.notes = notes
+    result = analyze_threshold(
+        engine,
+        ts,
+        weights=dict(s.search.weights) if s.search.weights else None,
+        top_n=top_n,
+    )
 
     console.print(
         f"[bold]cases[/bold] {result.n_cases}  "
@@ -994,24 +999,24 @@ def tune_analyze(
 def tune_eval(
     ctx: typer.Context,
     testset_path: Path | None = typer.Option(
-        None, "--testset", help="testset.json 경로 (default: env > project > xdg)"
+        None, "--testset", help="testset NAME|PATH (default: profile tune/testsets)"
     ),
 ):
     """현재 활성 search params로 baseline loss/metrics 측정 (튜닝 안 함).
 
-    G7: routes through 2차 ``SearchEngine`` so eval and tune share a
-    single scoring path. The engine is set up once and reused.
+    Routes through ``SearchEngine`` so eval and tune share a single
+    scoring path; the engine is set up once and reused.
     """
-    from ipa_cli.tune.engine_loss import compute_loss_v2
+    from ipa_cli.tune.loss import compute_loss
 
-    s, _channels, engine, notes_v2 = _build_engine(ctx)
-    ts = load_testset(testset_path)
-    notes_v2 = _filter_excluded_v2(notes_v2, ts.get("exclude_filenames"))
-    engine.ctx.notes = notes_v2
+    s, _channels, engine, notes = _build_engine(ctx)
+    ts = load_testset(testset_path, profile=s.profile)
+    notes = _filter_excluded(notes, ts.get("exclude_filenames"))
+    engine.ctx.notes = notes
     regression = ts.get("cases", [])
     scenario = [c for c in (ts.get("scenario_cases") or []) if c.get("queries")]
 
-    loss, metrics = compute_loss_v2(
+    loss, metrics = compute_loss(
         engine,
         regression,
         scenario,
@@ -1038,7 +1043,7 @@ def tune_list(ctx: typer.Context):
 
     s = _settings(ctx)
     history = list_results(s.profile)
-    active = read_active_result_filename(s.profile, s.config_path)
+    active = read_active_result_filename(s.profile)
 
     if not history:
         console.print(
@@ -1088,10 +1093,10 @@ def tune_use(
     # Sanity check: ensure the file is loadable JSON.
     load_result(s.profile, target)
 
-    write_active_result_filename(s.profile, target, s.config_path)
+    write_active_result_filename(s.profile, target)
     console.print(
         f"[green]switched[/green] active tune result → {target}\n"
-        f"  pointer: profiles.{s.profile}.tune.result_file = {target}"
+        f"  pointer: {s.profile_dir / 'profile.yaml'} tune.result_file = {target}"
     )
 
 

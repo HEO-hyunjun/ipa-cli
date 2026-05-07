@@ -1,24 +1,24 @@
-"""Optuna TPE driver for `ipa tune`.
+"""Optuna TPE study driven by ``SearchEngine``.
 
-Discovers tunable channels from the plugin registry, optimizes
-weights + threshold + cap simultaneously against the testset loss.
-Persists the study in `~/.cache/ipa/{profile}/optuna.db` so resuming
-is free.
+Trials reuse a single ``SearchEngine`` instance: ``setup()`` runs once
+before the trial loop and each trial only varies ``weights`` /
+``threshold`` / ``cap``. Trial cost stays dominated by per-channel
+scoring (already lazy inside the engine), not index rebuilds.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import optuna
 from optuna.samplers import TPESampler
 
-from ipa_cli.core import vault_search
-from ipa_cli.plugins import get_channels
-
 from .loss import Metrics, compute_loss
+
+if TYPE_CHECKING:
+    from ipa_cli.runtime.search_engine import SearchEngine
 
 THRESHOLD_RANGE = (0.05, 0.55)
 CAP_RANGE = (5, 30)
@@ -37,9 +37,9 @@ class StudyResult:
     storage_url: str
 
 
-def _resolve_channel_keys(only: list[str] | None) -> list[str]:
-    """Channels to tune — registry-driven."""
-    keys = list(get_channels().keys())
+def _resolve_channel_keys(engine: "SearchEngine", only: list[str] | None) -> list[str]:
+    """Tunable channel names — taken from the engine, not a global registry."""
+    keys = [c.name for c in engine.channels]
     if only:
         wanted = set(only)
         keys = [k for k in keys if k in wanted]
@@ -47,8 +47,7 @@ def _resolve_channel_keys(only: list[str] | None) -> list[str]:
 
 
 def run_study(
-    notes,
-    idx,
+    engine: "SearchEngine",
     regression_cases: list[dict[str, Any]],
     scenario_cases: list[dict[str, Any]],
     n_trials: int = 200,
@@ -57,15 +56,25 @@ def run_study(
     fixed_weights: dict[str, float] | None = None,
     only_keys: list[str] | None = None,
     fixed_threshold: float = 0.30,
-    fixed_cap: int = 15,
+    fixed_cap: int = 10,
     study_dir: Path | None = None,
     study_name: str = "ipa-tune",
     seed: int = 42,
     on_trial: Any = None,
 ) -> StudyResult:
-    """Run Optuna TPE study; return best params + metrics."""
+    """Run a TPE study using ``engine`` as the search backend.
+
+    The caller is responsible for building ``engine`` with the desired
+    notes/cache_dir and (optionally) calling ``engine.setup()`` ahead of
+    time. This function will call ``setup()`` once if it hasn't been
+    done yet — never inside the trial loop.
+    """
     fixed = dict(fixed_weights or {})
-    keys = [k for k in _resolve_channel_keys(only_keys) if k not in fixed]
+    keys = [k for k in _resolve_channel_keys(engine, only_keys) if k not in fixed]
+
+    # Engine setup runs exactly once. ``SearchEngine.setup`` is idempotent
+    # via ``_setup_done``, so calling here is safe even if the caller did.
+    engine.setup()
 
     if study_dir is None:
         storage_url = "sqlite:///:memory:"
@@ -82,16 +91,10 @@ def run_study(
         load_if_exists=True,
     )
 
-    base_w = dict(vault_search._CHANNEL_WEIGHTS)
-
     def objective(trial: optuna.Trial) -> float:
         w = dict(fixed)
         for k in keys:
             w[k] = trial.suggest_float(k, *WEIGHT_RANGE)
-        # Keep all original keys in vault_search's global, even if not tuned
-        merged = dict(base_w)
-        merged.update(w)
-        vault_search._CHANNEL_WEIGHTS.update(merged)
         threshold = (
             trial.suggest_float("threshold", *THRESHOLD_RANGE)
             if tune_threshold
@@ -99,25 +102,20 @@ def run_study(
         )
         cap = trial.suggest_int("cap", *CAP_RANGE) if tune_cap else fixed_cap
         loss, _ = compute_loss(
-            notes, idx, regression_cases, scenario_cases, threshold, cap
+            engine, regression_cases, scenario_cases, w, threshold, cap
         )
         return loss
 
-    try:
-        for i in range(n_trials):
-            trial = study.ask()
-            try:
-                loss = objective(trial)
-            except Exception:
-                study.tell(trial, state=optuna.trial.TrialState.FAIL)
-                continue
-            study.tell(trial, loss)
-            if on_trial is not None:
-                on_trial(i, loss, study.best_value)
-    finally:
-        # Always restore the global weights on exit so other commands are unaffected.
-        vault_search._CHANNEL_WEIGHTS.clear()
-        vault_search._CHANNEL_WEIGHTS.update(base_w)
+    for i in range(n_trials):
+        trial = study.ask()
+        try:
+            loss = objective(trial)
+        except Exception:
+            study.tell(trial, state=optuna.trial.TrialState.FAIL)
+            continue
+        study.tell(trial, loss)
+        if on_trial is not None:
+            on_trial(i, loss, study.best_value)
 
     best_params = dict(study.best_params)
     best_threshold = best_params.pop("threshold", fixed_threshold)
@@ -125,26 +123,20 @@ def run_study(
     best_weights = dict(fixed)
     best_weights.update({k: float(best_params[k]) for k in keys if k in best_params})
 
-    # Recompute metrics with best params
-    merged = dict(base_w)
-    merged.update(best_weights)
-    vault_search._CHANNEL_WEIGHTS.update(merged)
-    try:
-        _, m = compute_loss(
-            notes,
-            idx,
-            regression_cases,
-            scenario_cases,
-            best_threshold,
-            best_cap,
-        )
-    finally:
-        vault_search._CHANNEL_WEIGHTS.clear()
-        vault_search._CHANNEL_WEIGHTS.update(base_w)
+    # Recompute metrics with best params so callers can show reg/scn hit
+    # without re-running the trial loop.
+    _, best_metrics = compute_loss(
+        engine,
+        regression_cases,
+        scenario_cases,
+        best_weights,
+        best_threshold,
+        best_cap,
+    )
 
     return StudyResult(
         best_loss=study.best_value,
-        best_metrics=m,
+        best_metrics=best_metrics,
         best_weights=best_weights,
         best_threshold=best_threshold,
         best_cap=best_cap,

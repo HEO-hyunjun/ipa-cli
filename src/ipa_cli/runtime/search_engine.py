@@ -71,12 +71,16 @@ class SearchEngine:
         self,
         query: "Query",
         weights: dict[str, float] | None = None,
+        *,
+        threshold: float | None = None,
+        cap: int | None = None,
     ) -> list[Hit]:
         """Combine per-channel scores into a sorted Hit list."""
         self.setup()
         weight_map = dict(weights or {})
 
         per_channel: dict[str, dict[str, float]] = {}
+        channels_by_name = {channel.name: channel for channel in self.channels}
         combined: dict[str, float] = {}
 
         for channel in self.channels:
@@ -89,20 +93,29 @@ class SearchEngine:
 
         hits: list[Hit] = []
         for note_id, score in combined.items():
-            explanations = _build_explanations(note_id, per_channel)
+            if threshold is not None and score < threshold:
+                continue
+            explanations = _build_explanations(note_id, per_channel, channels_by_name)
             hits.append(Hit(note_id=note_id, score=score, explanations=explanations))
         hits.sort(key=lambda h: h.score, reverse=True)
+        if cap is not None:
+            hits = hits[:cap]
         return hits
 
 
 def _build_explanations(
     note_id: str,
     per_channel: dict[str, dict[str, float]],
+    channels_by_name: dict[str, "BaseSearchChannel"],
 ) -> dict[str, dict[str, Any]] | None:
     out: dict[str, dict[str, Any]] = {}
     for ch_name, scores in per_channel.items():
         raw = scores.get(note_id)
         if raw is None:
             continue
-        out[ch_name] = {"raw": raw}
+        payload = {"raw": raw}
+        details = channels_by_name[ch_name].explain(note_id)
+        if details:
+            payload.update(details)
+        out[ch_name] = payload
     return out or None

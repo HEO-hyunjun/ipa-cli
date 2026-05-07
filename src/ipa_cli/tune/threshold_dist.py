@@ -1,4 +1,4 @@
-"""Threshold distribution analysis (port of legacy threshold_dist.py).
+"""Threshold distribution analysis over the 2차 ``SearchEngine``.
 
 Runs the testset against the *current* weights, collects the score of
 the right answer in each case (the score we must keep above threshold)
@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from ipa_cli.core.vault_search import multi_search
+from ipa_cli.api.base_channels import Query
 
 from .eval_set import topn_for_mode
 
@@ -77,8 +77,13 @@ def _summarize(values: list[float]) -> Distribution | None:
 
 
 def analyze_threshold(
-    notes, idx, testset: dict[str, Any], top_n: int = 10
+    engine,
+    testset: dict[str, Any],
+    *,
+    weights: dict[str, float] | None = None,
+    top_n: int = 10,
 ) -> AnalysisResult:
+    """Threshold distribution analysis over the 2차 ``SearchEngine``."""
     correct_scores: list[float] = []
     noise_scores: list[float] = []
     case_results: list[tuple[str, float | None, list[float]]] = []
@@ -86,14 +91,19 @@ def analyze_threshold(
 
     def _collect(case_id, queries, targets, n_top=10):
         nonlocal miss_cases
-        results = multi_search(queries, notes, idx, max_results=max(n_top, 10))
-        topn = [(n.filename, score) for n, score, _ in results[:n_top]]
+        combined: dict[str, float] = {}
+        for q in queries:
+            if not q:
+                continue
+            for hit in engine.search(Query(raw=q), weights=weights):
+                combined[hit.note_id] = combined.get(hit.note_id, 0.0) + hit.score
+        topn = sorted(combined.items(), key=lambda x: x[1], reverse=True)[:n_top]
         target_score: float | None = None
-        for fn, score in topn:
-            if fn in targets:
+        for note_id, score in topn:
+            if note_id in targets:
                 if target_score is None or score > target_score:
                     target_score = score
-        noise = [score for fn, score in topn if fn not in targets]
+        noise = [score for note_id, score in topn if note_id not in targets]
         if target_score is not None:
             correct_scores.append(target_score)
             noise_scores.extend(noise)

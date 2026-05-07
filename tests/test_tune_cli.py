@@ -19,24 +19,19 @@ from ipa_cli.tune import TuneResult, save_result
 def isolated_xdg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg-cache"))
-    monkeypatch.delenv("IPA_PROFILE", raising=False)
+    monkeypatch.setenv("IPA_PROFILE", "personal")
     monkeypatch.delenv("IPA_VAULT_PATH", raising=False)
     return tmp_path / "xdg-config"
 
 
 def _seed_config(isolated_xdg: Path, profile: str = "personal") -> Path:
-    cfg = isolated_xdg / "ipa" / "config.yaml"
-    cfg.parent.mkdir(parents=True, exist_ok=True)
-    cfg.write_text(
-        yaml.safe_dump(
-            {
-                "default_profile": profile,
-                "profiles": {profile: {"vault_path": "/tmp/v"}},
-            }
-        ),
+    profile_yaml = isolated_xdg / "ipa" / "profiles" / profile / "profile.yaml"
+    profile_yaml.parent.mkdir(parents=True, exist_ok=True)
+    profile_yaml.write_text(
+        yaml.safe_dump({"vault_path": "/tmp/v"}),
         encoding="utf-8",
     )
-    return cfg
+    return profile_yaml
 
 
 def _result(threshold: float = 0.30) -> TuneResult:
@@ -55,13 +50,8 @@ def test_tune_list_shows_history_with_active_marker(isolated_xdg: Path) -> None:
     cfg.write_text(
         yaml.safe_dump(
             {
-                "default_profile": "personal",
-                "profiles": {
-                    "personal": {
-                        "vault_path": "/tmp/v",
-                        "tune": {"result_file": "2026-05-06T21-30-00.json"},
-                    }
-                },
+                "vault_path": "/tmp/v",
+                "tune": {"result_file": "2026-05-06T21-30-00.json"},
             }
         ),
         encoding="utf-8",
@@ -91,7 +81,7 @@ def test_tune_use_flips_active_pointer(isolated_xdg: Path) -> None:
     assert "switched" in result.stdout
 
     after = yaml.safe_load(cfg.read_text(encoding="utf-8"))
-    assert after["profiles"]["personal"]["tune"]["result_file"] == "beta.json"
+    assert after["tune"]["result_file"] == "beta.json"
 
 
 def test_tune_use_rejects_unknown_filename(isolated_xdg: Path) -> None:
@@ -109,4 +99,4 @@ def test_tune_use_appends_json_suffix_implicitly(isolated_xdg: Path) -> None:
     result = CliRunner().invoke(app, ["tune", "use", "alpha"])
     assert result.exit_code == 0, result.stdout
     after = yaml.safe_load(cfg.read_text(encoding="utf-8"))
-    assert after["profiles"]["personal"]["tune"]["result_file"] == "alpha.json"
+    assert after["tune"]["result_file"] == "alpha.json"

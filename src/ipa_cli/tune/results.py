@@ -2,16 +2,15 @@
 
 The 2차 plan treats every tune run's output as an immutable JSON file
 under ``profile_workspace/tune/results/{timestamp}.json``. The "currently
-active" result is whichever filename ``profile.yaml`` (or the section
-under ``profiles[name].tune.result_file`` in the consolidated
-``config.yaml``) points at. Rolling back to a past result is just
-flipping the pointer — the historical artifacts stay on disk untouched.
+active" result is whichever filename ``profile.yaml`` points at. Rolling
+back to a past result is just flipping the pointer — the historical
+artifacts stay on disk untouched.
 
 Why a separate module:
   - keeps result schema in one place so CLI + loader + tests agree on
     ``threshold / max_results / weights / study`` keys
   - shields ``runner.py`` from ruamel-yaml round-trip concerns; only this
-    module updates ``config.yaml``
+    module updates ``profile.yaml``
   - test surface stays small (round-trip / list ordering / pointer
     rewrite) without dragging in Optuna
 """
@@ -60,6 +59,11 @@ def profile_workspace(profile: str) -> Path:
 def results_dir(profile: str) -> Path:
     """``{profile_workspace}/tune/results/`` — created on demand."""
     return profile_workspace(profile) / "tune" / "results"
+
+
+def profile_yaml_path(profile: str) -> Path:
+    """``{profile_workspace}/profile.yaml``."""
+    return profile_workspace(profile) / "profile.yaml"
 
 
 def timestamp_filename(now: datetime | None = None) -> str:
@@ -130,31 +134,33 @@ def list_results(profile: str) -> list[str]:
     return timestamped + other
 
 
-def read_active_result_filename(profile: str, config_path: Path) -> str | None:
-    """Return ``profiles.<profile>.tune.result_file`` or ``None``.
+def read_active_result_filename(
+    profile: str, config_path: Path | None = None
+) -> str | None:
+    """Return ``tune.result_file`` from profile.yaml or ``None``.
 
+    ``config_path`` is accepted for the old public signature but ignored.
     Reads via plain yaml (no comments needed for read path); writes use
     ruamel.yaml round-trip via ``write_active_result_filename``.
     """
-    if not config_path.is_file():
+    path = profile_yaml_path(profile)
+    if not path.is_file():
         return None
     import yaml
 
-    with config_path.open("r", encoding="utf-8") as f:
+    with path.open("r", encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
     if not isinstance(data, dict):
         return None
-    profiles = data.get("profiles") or {}
-    profile_data = profiles.get(profile) or {}
-    tune_section = profile_data.get("tune") or {}
+    tune_section = data.get("tune") or {}
     name = tune_section.get("result_file")
     return name if isinstance(name, str) and name else None
 
 
 def write_active_result_filename(
-    profile: str, filename: str, config_path: Path
+    profile: str, filename: str, config_path: Path | None = None
 ) -> None:
-    """Set ``profiles.<profile>.tune.result_file = filename`` in-place.
+    """Set ``tune.result_file = filename`` in profile.yaml.
 
     Uses ruamel.yaml so existing comments and key ordering survive.
     Creates missing parent maps if necessary.
@@ -163,23 +169,24 @@ def write_active_result_filename(
 
     yaml = YAML()
     yaml.preserve_quotes = True
-    if config_path.is_file():
-        with config_path.open("r", encoding="utf-8") as f:
+    path = profile_yaml_path(profile)
+    if path.is_file():
+        with path.open("r", encoding="utf-8") as f:
             data = yaml.load(f) or {}
     else:
         data = {}
 
-    profiles = data.setdefault("profiles", {})
-    profile_data = profiles.setdefault(profile, {})
-    tune_section = profile_data.setdefault("tune", {})
+    tune_section = data.setdefault("tune", {})
     tune_section["result_file"] = filename
 
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    with config_path.open("w", encoding="utf-8") as f:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
         yaml.dump(data, f)
 
 
-def resolve_active_result(profile: str, config_path: Path) -> TuneResult | None:
+def resolve_active_result(
+    profile: str, config_path: Path | None = None
+) -> TuneResult | None:
     """Read the pointer + load the JSON. Missing file → None + caller warns."""
     name = read_active_result_filename(profile, config_path)
     if not name:

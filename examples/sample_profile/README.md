@@ -12,7 +12,7 @@ cp -R examples/sample_profile ~/.config/ipa/profiles/sample
 
 Then either:
 
-- Add `default_profile: sample` to `~/.config/ipa/config.yaml`, or
+- Select it for the current project: `printf "sample\n" > .ipa-profile`, or
 - Use it ad-hoc per command: `ipa --profile sample <command>`
 
 `profile.yaml` reads `vault_path: ${IPA_VAULT_PATH}`, so make sure that
@@ -63,5 +63,5 @@ The list is explicit on purpose — what you see is what runs.
 `tune/testsets/` is where you place evaluation testsets. Run
 `ipa --profile sample tune --apply` to write a new
 `tune/results/{timestamp}.json` and rotate the
-`profile.tune.result_file` pointer in `config.yaml`. Past results stay
+`tune.result_file` pointer in `profile.yaml`. Past results stay
 on disk so `ipa tune list` and `ipa tune use <filename>` can roll back.

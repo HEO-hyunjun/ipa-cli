@@ -1,18 +1,18 @@
 """Optuna-driven tuning for search weights, threshold, and cap."""
 
-from .engine_loss import (
-    compute_loss_v2,
-    evaluate_regression_v2,
-    evaluate_scenario_v2,
+from .eval_set import default_testset_path, load_testset
+from .loss import (
+    Metrics,
+    compute_loss,
+    evaluate_regression,
+    evaluate_scenario,
 )
-from .engine_runner import run_engine_study
-from .eval_set import default_testset_path, filter_excluded, load_testset
-from .loss import Metrics, compute_loss
 from .results import (
     TuneResult,
     list_results,
     load_result,
     profile_workspace,
+    profile_yaml_path,
     read_active_result_filename,
     resolve_active_result,
     results_dir,
@@ -30,19 +30,17 @@ __all__ = [
     "TuneResult",
     "analyze_threshold",
     "compute_loss",
-    "compute_loss_v2",
     "default_testset_path",
-    "evaluate_regression_v2",
-    "evaluate_scenario_v2",
-    "filter_excluded",
+    "evaluate_regression",
+    "evaluate_scenario",
     "list_results",
     "load_result",
     "load_testset",
     "profile_workspace",
+    "profile_yaml_path",
     "read_active_result_filename",
     "resolve_active_result",
     "results_dir",
-    "run_engine_study",
     "run_study",
     "save_result",
     "timestamp_filename",

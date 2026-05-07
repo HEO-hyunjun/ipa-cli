@@ -86,42 +86,30 @@ def test_list_results_empty_for_unseen_profile(isolated_xdg: Path) -> None:
 
 
 def test_active_pointer_read_write_round_trip(isolated_xdg: Path) -> None:
-    cfg = isolated_xdg / "ipa" / "config.yaml"
-    cfg.parent.mkdir(parents=True, exist_ok=True)
-    cfg.write_text(
-        yaml.safe_dump(
-            {
-                "default_profile": "p",
-                "profiles": {"p": {"vault_path": "/tmp/v"}},
-            }
-        ),
-        encoding="utf-8",
-    )
-    assert read_active_result_filename("p", cfg) is None
+    profile_yaml = isolated_xdg / "ipa" / "profiles" / "p" / "profile.yaml"
+    profile_yaml.parent.mkdir(parents=True, exist_ok=True)
+    profile_yaml.write_text("vault_path: /tmp/v\n", encoding="utf-8")
+    assert read_active_result_filename("p") is None
 
-    write_active_result_filename("p", "2026-05-06T21-30-00.json", cfg)
-    assert read_active_result_filename("p", cfg) == "2026-05-06T21-30-00.json"
+    write_active_result_filename("p", "2026-05-06T21-30-00.json")
+    assert read_active_result_filename("p") == "2026-05-06T21-30-00.json"
 
     # other keys preserved
-    data = yaml.safe_load(cfg.read_text(encoding="utf-8"))
-    assert data["profiles"]["p"]["vault_path"] == "/tmp/v"
+    data = yaml.safe_load(profile_yaml.read_text(encoding="utf-8"))
+    assert data["vault_path"] == "/tmp/v"
 
 
 def test_active_pointer_preserves_yaml_comments(isolated_xdg: Path) -> None:
     """ruamel round-trip — comments must survive write_active_result_filename."""
-    cfg = isolated_xdg / "ipa" / "config.yaml"
-    cfg.parent.mkdir(parents=True, exist_ok=True)
-    cfg.write_text(
-        "# top-level comment\n"
-        "default_profile: p\n"
-        "profiles:\n"
-        "  p:\n"
-        "    vault_path: /tmp/v  # inline\n",
+    profile_yaml = isolated_xdg / "ipa" / "profiles" / "p" / "profile.yaml"
+    profile_yaml.parent.mkdir(parents=True, exist_ok=True)
+    profile_yaml.write_text(
+        "# profile comment\nvault_path: /tmp/v  # inline\n",
         encoding="utf-8",
     )
-    write_active_result_filename("p", "2026-05-06T21-30-00.json", cfg)
-    text = cfg.read_text(encoding="utf-8")
-    assert "# top-level comment" in text
+    write_active_result_filename("p", "2026-05-06T21-30-00.json")
+    text = profile_yaml.read_text(encoding="utf-8")
+    assert "# profile comment" in text
     assert "# inline" in text
     assert "result_file" in text
 
@@ -129,35 +117,19 @@ def test_active_pointer_preserves_yaml_comments(isolated_xdg: Path) -> None:
 def test_resolve_active_falls_back_to_none_when_file_missing(
     isolated_xdg: Path,
 ) -> None:
-    cfg = isolated_xdg / "ipa" / "config.yaml"
-    cfg.parent.mkdir(parents=True, exist_ok=True)
-    cfg.write_text(
-        yaml.safe_dump(
-            {
-                "default_profile": "p",
-                "profiles": {"p": {"tune": {"result_file": "missing.json"}}},
-            }
-        ),
-        encoding="utf-8",
-    )
+    profile_yaml = isolated_xdg / "ipa" / "profiles" / "p" / "profile.yaml"
+    profile_yaml.parent.mkdir(parents=True, exist_ok=True)
+    profile_yaml.write_text("tune:\n  result_file: missing.json\n", encoding="utf-8")
     # Pointer is set but file doesn't exist → resolve returns None (caller warns).
-    assert resolve_active_result("p", cfg) is None
+    assert resolve_active_result("p") is None
 
 
 def test_resolve_active_returns_loaded_result(isolated_xdg: Path) -> None:
     save_result("p", _make_result(threshold=0.42), filename="active.json")
-    cfg = isolated_xdg / "ipa" / "config.yaml"
-    cfg.parent.mkdir(parents=True, exist_ok=True)
-    cfg.write_text(
-        yaml.safe_dump(
-            {
-                "default_profile": "p",
-                "profiles": {"p": {"tune": {"result_file": "active.json"}}},
-            }
-        ),
-        encoding="utf-8",
-    )
-    resolved = resolve_active_result("p", cfg)
+    profile_yaml = isolated_xdg / "ipa" / "profiles" / "p" / "profile.yaml"
+    profile_yaml.parent.mkdir(parents=True, exist_ok=True)
+    profile_yaml.write_text("tune:\n  result_file: active.json\n", encoding="utf-8")
+    resolved = resolve_active_result("p")
     assert resolved is not None
     assert resolved.threshold == 0.42
 

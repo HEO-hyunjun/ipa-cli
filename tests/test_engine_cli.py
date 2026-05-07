@@ -182,18 +182,8 @@ channels = [AstChannel()]
 """,
         encoding="utf-8",
     )
-    config_path = isolated_config / "ipa" / "config.yaml"
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(
-        yaml.safe_dump(
-            {
-                "default_profile": "ast-channel",
-                "profiles": {
-                    "ast-channel": {"vault_path": str(vault)},
-                },
-            }
-        ),
-        encoding="utf-8",
+    (profile_dir / "profile.yaml").write_text(
+        yaml.safe_dump({"vault_path": str(vault)}), encoding="utf-8"
     )
 
     runner = CliRunner()
@@ -202,9 +192,8 @@ channels = [AstChannel()]
     )
     assert result.exit_code == 0, result.stdout
 
-    # Cache lives under XDG_CACHE_HOME/ipa/{profile}/, isolated by fixture.
-    cache_root = isolated_config.parent / "xdg-cache"
-    cache_files = list(cache_root.rglob("parsed_index.pkl"))
+    # Cache lives inside the profile workspace.
+    cache_files = list((profile_dir / ".cache").rglob("parsed_index.pkl"))
     assert cache_files, (
         "parsed_index.pkl should be written when a channel touches body_ast"
     )
@@ -234,18 +223,8 @@ channels = [StubChannel()]
 """,
         encoding="utf-8",
     )
-    config_path = isolated_config / "ipa" / "config.yaml"
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(
-        yaml.safe_dump(
-            {
-                "default_profile": "test-engine",
-                "profiles": {
-                    "test-engine": {"vault_path": str(vault)},
-                },
-            }
-        ),
-        encoding="utf-8",
+    (profile_dir / "profile.yaml").write_text(
+        yaml.safe_dump({"vault_path": str(vault)}), encoding="utf-8"
     )
 
     runner = CliRunner()

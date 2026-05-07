@@ -1,22 +1,35 @@
-"""Loss + per-case evaluation with threshold and cap applied.
+"""Loss + per-case evaluation built on the ``SearchEngine``.
 
-loss = regression_miss × 100 + scenario_miss × 50 + avg_rank
+Engine-based tune trials must reuse a single ``SearchEngine`` instance —
+the engine's ``setup()`` runs once before the trial loop and each trial
+only varies ``weights`` / ``threshold`` / ``cap``.
 
-Threshold and cap are applied AFTER `multi_search` produces ranked
-results: items with score < threshold are dropped, then the list is
-truncated to `cap`. A higher threshold or smaller cap can therefore
-turn a former hit into a miss, which is exactly the trade-off the
-tuner has to navigate.
+Multi-query handling: a case with ``queries=[q1, q2]`` runs
+``engine.search(qN, weights)`` for each query and sums per-note scores.
+Threshold and cap apply to the summed list (cap enforced after the
+threshold cut). The penalty model:
+
+    loss = regression_miss × REGRESSION_MISS_PENALTY
+         + scenario_miss × SCENARIO_MISS_PENALTY
+         + avg_rank
+
+Target matching: testsets reference notes by filename
+(``target_filename`` / ``target_filenames``). ``Note.id`` is the
+NFC-normalized stem, which matches what testsets ship.
 """
 
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from ipa_cli.core.vault_search import multi_search
+from ipa_cli.api.base_channels import Query
 
 from .eval_set import topn_for_mode
+
+if TYPE_CHECKING:
+    from ipa_cli.runtime.search_engine import SearchEngine
 
 REGRESSION_MISS_PENALTY = 100
 SCENARIO_MISS_PENALTY = 50
@@ -31,77 +44,117 @@ class Metrics:
     avg_rank: float
 
 
-def _filter_truncate(results, threshold: float, cap: int):
-    out = []
-    for n, score, reasons in results:
-        if score < threshold:
+@dataclass(frozen=True)
+class _Ranked:
+    """Internal: ``(note_id, score)`` after threshold + cap pruning."""
+
+    note_id: str
+    score: float
+
+
+def _nfc(s: str) -> str:
+    return unicodedata.normalize("NFC", s)
+
+
+def _multi_search(
+    engine: "SearchEngine",
+    queries: list[str],
+    weights: dict[str, float] | None,
+    threshold: float,
+    cap: int,
+) -> list[_Ranked]:
+    """Sum per-query Hit scores → threshold filter → cap.
+
+    ``weights`` can omit channels (they fall back to ``default_weight``).
+    Ordering after threshold is by descending summed score.
+    """
+    combined: dict[str, float] = {}
+    for q in queries:
+        if not q:
             continue
-        out.append((n, score, reasons))
-        if len(out) >= cap:
-            break
-    return out
+        hits = engine.search(Query(raw=q), weights=weights)
+        for h in hits:
+            combined[h.note_id] = combined.get(h.note_id, 0.0) + h.score
+    ranked = [
+        _Ranked(note_id=nid, score=s) for nid, s in combined.items() if s >= threshold
+    ]
+    ranked.sort(key=lambda r: r.score, reverse=True)
+    return ranked[:cap]
 
 
 def evaluate_regression(
-    case: dict[str, Any], notes, idx, threshold: float, cap: int
+    case: dict[str, Any],
+    engine: "SearchEngine",
+    weights: dict[str, float] | None,
+    threshold: float,
+    cap: int,
 ) -> tuple[bool, int | None]:
-    """Return (hit, rank) for a regression case."""
-    fetch = max(cap, 10) * 3  # over-fetch so threshold/cap can prune
-    results = multi_search(case["queries"], notes, idx, max_results=fetch)
-    truncated = _filter_truncate(results, threshold, cap)
-    target = case["target_filename"]
-    for i, (n, _, _) in enumerate(truncated, 1):
-        if n.filename == target:
+    """Return ``(hit, rank)`` for a regression case via ``engine.search``."""
+    target = _nfc(str(case["target_filename"]))
+    ranked = _multi_search(engine, case["queries"], weights, threshold, cap)
+    for i, r in enumerate(ranked, 1):
+        if _nfc(r.note_id) == target:
             return True, i
     return False, None
 
 
 def evaluate_scenario(
-    case: dict[str, Any], notes, idx, threshold: float, cap: int
+    case: dict[str, Any],
+    engine: "SearchEngine",
+    weights: dict[str, float] | None,
+    threshold: float,
+    cap: int,
 ) -> tuple[bool, int | None]:
-    n_top = topn_for_mode(case.get("recall_mode", "top10"))
-    queries = case["queries"]
+    """Return ``(hit, best_rank)`` for a scenario case.
+
+    Hit rule: at least ``recall_threshold`` of the case's targets show
+    up within the top-N (where N = ``topn_for_mode(recall_mode)``) of
+    the threshold/cap-pruned list. ``best_rank`` is the lowest rank
+    among matched targets.
+    """
+    queries = case.get("queries") or []
     if not queries:
         return False, None
-    fetch = max(cap, n_top, 10) * 3
-    results = multi_search(queries, notes, idx, max_results=fetch)
-    truncated = _filter_truncate(results, threshold, cap)[:n_top]
-    topn = [n.filename for n, _, _ in truncated]
+    n_top = topn_for_mode(case.get("recall_mode", "top10"))
+    ranked = _multi_search(engine, queries, weights, threshold, cap)[:n_top]
+    topn_ids = [_nfc(r.note_id) for r in ranked]
 
-    targets = case.get("target_filenames") or [case.get("target_filename")]
-    targets = [t for t in targets if t]
-    recall_threshold = case.get("recall_threshold", 1)
+    raw_targets = case.get("target_filenames") or [case.get("target_filename")]
+    targets = [_nfc(str(t)) for t in raw_targets if t]
+    recall_threshold = int(case.get("recall_threshold", 1))
 
-    matched = [t for t in targets if t in topn]
+    matched = [t for t in targets if t in topn_ids]
     if len(matched) < recall_threshold:
         return False, None
-    best_rank = min(topn.index(t) + 1 for t in matched)
+    best_rank = min(topn_ids.index(t) + 1 for t in matched)
     return True, best_rank
 
 
 def compute_loss(
-    notes,
-    idx,
+    engine: "SearchEngine",
     regression_cases: list[dict[str, Any]],
     scenario_cases: list[dict[str, Any]],
+    weights: dict[str, float] | None,
     threshold: float,
     cap: int,
 ) -> tuple[float, Metrics]:
+    """Engine-based total loss + ``Metrics``. Engine must be ``setup()``-ed."""
     reg_miss = 0
     scn_miss = 0
     ranks: list[int] = []
     for c in regression_cases:
-        hit, rank = evaluate_regression(c, notes, idx, threshold, cap)
+        hit, rank = evaluate_regression(c, engine, weights, threshold, cap)
         if hit and rank is not None:
             ranks.append(rank)
         else:
             reg_miss += 1
     for c in scenario_cases:
-        hit, rank = evaluate_scenario(c, notes, idx, threshold, cap)
+        hit, rank = evaluate_scenario(c, engine, weights, threshold, cap)
         if hit and rank is not None:
             ranks.append(rank)
         else:
             scn_miss += 1
+
     avg_rank = sum(ranks) / len(ranks) if ranks else 99.0
     loss = (
         reg_miss * REGRESSION_MISS_PENALTY + scn_miss * SCENARIO_MISS_PENALTY + avg_rank

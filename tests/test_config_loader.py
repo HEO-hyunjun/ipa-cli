@@ -1,7 +1,4 @@
-"""Tests for config loader priority and resolution.
-
-Priority (highest wins): CLI > env > .env > yaml > defaults.
-"""
+"""Settings loader tests for the 2차 profile workspace contract."""
 
 from __future__ import annotations
 
@@ -14,10 +11,14 @@ from ipa_cli.config.loader import list_profiles, load_settings, set_default_prof
 
 
 @pytest.fixture
-def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
+def isolated_xdg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     for key in list(__import__("os").environ.keys()):
         if key.startswith("IPA_"):
             monkeypatch.delenv(key, raising=False)
+    root = tmp_path / "xdg"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(root))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    return root
 
 
 def _write_yaml(path: Path, body: str) -> Path:
@@ -26,194 +27,147 @@ def _write_yaml(path: Path, body: str) -> Path:
     return path
 
 
-def test_defaults_when_no_yaml_no_env(tmp_path: Path, clean_env: None) -> None:
-    s = load_settings(
-        config_path=tmp_path / "config.yaml",
-        dotenv_path=tmp_path / ".env",
-    )
-    assert s.profile == "personal"
-    assert s.vault_path == Path()
-    assert s.search.threshold == DEFAULT_THRESHOLD
-    assert s.search.weights == DEFAULT_WEIGHTS
-    assert s.source_map["search.threshold"] == "default"
+def _profile_yaml(root: Path, name: str, body: str) -> Path:
+    return _write_yaml(root / "ipa" / "profiles" / name / "profile.yaml", body)
 
 
-def test_yaml_overrides_defaults(tmp_path: Path, clean_env: None) -> None:
-    cfg = _write_yaml(
-        tmp_path / "config.yaml",
+def test_no_profile_selection_fails(isolated_xdg: Path) -> None:
+    with pytest.raises(ValueError, match="No IPA profile selected"):
+        load_settings(dotenv_path=isolated_xdg / "ipa" / ".env")
+
+
+def test_profile_yaml_overrides_defaults(isolated_xdg: Path) -> None:
+    _profile_yaml(
+        isolated_xdg,
+        "work",
         """
-default_profile: work
-profiles:
-  work:
-    vault_path: /tmp/work-vault
-    search:
-      threshold: 0.25
-      weights:
-        fuzzy: 0.5
+vault_path: /tmp/work-vault
+search:
+  threshold: 0.25
+  weights:
+    fuzzy: 0.5
 """,
     )
-    s = load_settings(config_path=cfg, dotenv_path=tmp_path / ".env")
+    s = load_settings(profile="work", dotenv_path=isolated_xdg / "ipa" / ".env")
     assert s.profile == "work"
     assert s.vault_path == Path("/tmp/work-vault")
     assert s.search.threshold == 0.25
     assert s.search.weights["fuzzy"] == 0.5
-    # unspecified weight should fall back to default
     assert s.search.weights["body_match"] == DEFAULT_WEIGHTS["body_match"]
-    assert s.source_map["vault_path"] == "yaml"
-    assert s.source_map["search.threshold"] == "yaml"
+    assert s.source_map["vault_path"] == "profile.yaml"
 
 
-def test_env_overrides_yaml(
-    tmp_path: Path, clean_env: None, monkeypatch: pytest.MonkeyPatch
+def test_env_overrides_profile_yaml(
+    isolated_xdg: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    cfg = _write_yaml(
-        tmp_path / "config.yaml",
+    _profile_yaml(
+        isolated_xdg,
+        "personal",
         """
-default_profile: personal
-profiles:
-  personal:
-    vault_path: /from/yaml
-    search:
-      threshold: 0.25
+vault_path: /from/profile
+search:
+  threshold: 0.25
 """,
     )
     monkeypatch.setenv("IPA_VAULT_PATH", "/from/env")
     monkeypatch.setenv("IPA_SEARCH_THRESHOLD", "0.42")
     monkeypatch.setenv("IPA_SEARCH_WEIGHTS_FUZZY", "0.99")
-    s = load_settings(config_path=cfg, dotenv_path=tmp_path / ".env")
+    s = load_settings(profile="personal", dotenv_path=isolated_xdg / "ipa" / ".env")
     assert s.vault_path == Path("/from/env")
     assert s.search.threshold == 0.42
     assert s.search.weights["fuzzy"] == 0.99
     assert s.source_map["vault_path"] == "env"
     assert s.source_map["search.threshold"] == "env"
-    assert s.source_map["search.weights.fuzzy"] == "env"
 
 
-def test_dotenv_loaded_when_process_env_missing(
-    tmp_path: Path, clean_env: None
-) -> None:
-    env_file = tmp_path / ".env"
+def test_dotenv_loaded_when_process_env_missing(isolated_xdg: Path) -> None:
+    env_file = isolated_xdg / "ipa" / ".env"
+    env_file.parent.mkdir(parents=True)
     env_file.write_text("IPA_VAULT_PATH=/from/dotenv\n", encoding="utf-8")
-    s = load_settings(config_path=tmp_path / "config.yaml", dotenv_path=env_file)
+    s = load_settings(profile="p", dotenv_path=env_file)
     assert s.vault_path == Path("/from/dotenv")
 
 
-def test_cli_override_beats_env(
-    tmp_path: Path, clean_env: None, monkeypatch: pytest.MonkeyPatch
+def test_cli_vault_uses_adhoc_profile_and_beats_env(
+    isolated_xdg: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("IPA_VAULT_PATH", "/from/env")
-    s = load_settings(
-        vault="/from/cli",
-        config_path=tmp_path / "config.yaml",
-        dotenv_path=tmp_path / ".env",
-    )
+    s = load_settings(vault="/from/cli", dotenv_path=isolated_xdg / "ipa" / ".env")
+    assert s.profile == "adhoc"
     assert s.vault_path == Path("/from/cli")
     assert s.source_map["vault_path"] == "cli"
 
 
-def test_profile_arg_overrides_default(tmp_path: Path, clean_env: None) -> None:
-    cfg = _write_yaml(
-        tmp_path / "config.yaml",
-        """
-default_profile: personal
-profiles:
-  personal:
-    vault_path: /personal
-  work:
-    vault_path: /work
-""",
-    )
-    s = load_settings(profile="work", config_path=cfg, dotenv_path=tmp_path / ".env")
-    assert s.profile == "work"
-    assert s.vault_path == Path("/work")
+def test_dotipa_profile_beats_env(
+    isolated_xdg: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _profile_yaml(isolated_xdg, "project", "vault_path: /project\n")
+    _profile_yaml(isolated_xdg, "envprof", "vault_path: /env\n")
+    project_dir = tmp_path / "repo"
+    project_dir.mkdir()
+    (project_dir / ".ipa-profile").write_text("project\n", encoding="utf-8")
+    monkeypatch.setenv("IPA_PROFILE", "envprof")
+    s = load_settings(cwd=project_dir, dotenv_path=isolated_xdg / "ipa" / ".env")
+    assert s.profile == "project"
+    assert s.vault_path == Path("/project")
+    assert s.source_map["profile"] == ".ipa-profile"
 
 
 def test_ipa_profile_env_selects_profile(
-    tmp_path: Path, clean_env: None, monkeypatch: pytest.MonkeyPatch
+    isolated_xdg: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    cfg = _write_yaml(
-        tmp_path / "config.yaml",
-        """
-default_profile: personal
-profiles:
-  personal:
-    vault_path: /personal
-  work:
-    vault_path: /work
-""",
-    )
+    _profile_yaml(isolated_xdg, "work", "vault_path: /work\n")
     monkeypatch.setenv("IPA_PROFILE", "work")
-    s = load_settings(config_path=cfg, dotenv_path=tmp_path / ".env")
+    s = load_settings(dotenv_path=isolated_xdg / "ipa" / ".env")
     assert s.profile == "work"
     assert s.vault_path == Path("/work")
 
 
-def test_var_interpolation_in_yaml(
-    tmp_path: Path, clean_env: None, monkeypatch: pytest.MonkeyPatch
+def test_var_interpolation_in_profile_yaml(
+    isolated_xdg: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    cfg = _write_yaml(
-        tmp_path / "config.yaml",
-        """
-default_profile: work
-profiles:
-  work:
-    vault_path: ${WORK_VAULT_PATH}
-""",
-    )
+    _profile_yaml(isolated_xdg, "work", "vault_path: ${WORK_VAULT_PATH}\n")
     monkeypatch.setenv("WORK_VAULT_PATH", "/expanded/work")
-    s = load_settings(config_path=cfg, dotenv_path=tmp_path / ".env")
+    s = load_settings(profile="work", dotenv_path=isolated_xdg / "ipa" / ".env")
     assert s.vault_path == Path("/expanded/work")
 
 
-def test_per_profile_cache_dir(tmp_path: Path, clean_env: None) -> None:
-    s_personal = load_settings(
-        profile="personal",
-        config_path=tmp_path / "c.yaml",
-        dotenv_path=tmp_path / ".env",
-    )
-    s_work = load_settings(
-        profile="work",
-        config_path=tmp_path / "c.yaml",
-        dotenv_path=tmp_path / ".env",
-    )
-    assert s_personal.cache_dir != s_work.cache_dir
-    assert s_personal.cache_dir.name == "personal"
-    assert s_work.cache_dir.name == "work"
+def test_profile_cache_dir_lives_inside_workspace(isolated_xdg: Path) -> None:
+    s = load_settings(profile="work", dotenv_path=isolated_xdg / "ipa" / ".env")
+    assert s.profile_dir == isolated_xdg / "ipa" / "profiles" / "work"
+    assert s.cache_dir == s.profile_dir / ".cache"
 
 
-def test_set_default_profile_round_trip(tmp_path: Path, clean_env: None) -> None:
-    cfg = tmp_path / "config.yaml"
+def test_set_default_profile_writes_dotipa(isolated_xdg: Path, tmp_path: Path) -> None:
+    cfg = tmp_path / "repo" / "placeholder.yaml"
+    cfg.parent.mkdir()
     set_default_profile("work", config_path=cfg)
-    names, default = list_profiles(cfg)
-    assert default == "work"
-    assert "work" in names
-
-    s = load_settings(config_path=cfg, dotenv_path=tmp_path / ".env")
-    assert s.profile == "work"
+    assert (cfg.parent / ".ipa-profile").read_text(encoding="utf-8") == "work\n"
 
 
-def test_active_tune_result_overrides_yaml_search(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clean_env: None
+def test_list_profiles_reads_workspace_dirs(isolated_xdg: Path) -> None:
+    _profile_yaml(isolated_xdg, "b", "vault_path: /b\n")
+    _profile_yaml(isolated_xdg, "a", "vault_path: /a\n")
+    names, active = list_profiles()
+    assert names == ["a", "b"]
+    assert active is None
+
+
+def test_active_tune_result_overrides_profile_yaml_search(
+    isolated_xdg: Path,
 ) -> None:
-    """P6: profile.tune.result_file 포인터의 값이 yaml search params를 덮어쓴다."""
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
-
-    cfg = tmp_path / "xdg" / "ipa" / "config.yaml"
-    _write_yaml(
-        cfg,
+    _profile_yaml(
+        isolated_xdg,
+        "work",
         """
-default_profile: work
-profiles:
-  work:
-    vault_path: /tmp/work-vault
-    search:
-      threshold: 0.99
-    tune:
-      result_file: 2026-05-06T21-30-00.json
+vault_path: /tmp/work-vault
+search:
+  threshold: 0.99
+tune:
+  result_file: active.json
 """,
     )
 
-    # Drop the pointed-at result file under the profile's tune/results dir.
     from ipa_cli.tune import TuneResult, save_result
 
     save_result(
@@ -224,65 +178,49 @@ profiles:
             weights={"fuzzy": 0.18, "body_match": 0.30},
             study={"n_trials": 1000, "best_loss": 14.2},
         ),
-        filename="2026-05-06T21-30-00.json",
+        filename="active.json",
     )
 
-    s = load_settings(config_path=cfg, dotenv_path=tmp_path / ".env")
-    assert s.search.threshold == 0.31  # tune_result wins over yaml's 0.99
+    s = load_settings(profile="work", dotenv_path=isolated_xdg / "ipa" / ".env")
+    assert s.search.threshold == 0.31
     assert s.search.max_results == 8
     assert s.search.weights["fuzzy"] == 0.18
     assert s.search.weights["body_match"] == 0.30
     assert s.source_map["search.threshold"] == "tune_result"
 
 
-def test_active_tune_result_missing_file_falls_back_to_yaml(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clean_env: None
+def test_env_overrides_active_tune_result(
+    isolated_xdg: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """포인터는 있는데 파일이 사라진 경우: yaml로 fallback (crash 안 함)."""
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    _profile_yaml(isolated_xdg, "work", "tune:\n  result_file: active.json\n")
 
-    cfg = tmp_path / "xdg" / "ipa" / "config.yaml"
-    _write_yaml(
-        cfg,
+    from ipa_cli.tune import TuneResult, save_result
+
+    save_result(
+        "work",
+        TuneResult(threshold=0.31, max_results=8, weights={"fuzzy": 0.18}),
+        filename="active.json",
+    )
+    monkeypatch.setenv("IPA_SEARCH_THRESHOLD", "0.77")
+    s = load_settings(profile="work", dotenv_path=isolated_xdg / "ipa" / ".env")
+    assert s.search.threshold == 0.77
+    assert s.source_map["search.threshold"] == "env"
+
+
+def test_active_tune_result_missing_file_falls_back_to_profile_yaml(
+    isolated_xdg: Path,
+) -> None:
+    _profile_yaml(
+        isolated_xdg,
+        "work",
         """
-default_profile: work
-profiles:
-  work:
-    search:
-      threshold: 0.42
-    tune:
-      result_file: never-existed.json
+search:
+  threshold: 0.42
+tune:
+  result_file: never-existed.json
 """,
     )
-
-    s = load_settings(config_path=cfg, dotenv_path=tmp_path / ".env")
-    # Pointer-but-no-file → yaml value sticks, no exception.
+    s = load_settings(profile="work", dotenv_path=isolated_xdg / "ipa" / ".env")
     assert s.search.threshold == 0.42
-
-
-def test_set_default_profile_preserves_comments(
-    tmp_path: Path, clean_env: None
-) -> None:
-    cfg = _write_yaml(
-        tmp_path / "config.yaml",
-        """\
-# top-level comment about the config
-default_profile: personal
-
-profiles:
-  personal:
-    # vault for daily notes
-    vault_path: /tmp/personal-vault
-    search:
-      threshold: 0.30  # tuned 2026-05
-  work:
-    vault_path: /tmp/work-vault
-""",
-    )
-    set_default_profile("work", config_path=cfg)
-
-    body = cfg.read_text(encoding="utf-8")
-    assert "# top-level comment about the config" in body
-    assert "# vault for daily notes" in body
-    assert "# tuned 2026-05" in body
-    assert "default_profile: work" in body
+    assert s.search.weights == DEFAULT_WEIGHTS
+    assert s.search.threshold != DEFAULT_THRESHOLD
