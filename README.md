@@ -12,6 +12,12 @@ Surface:
 - `ipa formatter plan / apply` — autofix issues that rules know how to fix
 - `ipa tune (run) / eval / list / use / analyze` — Optuna TPE on weights
 - `ipa config show / profile list / use / current` — config introspection
+- `ipa search / view / traversal / validator / refactor` — legacy
+  commands kept for backwards compatibility (script-style argparse front
+  end; see [Vault skill compatibility](#vault-skill-compatibility) below)
+- `ipa list-channels / list-rules / list-refactors` — registry inspection
+  (channels driving `engine search`, rules driving `convention/formatter`,
+  refactor recipes for `refactor`)
 
 ## Install
 
@@ -157,9 +163,15 @@ Useful subcommands:
 
 The vault skill at `~/ipa/.claude/skills/_shared/scripts/` ships its own
 copies of `vault_search.py` / `vault_validator.py` / etc. and runs them
-directly — **it does not invoke `ipa`**. Removing the legacy `ipa search`
-/ `view` / `traversal` / `validator` / `refactor` commands from this CLI
-does not affect the vault skill.
+directly — **it does not invoke `ipa`**. The two codebases evolved from
+the same scripts but are now independent copies.
+
+The legacy `ipa search` / `view` / `traversal` / `validator` / `refactor`
+commands are still part of this CLI; they call into `src/ipa_cli/core/`
+(a frozen copy of the original scripts) via a synthetic-argv adapter,
+and do not depend on the vault skill at all. New work is built on top of
+`engine` / `convention` / `formatter` / `tune` and gradually migrates
+the legacy surface onto the same service layer.
 
 ## Layout
 
@@ -180,8 +192,8 @@ src/ipa_cli/
 uv run pytest -q
 ```
 
-(273 tests after the legacy-cleanup pass. Hit-rate parity against your
-own testset depends on the vault and is measured outside CI via
+(294 tests at the time of writing. Hit-rate parity against your own
+testset depends on the vault and is measured outside CI via
 `ipa tune eval --testset`.)
 
 ## License
