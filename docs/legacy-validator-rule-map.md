@@ -1,7 +1,8 @@
 # Legacy validator rule code map (1차 ↔ 2차)
 
-S4 of the *legacy surface 내부 재구현* migration replaces the synthetic-argv
-adapter that called `core/vault_validator.py` with `runtime/legacy_validator_view.py`.
+S4 of the *legacy surface 내부 재구현* migration replaced the synthetic-argv
+adapter that formerly called `core/vault_validator.py` with
+`runtime/legacy_validator_view.py`.
 The new view runs `runtime.validator_engine.run_validator` against
 `default_convention()` and translates each emitted `Issue` back into the 1차
 code so:

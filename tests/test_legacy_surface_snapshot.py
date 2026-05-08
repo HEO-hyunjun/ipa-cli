@@ -7,9 +7,9 @@ parity (decision #3), and the validator structured payload (decision
 #4) intact.
 
 Run ``UPDATE_GOLDENS=1 uv run pytest tests/test_legacy_surface_snapshot.py``
-to (re)generate the golden files. The captured outputs come from the
-1차 ``core/`` modules — that's the parity oracle decision #5 keeps
-alive until S7.
+to (re)generate the golden files. The captured outputs are now produced
+by the migrated runtime modules; the old parity oracle was removed after
+S7.
 """
 
 from __future__ import annotations
@@ -161,8 +161,14 @@ def _parse_validator_issues(stdout: str, vault: Path | None = None) -> list[Issu
     """
     import re
 
-    from ipa_cli._legacy.vault_validator import CATEGORIES
-
+    categories = {
+        "P": "properties",
+        "T": "title",
+        "L": "location",
+        "K": "links",
+        "R": "root_folder",
+        "H": "headers",
+    }
     cleaned = normalize(stdout, vault=vault)
     rows: list[IssueRow] = []
     # Format: ``[CODE] NAME — message`` (em-dash) or ``CODE  NAME : msg``.
@@ -170,7 +176,7 @@ def _parse_validator_issues(stdout: str, vault: Path | None = None) -> list[Issu
     for m in pat.finditer(cleaned):
         code = m.group(1)
         note = m.group(2).strip().strip("[]").strip()
-        category = CATEGORIES.get(code[0], "unknown")
+        category = categories.get(code[0], "unknown")
         rows.append(IssueRow(note=note, code=code, category=category))
     return rows
 

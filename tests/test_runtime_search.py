@@ -1,9 +1,9 @@
-"""S5 unit + 3-tier equivalence tests for runtime/search.py.
+"""S5 unit + ranking regression tests for runtime/search.py.
 
-Decision #3 of the migration plan accepts structured equivalence rather
-than byte-identical parity, so we verify (a) top1 exact, (b) top5
-inversion ≤ 2, (c) top10 set equality against the 1차 ``unified_search``
-oracle on the mini_vault.
+The 1차 oracle package has been removed. The mini_vault expectations
+below freeze the migrated ``SearchEngine`` behaviour directly: top1,
+top5 ordering, and result-set drift are still visible without importing
+``ipa_cli._legacy``.
 """
 
 from __future__ import annotations
@@ -17,10 +17,7 @@ from typer.testing import CliRunner
 
 from ipa_cli.main import app
 from ipa_cli.runtime.search import render_search, search_hits
-from tests.legacy_surface.helpers import (
-    assert_search_equivalent,
-    normalize,
-)
+from tests.legacy_surface.helpers import assert_search_equivalent, normalize
 
 FIXTURE_VAULT = Path(__file__).parent / "fixtures" / "mini_vault"
 
@@ -34,24 +31,6 @@ def vault(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.delenv("IPA_PROFILE", raising=False)
     monkeypatch.delenv("IPA_VAULT_PATH", raising=False)
     return target
-
-
-def _legacy_oracle_ids(vault: Path, queries: list[str]) -> list[str]:
-    """Run the 1차 ``unified_search`` directly and return ranked note ids.
-
-    Bypasses the CLI so we don't depend on the migrated stdout shape.
-    """
-    from ipa_cli._legacy.notes_cache import scan_vault_cached
-    from ipa_cli._legacy.vault_parser import build_note_index
-    from ipa_cli._legacy.vault_search import multi_search, unified_search
-
-    notes = scan_vault_cached(vault)
-    index = build_note_index(notes)
-    if len(queries) == 1:
-        results = unified_search(queries[0], notes, index, max_results=50)
-    else:
-        results = multi_search(queries, notes, index, max_results=50, threshold=0.0)
-    return [r[0].filename for r in results]
 
 
 def _new_ids(vault: Path, queries: list[str]) -> list[str]:
@@ -103,64 +82,90 @@ def test_search_cut_count_message(vault: Path) -> None:
     assert "결과 더 있음" in out
 
 
-# ── 3-tier equivalence vs 1차 oracle ───────────────────────────────────
+# ── migrated SearchEngine ranking contract ────────────────────────────
 
 
-# Stable 3-tier cases: 1차 oracle and the new SearchEngine agree on top1
-# and stay within the plan-defined inversion budget for top5.
-STABLE_TOP1_QUERIES: list[list[str]] = [
-    ["Note D"],
-    ["🔖 Sub Index"],
-    ["Note B"],
-    ["Sample Root"],
-]
+EXPECTED_RANKINGS: dict[tuple[str, ...], list[str]] = {
+    ("Note D",): [
+        "Note D",
+        "🔖 Sub Index",
+        "Note B",
+        "Note C",
+        "Note A",
+        "🔖 Sample Index",
+    ],
+    ("🔖 Sub Index",): [
+        "🔖 Sub Index",
+        "🔖 Sample Index",
+        "Note D",
+        "Note A",
+        "🏷️ Sample Root",
+        "Note B",
+        "Note C",
+    ],
+    ("Note B",): [
+        "Note B",
+        "Note A",
+        "🔖 Sample Index",
+        "Note C",
+        "Note D",
+        "🔖 Sub Index",
+    ],
+    ("Sample Root",): [
+        "🏷️ Sample Root",
+        "🔖 Sample Index",
+        "Note B",
+        "Note A",
+        "🔖 Sub Index",
+    ],
+    ("Note",): [
+        "Note B",
+        "Note D",
+        "Note C",
+        "🔖 Sample Index",
+        "Note A",
+        "🔖 Sub Index",
+    ],
+    ("Note A",): [
+        "Note B",
+        "🔖 Sample Index",
+        "Note C",
+        "Note A",
+        "Note D",
+        "🔖 Sub Index",
+        "🏷️ Sample Root",
+    ],
+}
 
 
-@pytest.mark.parametrize("queries", STABLE_TOP1_QUERIES)
-def test_search_3tier_strict_against_oracle(vault: Path, queries: list[str]) -> None:
-    """Plan decision #3 — top1 exact (hard fail) + top5 inversion ≤ 2 +
-    top5 set equality. mini_vault picks queries where the channel-set
-    drift between 1차 and 2차 doesn't flip top1.
-
-    ``topN=5`` instead of 10 because 1차 ``unified_search`` returns every
-    note (including score 0) while 2차 ``SearchEngine`` filters score-0
-    hits — an intentional surface change. Top5 is where every fixture
-    query yields score>0 hits on both sides, so equality there is
-    meaningful. The Note A channel-drift case is captured by a
-    dedicated test below."""
-    oracle = _legacy_oracle_ids(vault, queries)
+@pytest.mark.parametrize(
+    ("queries", "expected"),
+    [
+        (list(queries), expected)
+        for queries, expected in EXPECTED_RANKINGS.items()
+        if queries != ("Note A",)
+    ],
+)
+def test_search_ranking_matches_migrated_contract(
+    vault: Path,
+    queries: list[str],
+    expected: list[str],
+) -> None:
     new = _new_ids(vault, queries)
-    assert_search_equivalent(new, oracle, top1=True, top5_inversion_max=2, topN=5)
+    assert_search_equivalent(
+        new,
+        expected,
+        top1=True,
+        top5_inversion_max=0,
+        topN=len(expected),
+    )
 
 
-def test_search_top5_set_matches_oracle_for_broad_query(vault: Path) -> None:
-    """Broad query (matches every fixture note) — confirm the top5 set
-    matches even when ordering shifts. Top10 isn't asserted because 1차
-    keeps score-0 hits whereas 2차 filters them — see the surface-drift
-    note in the parametrized strict test."""
-    queries = ["Note"]
-    oracle = _legacy_oracle_ids(vault, queries)
-    new = _new_ids(vault, queries)
-    assert_search_equivalent(new, oracle, top1=False, top5_inversion_max=99, topN=5)
-
-
-def test_search_documented_top1_drift_for_note_a(vault: Path) -> None:
-    """Documents the one query where 2차 ranks differently from 1차.
-
-    ``ipa search "Note A"`` ranks Note B first because 2차 added a
-    dedicated ``filename`` channel that the 1차 didn't have, and the
-    BM25 body weights now distribute differently. This case is
-    intentional surface drift — flag it via a dedicated test so it's
-    visible in the suite instead of hidden behind a relaxed assertion.
-    Production regression on a real testset is enforced by
-    ``ipa tune eval --testset`` and never lands in the unit suite."""
+def test_search_note_a_ranking_is_explicitly_documented(vault: Path) -> None:
+    """``Note A`` is intentionally not ranked first by the migrated engine."""
     queries = ["Note A"]
-    oracle = _legacy_oracle_ids(vault, queries)
     new = _new_ids(vault, queries)
-    assert oracle[:1] == ["Note A"], oracle
-    assert new[:1] == ["Note B"], new
-    # Set equivalence still holds — only ordering drifted.
-    assert set(new[:10]) == set(oracle[:10])
+    assert new == EXPECTED_RANKINGS[tuple(queries)]
 
 
 # ── CLI integration ─────────────────────────────────────────────────────

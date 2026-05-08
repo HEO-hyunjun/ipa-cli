@@ -169,29 +169,27 @@ the same scripts but are now independent copies.
 
 The legacy `ipa search` / `view` / `traversal` / `validator` / `refactor`
 commands now route through dedicated `runtime/*` entrypoints instead of
-the old synthetic-argv adapter. How much of each command is
-re-implemented on the new service layer vs. delegated to the parity
-oracle differs:
+the old synthetic-argv adapter. All command internals now run on the
+2차 parse/runtime service layer; the old in-package parity oracle has
+been removed.
 
 | Command            | Routing                              | Internal logic                                                         |
 |--------------------|--------------------------------------|------------------------------------------------------------------------|
 | `list-channels`    | `main.py` → `default_channels()`     | New service (no `_legacy` calls).                                      |
 | `list-rules`       | `main.py` → `default_convention()`   | New service.                                                           |
 | `list-refactors`   | `main.py` → `BUILTIN_REFACTORS`      | New service.                                                           |
-| `view`             | `runtime/view.py`                    | Calls `_legacy.vault_search` render helpers — port to `parse/Note` is a follow-up. |
+| `view`             | `runtime/view.py`                    | New service: `parse.vault_loader.load_notes` + `Note` rendering.       |
 | `traversal`        | `runtime/traversal.py`               | New service: `parse.vault_loader.load_notes` + `Note.refs/wikilinks`.  |
 | `validator`        | `runtime/legacy_validator_view.py`   | New service: `validator_engine` + `formatter_engine` with 1차 code projection. |
 | `search`           | `runtime/search.py`                  | New service: `SearchEngine` + multi-query summation.                   |
-| `refactor`         | `runtime/refactor.py`                | Argparse dispatcher delegating to `_legacy.vault_refactor.cmd_*` — port to `formatter_engine` is a follow-up. |
+| `refactor`         | `runtime/refactor.py`                | New service: parse-layer scan/filter plus frontmatter/body mutation.   |
 
 The 1차↔2차 rule-code map is in
 [`docs/legacy-validator-rule-map.md`](docs/legacy-validator-rule-map.md);
 the refactor subcommand migration matrix is in
 [`docs/legacy-refactor-subcommands.md`](docs/legacy-refactor-subcommands.md).
-The original script algorithms live under the internal
-`ipa_cli._legacy` package — the public `ipa_cli.core` surface no longer
-exists, but `_legacy` is still load-bearing for `view` and `refactor`
-plus every characterization test that compares against the 1차 oracle.
+The original in-package oracle has been retired; compatibility is now
+guarded by golden snapshots and migrated-runtime regression tests.
 
 ## Layout
 
@@ -205,7 +203,6 @@ src/ipa_cli/
   builtins/          # default convention rules + search channels + refactor metadata
   config/            # Settings resolver, defaults
   tune/              # Optuna runner, threshold dist analyzer, immutable results
-  _legacy/           # internal parity oracle (1차 scripts kept for test reference)
 ```
 
 ## Testing
@@ -214,9 +211,9 @@ src/ipa_cli/
 uv run pytest -q
 ```
 
-(336 tests at the time of writing — including the 5-stage legacy-surface
-characterization snapshots, 1차 oracle structured-equivalence checks, and
-the new `runtime/*` unit tests. Hit-rate parity against your own
+(336 tests at the time of writing — including the legacy-surface
+characterization snapshots, migrated-runtime regression checks, and the
+new `runtime/*` unit tests. Hit-rate parity against your own
 testset depends on the vault and is measured outside CI via
 `ipa tune eval --testset`.)
 

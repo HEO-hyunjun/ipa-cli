@@ -10,8 +10,6 @@ import pytest
 from typer.testing import CliRunner
 
 from ipa_cli.api.mappings import Mapping
-from ipa_cli._legacy.vault_parser import build_note_index, scan_vault
-from ipa_cli._legacy.vault_validator import format_report_text, validate_vault
 from ipa_cli.main import app
 from ipa_cli.runtime.legacy_validator_view import (
     LEGACY_TO_NEW,
@@ -126,21 +124,22 @@ def test_legacy_mapping_is_bijective() -> None:
         assert LEGACY_TO_NEW[legacy] == new
 
 
-# ── structured equivalence vs 1차 oracle ─────────────────────────────────
+# ── migrated validator structured contract ──────────────────────────────
 
 
-def test_structured_equivalence_against_legacy_oracle(vault: Path) -> None:
-    """Decision #4: same (note, code) set as the 1차 validator output."""
-    legacy_notes = scan_vault(vault)
-    legacy_index = build_note_index(legacy_notes)
-    legacy_report = validate_vault(legacy_notes, legacy_index, vault, active=None)
-    legacy_text = format_report_text(legacy_report)
-    legacy_rows = _parse_legacy_lines(legacy_text, vault)
-
+def test_structured_payload_matches_migrated_contract(vault: Path) -> None:
+    """Decision #4: keep the legacy-code projection stable post-oracle."""
     new_text = render_validator(vault, mapping=Mapping())
     new_rows = _parse_legacy_lines(new_text, vault)
+    expected_rows = [
+        IssueRow(note="Note C", code="K002", category="K"),
+        IssueRow(note="Note C", code="H001", category="H"),
+        IssueRow(note="🏷️ Sample Root", code="L001", category="L"),
+        IssueRow(note="🔖 Sample Index", code="L001", category="L"),
+        IssueRow(note="🔖 Sub Index", code="L001", category="L"),
+    ]
 
-    assert_validator_structured_equal(new_rows, legacy_rows)
+    assert_validator_structured_equal(new_rows, expected_rows)
 
 
 def test_cli_validator_routes_through_new_view(vault: Path) -> None:
