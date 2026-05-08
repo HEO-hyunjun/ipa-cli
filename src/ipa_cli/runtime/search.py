@@ -13,7 +13,7 @@ from __future__ import annotations
 from collections import Counter
 from pathlib import Path
 
-from ipa_cli.api.base_channels import Hit, Query, SetupContext
+from ipa_cli.api.base_channels import BaseSearchChannel, Hit, Query, SetupContext
 from ipa_cli.api.mappings import Mapping
 from ipa_cli.builtins.channels.default_channels import default_channels
 from ipa_cli.parse.links import extract_ref_targets
@@ -106,6 +106,8 @@ def search_hits(
     show_all: bool = False,
     weights: dict[str, float] | None = None,
     mapping: Mapping | None = None,
+    channels: list[BaseSearchChannel] | None = None,
+    cache_dir: Path | None = None,
 ) -> tuple[list[Hit], list[Note], int]:
     """Return ``(visible_hits, notes, cut_count)`` for callers that want
     the structured payload (e.g. equivalence tests).
@@ -120,10 +122,13 @@ def search_hits(
     ctx = SetupContext(
         notes=notes,
         vault_path=vault_path,
-        cache_dir=vault_path / ".cache",
+        cache_dir=cache_dir or vault_path / ".ipa" / "cache" / "search",
         mapping=mapping,
     )
-    engine = SearchEngine(channels=default_channels(), ctx=ctx)
+    engine = SearchEngine(
+        channels=channels if channels is not None else default_channels(),
+        ctx=ctx,
+    )
     engine.setup()
 
     effective_threshold = 0.0 if show_all else threshold
@@ -152,6 +157,8 @@ def render_search(
     reasons: bool = False,
     weights: dict[str, float] | None = None,
     mapping: Mapping | None = None,
+    channels: list[BaseSearchChannel] | None = None,
+    cache_dir: Path | None = None,
 ) -> str:
     """Top-level entrypoint used by ``ipa search`` (S5)."""
     if not queries:
@@ -167,6 +174,8 @@ def render_search(
         show_all=show_all,
         weights=weights,
         mapping=mapping,
+        channels=channels,
+        cache_dir=cache_dir,
     )
     notes_by_id = {n.id: n for n in notes}
 

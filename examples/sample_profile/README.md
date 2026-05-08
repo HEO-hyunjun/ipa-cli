@@ -10,13 +10,21 @@ mkdir -p ~/.config/ipa/profiles
 cp -R examples/sample_profile ~/.config/ipa/profiles/sample
 ```
 
-Then either:
+Then register the profile in `~/.config/ipa/profile.yaml`:
 
-- Select it for the current project: `printf "sample\n" > .ipa-profile`, or
-- Use it ad-hoc per command: `ipa --profile sample <command>`
+```yaml
+profiles:
+  sample:
+    vault_path: /Users/me/sync/IPA
+    default: true
+```
 
-`profile.yaml` reads `vault_path: ${IPA_VAULT_PATH}`, so make sure that
-env var is exported (or replace the placeholder with an absolute path).
+You can still override selection for one project with
+`printf "sample\n" > .ipa-profile`, or use it ad-hoc per command:
+`ipa --profile sample <command>`.
+
+The `profile.yaml` inside this sample directory is a legacy workspace
+fallback. The registry above is the preferred source for `vault_path`.
 
 ## What it adds
 
@@ -60,8 +68,8 @@ The list is explicit on purpose — what you see is what runs.
 
 ## Tune workspace
 
-`tune/testsets/` is where you place evaluation testsets. Run
-`ipa --profile sample tune --apply` to write a new
-`tune/results/{timestamp}.json` and rotate the
-`tune.result_file` pointer in `profile.yaml`. Past results stay
+`{vault}/.ipa/tune/testsets/` is where you place evaluation testsets.
+Run `ipa --profile sample tune --apply` to write a new
+`{vault}/.ipa/tune/results/{timestamp}.json` and rotate the
+`weights.file` pointer in `{vault}/.ipa/config.yaml`. Past results stay
 on disk so `ipa tune list` and `ipa tune use <filename>` can roll back.

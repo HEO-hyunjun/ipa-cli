@@ -28,6 +28,11 @@ def isolated_xdg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return cfg
 
 
+@pytest.fixture
+def vault(tmp_path: Path) -> Path:
+    return tmp_path / "vault"
+
+
 def _make_result(threshold: float = 0.31) -> TuneResult:
     return TuneResult(
         threshold=threshold,
@@ -48,6 +53,22 @@ def test_save_and_load_roundtrip(isolated_xdg: Path) -> None:
     assert loaded.max_results == 8
     assert loaded.weights == {"body_match": 0.30, "fuzzy": 0.18}
     assert loaded.study["n_trials"] == 1000
+
+
+def test_save_and_load_roundtrip_vault_local(vault: Path) -> None:
+    saved_path = save_result(
+        "personal",
+        _make_result(),
+        filename="custom.json",
+        vault_path=vault,
+    )
+    assert saved_path.is_file()
+    assert saved_path.parent == vault / ".ipa" / "tune" / "results"
+    assert saved_path.parent == results_dir("personal", vault_path=vault)
+
+    loaded = load_result("personal", "custom.json", vault_path=vault)
+    assert loaded.threshold == 0.31
+    assert loaded.weights == {"body_match": 0.30, "fuzzy": 0.18}
 
 
 def test_save_uses_timestamp_filename_when_omitted(isolated_xdg: Path) -> None:
@@ -83,6 +104,45 @@ def test_list_results_newest_first_with_ad_hoc_after(isolated_xdg: Path) -> None
 
 def test_list_results_empty_for_unseen_profile(isolated_xdg: Path) -> None:
     assert list_results("never_used") == []
+
+
+def test_vault_active_pointer_read_write_round_trip(vault: Path) -> None:
+    config_yaml = vault / ".ipa" / "config.yaml"
+    config_yaml.parent.mkdir(parents=True, exist_ok=True)
+    config_yaml.write_text("test:\n  file: .ipa/tune/testsets/testset.json\n", encoding="utf-8")
+    assert read_active_result_filename("p", vault_path=vault) is None
+
+    write_active_result_filename("p", "2026-05-06T21-30-00.json", vault_path=vault)
+    assert (
+        read_active_result_filename("p", vault_path=vault)
+        == "2026-05-06T21-30-00.json"
+    )
+
+    data = yaml.safe_load(config_yaml.read_text(encoding="utf-8"))
+    assert data["test"]["file"] == ".ipa/tune/testsets/testset.json"
+    assert data["weights"]["file"] == ".ipa/tune/results/2026-05-06T21-30-00.json"
+
+
+def test_vault_active_pointer_preserves_yaml_comments(vault: Path) -> None:
+    config_yaml = vault / ".ipa" / "config.yaml"
+    config_yaml.parent.mkdir(parents=True, exist_ok=True)
+    config_yaml.write_text(
+        "# vault config\nweights:\n  file: old.json  # inline\n",
+        encoding="utf-8",
+    )
+    write_active_result_filename("p", "new.json", vault_path=vault)
+    text = config_yaml.read_text(encoding="utf-8")
+    assert "# vault config" in text
+    assert "# inline" in text
+    assert ".ipa/tune/results/new.json" in text
+
+
+def test_vault_resolve_active_returns_loaded_result(vault: Path) -> None:
+    save_result("p", _make_result(threshold=0.42), filename="active.json", vault_path=vault)
+    write_active_result_filename("p", "active.json", vault_path=vault)
+    resolved = resolve_active_result("p", vault_path=vault)
+    assert resolved is not None
+    assert resolved.threshold == 0.42
 
 
 def test_active_pointer_read_write_round_trip(isolated_xdg: Path) -> None:

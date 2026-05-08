@@ -25,13 +25,16 @@ def isolated_xdg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def _seed_config(isolated_xdg: Path, profile: str = "personal") -> Path:
-    profile_yaml = isolated_xdg / "ipa" / "profiles" / profile / "profile.yaml"
+    vault = isolated_xdg.parent / "vault"
+    profile_yaml = isolated_xdg / "ipa" / "profile.yaml"
     profile_yaml.parent.mkdir(parents=True, exist_ok=True)
     profile_yaml.write_text(
-        yaml.safe_dump({"vault_path": "/tmp/v"}),
+        yaml.safe_dump(
+            {"profiles": {profile: {"vault_path": str(vault), "default": True}}}
+        ),
         encoding="utf-8",
     )
-    return profile_yaml
+    return vault
 
 
 def _result(threshold: float = 0.30) -> TuneResult:
@@ -44,15 +47,22 @@ def _result(threshold: float = 0.30) -> TuneResult:
 
 
 def test_tune_list_shows_history_with_active_marker(isolated_xdg: Path) -> None:
-    cfg = _seed_config(isolated_xdg)
-    save_result("personal", _result(), filename="2026-05-04T09-12-44.json")
-    save_result("personal", _result(), filename="2026-05-06T21-30-00.json")
-    cfg.write_text(
+    vault = _seed_config(isolated_xdg)
+    save_result(
+        "personal",
+        _result(),
+        filename="2026-05-04T09-12-44.json",
+        vault_path=vault,
+    )
+    save_result(
+        "personal",
+        _result(),
+        filename="2026-05-06T21-30-00.json",
+        vault_path=vault,
+    )
+    (vault / ".ipa" / "config.yaml").write_text(
         yaml.safe_dump(
-            {
-                "vault_path": "/tmp/v",
-                "tune": {"result_file": "2026-05-06T21-30-00.json"},
-            }
+            {"weights": {"file": ".ipa/tune/results/2026-05-06T21-30-00.json"}}
         ),
         encoding="utf-8",
     )
@@ -72,34 +82,44 @@ def test_tune_list_handles_empty_profile(isolated_xdg: Path) -> None:
 
 
 def test_tune_use_flips_active_pointer(isolated_xdg: Path) -> None:
-    cfg = _seed_config(isolated_xdg)
-    save_result("personal", _result(threshold=0.20), filename="alpha.json")
-    save_result("personal", _result(threshold=0.40), filename="beta.json")
+    vault = _seed_config(isolated_xdg)
+    save_result(
+        "personal",
+        _result(threshold=0.20),
+        filename="alpha.json",
+        vault_path=vault,
+    )
+    save_result(
+        "personal",
+        _result(threshold=0.40),
+        filename="beta.json",
+        vault_path=vault,
+    )
 
     result = CliRunner().invoke(app, ["tune", "use", "beta.json"])
     assert result.exit_code == 0, result.stdout
     assert "switched" in result.stdout
 
-    after = yaml.safe_load(cfg.read_text(encoding="utf-8"))
-    assert after["tune"]["result_file"] == "beta.json"
+    after = yaml.safe_load((vault / ".ipa" / "config.yaml").read_text(encoding="utf-8"))
+    assert after["weights"]["file"] == ".ipa/tune/results/beta.json"
 
 
 def test_tune_use_rejects_unknown_filename(isolated_xdg: Path) -> None:
-    _seed_config(isolated_xdg)
-    save_result("personal", _result(), filename="alpha.json")
+    vault = _seed_config(isolated_xdg)
+    save_result("personal", _result(), filename="alpha.json", vault_path=vault)
 
     result = CliRunner().invoke(app, ["tune", "use", "missing.json"])
     assert result.exit_code != 0
 
 
 def test_tune_use_appends_json_suffix_implicitly(isolated_xdg: Path) -> None:
-    cfg = _seed_config(isolated_xdg)
-    save_result("personal", _result(), filename="alpha.json")
+    vault = _seed_config(isolated_xdg)
+    save_result("personal", _result(), filename="alpha.json", vault_path=vault)
 
     result = CliRunner().invoke(app, ["tune", "use", "alpha"])
     assert result.exit_code == 0, result.stdout
-    after = yaml.safe_load(cfg.read_text(encoding="utf-8"))
-    assert after["tune"]["result_file"] == "alpha.json"
+    after = yaml.safe_load((vault / ".ipa" / "config.yaml").read_text(encoding="utf-8"))
+    assert after["weights"]["file"] == ".ipa/tune/results/alpha.json"
 
 
 # --- _study_fingerprint -----------------------------------------------------

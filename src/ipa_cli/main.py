@@ -81,7 +81,10 @@ def _global(
         settings = load_settings(profile=profile, vault=vault)
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
-    if warning := settings.source_map.get("tune.result_file.warning"):
+    warning = settings.source_map.get("weights.file.warning") or settings.source_map.get(
+        "tune.result_file.warning"
+    )
+    if warning:
         console.print(f"[yellow]warning[/yellow] {warning}")
     ctx.obj = settings
 
@@ -111,9 +114,15 @@ def search(
     """통합 검색 (legacy unified_search)."""
     if not query:
         raise typer.BadParameter("검색 쿼리를 1개 이상 지정해주세요")
+    from ipa_cli.runtime.mapping_loader import load_mapping
     from ipa_cli.runtime.search import render_search
+    from ipa_cli.runtime.search_loader import load_search_channels
 
     s = _settings(ctx)
+    workspace = s.profile_dir
+    workspace_arg = workspace if workspace.is_dir() else None
+    mapping = load_mapping(workspace_arg)
+    channels = load_search_channels(workspace_arg, vault_path=s.vault_path)
     eff_threshold = threshold if threshold is not None else s.search.threshold
     eff_max = max_results if max_results is not None else s.search.max_results
     output = render_search(
@@ -124,6 +133,9 @@ def search(
         show_all=show_all,
         reasons=reasons,
         weights=s.search.weights,
+        mapping=mapping,
+        channels=channels,
+        cache_dir=s.cache_dir,
     )
     typer.echo(output)
 
@@ -220,9 +232,20 @@ def config_show(
     rows: list[tuple[str, str]] = [
         ("profile", s.profile),
         ("profile_dir", str(s.profile_dir)),
-        ("profile_yaml", str(s.profile_dir / "profile.yaml")),
+        ("profile_config", str(s.config_path)),
+        (
+            "vault_config",
+            str(s.vault_config_path) if s.vault_config_path != Path() else "(unset)",
+        ),
         ("vault_path", str(s.vault_path) if s.vault_path != Path() else "(unset)"),
         ("cache_dir", str(s.cache_dir)),
+        ("test.file", str(s.testset_path) if s.testset_path is not None else "(unset)"),
+        (
+            "weights.file",
+            str(s.weight_result_path)
+            if s.weight_result_path is not None
+            else "(unset)",
+        ),
         ("search.threshold", str(s.search.threshold)),
         ("search.max_results", str(s.search.max_results)),
     ]
@@ -239,14 +262,14 @@ def config_show(
 
 @profile_app.command("list")
 def profile_list(ctx: typer.Context):
-    """profile workspace 목록."""
+    """전역 profile.yaml에 등록된 profile 목록."""
     names, active = list_profiles()
     if not names:
-        console.print("[yellow]No profiles found under[/yellow] ~/.config/ipa/profiles")
+        console.print("[yellow]No profiles found in[/yellow] ~/.config/ipa/profile.yaml")
         return
     table = Table(title="ipa profiles")
     table.add_column("name", style="cyan")
-    table.add_column("project", style="green")
+    table.add_column("active", style="green")
     for name in names:
         table.add_row(name, "✓" if name == active else "")
     console.print(table)
@@ -260,9 +283,9 @@ def profile_current(ctx: typer.Context):
 
 @profile_app.command("use")
 def profile_use(ctx: typer.Context, name: str = typer.Argument(...)):
-    """현재 디렉터리에 .ipa-profile을 써서 프로젝트 profile을 선택."""
+    """전역 profile.yaml에서 default profile을 선택."""
     set_default_profile(name)
-    console.print(f".ipa-profile → [cyan]{name}[/cyan] ({Path.cwd() / '.ipa-profile'})")
+    console.print(f"default profile → [cyan]{name}[/cyan]")
 
 
 # ── convention runtime ──
@@ -312,7 +335,7 @@ def convention_check(
     workspace_arg = workspace if workspace.is_dir() else None
 
     mapping = load_mapping(workspace_arg)
-    convention = load_convention(workspace_arg)
+    convention = load_convention(workspace_arg, vault_path=s.vault_path)
     notes = load_notes(s.vault_path, mapping)
 
     folder_resolved: Path | None = None
@@ -413,7 +436,7 @@ def _resolve_formatter_inputs(
     workspace = s.profile_dir
     workspace_arg = workspace if workspace.is_dir() else None
     mapping = load_mapping(workspace_arg)
-    convention = load_convention(workspace_arg)
+    convention = load_convention(workspace_arg, vault_path=s.vault_path)
     notes = load_notes(s.vault_path, mapping)
 
     folder_resolved: Path | None = None
@@ -547,7 +570,7 @@ def _build_engine(ctx: typer.Context):
     workspace = s.profile_dir
     workspace_arg = workspace if workspace.is_dir() else None
     mapping = load_mapping(workspace_arg)
-    channels = load_search_channels(workspace_arg)
+    channels = load_search_channels(workspace_arg, vault_path=s.vault_path)
     notes = load_notes(s.vault_path, mapping)
 
     ctx_obj = SetupContext(
@@ -566,7 +589,7 @@ def engine_channels(ctx: typer.Context):
 
     s = _settings(ctx)
     workspace_arg = s.profile_dir if s.profile_dir.is_dir() else None
-    channels = load_search_channels(workspace_arg)
+    channels = load_search_channels(workspace_arg, vault_path=s.vault_path)
 
     table = Table(title=f"engine channels ({len(channels)} loaded)")
     table.add_column("name", style="cyan")
@@ -806,7 +829,7 @@ def tune_run(
     apply_best: bool = typer.Option(
         False,
         "--apply",
-        help="best params를 result JSON으로 저장하고 profile.yaml 포인터 갱신",
+        help="best params를 result JSON으로 저장하고 vault config 포인터 갱신",
     ),
     fix: list[str] = typer.Option(
         None, "--fix", help="채널 weight 고정 (예: --fix body_match=0.30)"
@@ -823,7 +846,7 @@ def tune_run(
         True, "--tune-cap/--no-tune-cap", help="cap (max_results)도 튜닝 (default: ON)"
     ),
     testset_path: Path | None = typer.Option(
-        None, "--testset", help="testset NAME|PATH (default: profile tune/testsets)"
+        None, "--testset", help="testset NAME|PATH (default: vault .ipa config)"
     ),
     no_persist: bool = typer.Option(
         False, "--no-persist", help="study sqlite 영속화 끄고 in-memory만"
@@ -842,7 +865,7 @@ def tune_run(
     from ipa_cli.tune.runner import run_study
 
     s, _channels, engine, notes = _build_engine(ctx)
-    ts = load_testset(testset_path, profile=s.profile)
+    ts = load_testset(testset_path, profile=s.profile, vault_path=s.vault_path)
     notes = _filter_excluded(notes, ts.get("exclude_filenames"))
     # Rebuild engine context with the filtered note list so excluded
     # entries don't enter BM25 / channel scoring.
@@ -874,7 +897,7 @@ def tune_run(
             fixed_threshold=s.search.threshold,
             fixed_cap=s.search.max_results,
         )
-        study_dir = s.cache_dir / "tune-studies" / fp
+        study_dir = s.vault_path / ".ipa" / "cache" / "tune-studies" / fp
 
     def _on_trial(i: int, loss: float, best: float) -> None:
         if loss <= best:  # only print when we improve or equal
@@ -917,8 +940,8 @@ def tune_run(
 def _apply_best_to_config(settings: Settings, result) -> None:
     """Persist tune result as immutable artifact + flip active pointer.
 
-    Saves ``tune/results/{timestamp}.json`` (immutable) and updates
-    ``tune.result_file`` in profile.yaml via ruamel round-trip. Past
+    Saves ``.ipa/tune/results/{timestamp}.json`` (immutable) and updates
+    ``weights.file`` in vault-local config via ruamel round-trip. Past
     results stay on disk for rollback via ``ipa tune use``.
     """
     from ipa_cli.tune import (
@@ -939,12 +962,21 @@ def _apply_best_to_config(settings: Settings, result) -> None:
         },
     )
     fname = timestamp_filename()
-    saved_path = save_result(settings.profile, artifact, filename=fname)
-    write_active_result_filename(settings.profile, fname)
+    saved_path = save_result(
+        settings.profile,
+        artifact,
+        filename=fname,
+        vault_path=settings.vault_path,
+    )
+    write_active_result_filename(
+        settings.profile,
+        fname,
+        vault_path=settings.vault_path,
+    )
 
     console.print(
         f"[green]applied[/green] tune result → {saved_path}\n"
-        f"  pointer: {settings.profile_dir / 'profile.yaml'} tune.result_file = {fname}"
+        f"  pointer: {settings.vault_config_path} weights.file = .ipa/tune/results/{fname}"
     )
 
 
@@ -964,7 +996,7 @@ def tune_analyze(
 ):
     """Threshold 분포 분석 (정답·noise 점수 percentile + 후보 X 시뮬)."""
     s, _channels, engine, notes = _build_engine(ctx)
-    ts = load_testset(testset_path, profile=s.profile)
+    ts = load_testset(testset_path, profile=s.profile, vault_path=s.vault_path)
     notes = _filter_excluded(notes, ts.get("exclude_filenames"))
     engine.ctx.notes = notes
     result = analyze_threshold(
@@ -1028,7 +1060,7 @@ def tune_analyze(
 def tune_eval(
     ctx: typer.Context,
     testset_path: Path | None = typer.Option(
-        None, "--testset", help="testset NAME|PATH (default: profile tune/testsets)"
+        None, "--testset", help="testset NAME|PATH (default: vault .ipa config)"
     ),
 ):
     """현재 활성 search params로 baseline loss/metrics 측정 (튜닝 안 함).
@@ -1039,7 +1071,7 @@ def tune_eval(
     from ipa_cli.tune.loss import compute_loss
 
     s, _channels, engine, notes = _build_engine(ctx)
-    ts = load_testset(testset_path, profile=s.profile)
+    ts = load_testset(testset_path, profile=s.profile, vault_path=s.vault_path)
     notes = _filter_excluded(notes, ts.get("exclude_filenames"))
     engine.ctx.notes = notes
     regression = ts.get("cases", [])
@@ -1071,8 +1103,8 @@ def tune_list(ctx: typer.Context):
     from ipa_cli.tune import list_results, read_active_result_filename
 
     s = _settings(ctx)
-    history = list_results(s.profile)
-    active = read_active_result_filename(s.profile)
+    history = list_results(s.profile, vault_path=s.vault_path)
+    active = read_active_result_filename(s.profile, vault_path=s.vault_path)
 
     if not history:
         console.print(
@@ -1103,7 +1135,7 @@ def tune_use(
         ..., help="활성화할 result 파일명 (예: 2026-05-06T21-30-00.json)"
     ),
 ):
-    """profile.yaml의 tune.result_file 포인터를 <filename>으로 갱신."""
+    """vault-local config의 weights.file 포인터를 <filename>으로 갱신."""
     from ipa_cli.tune import (
         list_results,
         load_result,
@@ -1113,19 +1145,19 @@ def tune_use(
     s = _settings(ctx)
     target = filename if filename.endswith(".json") else f"{filename}.json"
 
-    if target not in list_results(s.profile):
+    if target not in list_results(s.profile, vault_path=s.vault_path):
         raise typer.BadParameter(
             f"'{target}' not found in tune/results for profile '{s.profile}'. "
             "Use `ipa tune list` to see available files."
         )
 
     # Sanity check: ensure the file is loadable JSON.
-    load_result(s.profile, target)
+    load_result(s.profile, target, vault_path=s.vault_path)
 
-    write_active_result_filename(s.profile, target)
+    write_active_result_filename(s.profile, target, vault_path=s.vault_path)
     console.print(
         f"[green]switched[/green] active tune result → {target}\n"
-        f"  pointer: {s.profile_dir / 'profile.yaml'} tune.result_file = {target}"
+        f"  pointer: {s.vault_config_path} weights.file = .ipa/tune/results/{target}"
     )
 
 

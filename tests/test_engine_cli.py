@@ -192,8 +192,8 @@ channels = [AstChannel()]
     )
     assert result.exit_code == 0, result.stdout
 
-    # Cache lives inside the profile workspace.
-    cache_files = list((profile_dir / ".cache").rglob("parsed_index.pkl"))
+    # Cache lives inside the vault-local portable cache tree.
+    cache_files = list((vault / ".ipa" / "cache" / "search").rglob("parsed_index.pkl"))
     assert cache_files, (
         "parsed_index.pkl should be written when a channel touches body_ast"
     )

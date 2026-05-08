@@ -1,6 +1,6 @@
 {
   "version": "v1",
-  "description": "Schema example for ipa tune. Replace with your own cases referencing real notes in your vault. Put this under profiles/<profile>/tune/testsets/testset.json or pass --testset NAME|PATH.",
+  "description": "Schema example for ipa tune. Replace with your own cases referencing real notes in your vault. Put this under {vault}/.ipa/tune/testsets/testset.json, point {vault}/.ipa/config.yaml test.file at it, or pass --testset NAME|PATH.",
   "exclude_filenames": [
     "evaluation_artifact_note"
   ],

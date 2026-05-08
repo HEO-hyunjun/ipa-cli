@@ -1,9 +1,9 @@
 # ipa-cli
 
 Search, validate, format, and tune your [IPA](https://github.com/) Obsidian
-vault from the terminal. Channels and rules live in the codebase as plain
-Python — no DSL — and your profile workspace adds project-specific overrides
-without touching the package.
+vault from the terminal. Channels and rules live as plain Python — no DSL —
+and vault-local plugins add project-specific behavior without touching the
+package.
 
 Surface:
 
@@ -34,16 +34,19 @@ The CLI entrypoint is `ipa` (defined in `pyproject.toml` as
 ## Quickstart
 
 ```sh
-# Select a profile for this project.
-printf "sample\n" > .ipa-profile
-
-# Point the sample profile at your vault.
-export IPA_VAULT_PATH=~/sync/IPA
+# Register a default profile.
+mkdir -p ~/.config/ipa
+cat > ~/.config/ipa/profile.yaml <<'YAML'
+profiles:
+  sample:
+    vault_path: ~/sync/IPA
+    default: true
+YAML
 
 # Search.
 ipa engine search "ipa cli" --explain --max 5
 
-# List the active search channels (builtin + profile additions).
+# List the active search channels (builtin/profile + vault-local plugins).
 ipa engine channels
 
 # Validate convention (per-note rules by default).
@@ -53,27 +56,79 @@ ipa convention check --summary
 ipa formatter plan
 ipa formatter apply
 
-# Tune (Optuna TPE) and roll the active result pointer in profile.yaml.
+# Tune (Optuna TPE) and roll the active result pointer in {vault}/.ipa/config.yaml.
 ipa tune --apply --trials 200
 ipa tune list
 ipa tune use 2026-05-04T09-12-44.json   # rollback
 ```
 
-## Profile workspace
+## Vault-local plugins
 
-Each profile lives under `~/.config/ipa/profiles/{name}/`:
+User plugins live inside the vault:
+
+```text
+{vault}/.ipa/plugins/
+  search/              # *.py exporting channels = [BaseSearchChannel(...)]
+  lint/                # *.py exporting rules = [BaseConventionRule(...)]
+  formatter/           # *.py exporting rules = [BaseConventionRule(...)]
+```
+
+Load order is:
+
+1. builtin defaults, or the profile's explicit `search.py` / `convention.py`
+2. `{vault}/.ipa/plugins/search/*.py`
+3. `{vault}/.ipa/plugins/lint/*.py`
+4. `{vault}/.ipa/plugins/formatter/*.py`
+
+`lint` and `formatter` use the same `BaseConventionRule` API. Rules that
+only implement `check()` participate in `ipa convention check`; rules that
+also produce fixes participate in `ipa formatter plan/apply`.
+
+## Profiles and vault config
+
+The machine-local profile registry lives at `~/.config/ipa/profile.yaml`:
+
+```yaml
+profiles:
+  sample:
+    vault_path: /Users/me/sync/IPA
+    default: true
+  work:
+    vault_path: /Users/me/work/IPA
+```
+
+`default: true` is the fallback when a command has neither `--vault` nor
+`--profile` and no `.ipa-profile` / `IPA_PROFILE` selection. If there is
+no selected profile and no default, the command fails.
+
+Vault-local portable config lives at `{vault}/.ipa/config.yaml`:
+
+```yaml
+test:
+  file: .ipa/tune/testsets/testset.json
+weights:
+  file: .ipa/tune/results/2026-05-06T21-30-00.json
+```
+
+Optional profile workspaces can still hold machine-local base overrides:
 
 ```text
 ~/.config/ipa/profiles/sample/
-  profile.yaml            # vault_path, tune.result_file pointer
-  convention.py           # active rules: explicit list, no auto-discovery
-  search.py               # active channels: explicit list, no auto-discovery
-  rules/                  # user-authored BaseConventionRule subclasses
-  channel_rules/          # user-authored BaseSearchChannel subclasses
+  convention.py           # optional explicit base rules before vault plugins
+  search.py               # optional explicit base channels before vault plugins
+```
+
+Portable runtime state stays in the vault:
+
+```text
+{vault}/.ipa/
+  config.yaml
+  plugins/
   tune/
     testsets/             # *.json eval sets used by ipa tune
     results/              # 2026-05-06T21-30-00.json — immutable artifacts
-  .cache/                 # auto-managed pickles (BM25, parsed AST)
+  cache/
+    search/               # auto-managed pickles (BM25, parsed AST)
 ```
 
 A working sample lives at [`examples/sample_profile/`](examples/sample_profile/) —
@@ -84,7 +139,7 @@ copy the directory and read [`examples/sample_profile/README.md`](examples/sampl
 ### Convention rule
 
 ```python
-# rules/no_emoji_in_filename_rule.py
+# {vault}/.ipa/plugins/lint/no_emoji_in_filename_rule.py
 from ipa_cli.api import BaseConventionRule, Issue, Severity
 
 class NoEmojiInFilenameRule(BaseConventionRule):
@@ -97,23 +152,14 @@ class NoEmojiInFilenameRule(BaseConventionRule):
             return []
         return [Issue(code=self.code, severity=self.severity,
                       note_id=note.id, message="filename starts with an emoji")]
-```
 
-Then in `convention.py`:
-
-```python
-from ipa_cli.api.conventions import Convention
-from ipa_cli.builtins.conventions.default_convention import default_convention
-from .rules.no_emoji_in_filename_rule import NoEmojiInFilenameRule
-
-_builtin = default_convention()
-convention = Convention(name="sample", rules=[*_builtin.rules, NoEmojiInFilenameRule()])
+rules = [NoEmojiInFilenameRule()]
 ```
 
 ### Search channel
 
 ```python
-# channel_rules/heading_match_channel.py
+# {vault}/.ipa/plugins/search/heading_match_channel.py
 from ipa_cli.api import BaseSearchChannel
 
 class HeadingMatchChannel(BaseSearchChannel):
@@ -127,28 +173,30 @@ class HeadingMatchChannel(BaseSearchChannel):
             n.id: 1.0 for n in ctx.notes
             if any(q in h.text.lower() for h in n.headings if h.level <= 2)
         }
+
+channels = [HeadingMatchChannel()]
 ```
 
 `Note.headings` is the parse level 3 lazy property added in P5 — it parses
 markdown via `markdown-it-py` on first access, then `SearchEngine` writes
-the AST back to `.cache/parsed_index.pkl` so subsequent runs skip the parser.
+the AST back to `.ipa/cache/search/parsed_index.pkl` so subsequent runs
+skip the parser.
 
 ## Tune workflow
 
 `ipa tune --apply` saves an immutable JSON under
-`tune/results/{timestamp}.json` and rotates the active pointer:
+`{vault}/.ipa/tune/results/{timestamp}.json` and rotates the active pointer:
 
 ```yaml
-# ~/.config/ipa/profiles/sample/profile.yaml
-vault_path: /Users/me/sync/IPA
-tune:
-  result_file: 2026-05-06T21-30-00.json
+# {vault}/.ipa/config.yaml
+weights:
+  file: .ipa/tune/results/2026-05-06T21-30-00.json
 ```
 
 The pointed-at JSON contains `threshold`, `max_results`, `weights`, plus a
 `study` block. Search params merge in priority order
-**default < profile.yaml < tune_result < env < cli**. A stale or missing
-pointer falls back to `profile.yaml`/builtin values.
+**default < profile registry < weights.file < env < cli**. A stale or
+missing pointer falls back to registry/builtin values.
 
 Useful subcommands:
 
@@ -211,11 +259,10 @@ src/ipa_cli/
 uv run pytest -q
 ```
 
-(336 tests at the time of writing — including the legacy-surface
-characterization snapshots, migrated-runtime regression checks, and the
-new `runtime/*` unit tests. Hit-rate parity against your own
-testset depends on the vault and is measured outside CI via
-`ipa tune eval --testset`.)
+(The suite includes legacy-surface characterization snapshots,
+migrated-runtime regression checks, and `runtime/*` unit tests. Hit-rate
+parity against your own testset depends on the vault and is measured
+outside CI via `ipa tune eval --testset`.)
 
 ## License
 

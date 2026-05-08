@@ -91,6 +91,30 @@ def test_default_testset_path_picks_env_first(
     assert default_testset_path() == target
 
 
+def test_default_testset_path_picks_vault_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("IPA_TESTSET", raising=False)
+    vault = tmp_path / "vault"
+    (vault / ".ipa" / "tune" / "testsets").mkdir(parents=True)
+    target = _fake_testset(vault / ".ipa" / "tune" / "testsets")
+    cfg = vault / ".ipa" / "config.yaml"
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    cfg.write_text(
+        "test:\n  file: .ipa/tune/testsets/testset.json\n",
+        encoding="utf-8",
+    )
+    assert default_testset_path(vault_path=vault) == target
+
+
+def test_load_testset_name_resolves_under_vault(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    (vault / ".ipa" / "tune" / "testsets").mkdir(parents=True)
+    _fake_testset(vault / ".ipa" / "tune" / "testsets")
+    ts = load_testset("testset", vault_path=vault)
+    assert ts["version"] == "v1"
+
+
 def test_loss_penalty_constants() -> None:
     """Penalties match the design contract documented in IPA CLI 구축 계획."""
     assert REGRESSION_MISS_PENALTY == 100

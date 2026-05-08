@@ -1,4 +1,4 @@
-"""Resolve `Settings` from profile.yaml + tune result + env + CLI overrides.
+"""Resolve `Settings` from profile registry + vault config + env + CLI.
 
 Profile selection priority:
   1. CLI ``--profile``
@@ -7,13 +7,28 @@ Profile selection priority:
      ``search.py`` / ``convention.py`` / tune pointer / cache)
   3. nearest ``.ipa-profile`` walking up from the current directory
   4. process env ``IPA_PROFILE``
-  5. fail
+  5. default profile from ``~/.config/ipa/profile.yaml``
+  6. fail
+
+The global ``~/.config/ipa/profile.yaml`` is a profile registry:
+
+    profiles:
+      work:
+        vault_path: /path/to/vault
+        default: true
+
+Vault-local ``{vault}/.ipa/config.yaml`` carries portable target paths:
+
+    test:
+      file: .ipa/tune/testsets/testset.json
+    weights:
+      file: .ipa/tune/results/active.json
 
 Value priority (highest wins):
   1. CLI overrides (``--vault`` and explicit overrides)
   2. process env (IPA_*) / .env
-  3. active tune result JSON pointed to by profile.yaml
-  4. profile.yaml static values
+  3. search params loaded from ``{vault}/.ipa/config.yaml`` ``weights.file``
+  4. profile registry / legacy profile workspace static values
   5. defaults
 
 Supports `${VAR}` interpolation in yaml string values, and a curated set
@@ -27,8 +42,11 @@ of `IPA_*` env overrides:
 
 from __future__ import annotations
 
+import json
 import os
 import re
+from collections.abc import Mapping as MappingABC
+from collections.abc import MutableMapping
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -106,7 +124,6 @@ def _apply_env_overrides(merged: dict[str, Any]) -> dict[str, str]:
             continue
         _set_path(merged, path, value)
         sources[".".join(path)] = "env"
-    # weights: IPA_SEARCH_WEIGHTS_<NAME>
     for env_key, raw in os.environ.items():
         if not env_key.startswith(_WEIGHTS_PREFIX):
             continue
@@ -143,11 +160,52 @@ def _build_defaults() -> dict[str, Any]:
     }
 
 
+def _profile_entries(registry_cfg: dict[str, Any], path: Path) -> dict[str, dict[str, Any]]:
+    raw = registry_cfg.get("profiles") or {}
+    entries: dict[str, dict[str, Any]] = {}
+
+    if isinstance(raw, MappingABC):
+        for name, value in raw.items():
+            if value is None:
+                value = {}
+            if not isinstance(value, MappingABC):
+                raise ValueError(f"profile '{name}' in {path} must be a mapping")
+            entries[str(name)] = dict(value)
+        return entries
+
+    if isinstance(raw, list):
+        for item in raw:
+            if not isinstance(item, MappingABC):
+                raise ValueError(f"profile entry in {path} must be a mapping")
+            name = item.get("name")
+            if not isinstance(name, str) or not name:
+                raise ValueError(f"profile entry in {path} must include name")
+            entries[name] = {k: v for k, v in item.items() if k != "name"}
+        return entries
+
+    raise ValueError(f"'profiles' in {path} must be a mapping or list")
+
+
+def _default_profile_name(registry_cfg: dict[str, Any], path: Path) -> str | None:
+    explicit = registry_cfg.get("default_profile")
+    if isinstance(explicit, str) and explicit:
+        return explicit
+
+    entries = _profile_entries(registry_cfg, path)
+    defaults = [name for name, cfg in entries.items() if cfg.get("default") is True]
+    if len(defaults) > 1:
+        joined = ", ".join(sorted(defaults))
+        raise ValueError(f"Multiple default IPA profiles in {path}: {joined}")
+    return defaults[0] if defaults else None
+
+
 def _resolve_profile(
     *,
     profile: str | None,
     vault: str | Path | None,
     cwd: Path | None,
+    registry_cfg: dict[str, Any],
+    config_path: Path,
 ) -> tuple[str, str]:
     if profile:
         return profile, "cli"
@@ -164,10 +222,149 @@ def _resolve_profile(
     env_profile = os.environ.get(f"{_ENV_PREFIX}PROFILE")
     if env_profile:
         return env_profile, "env"
+    default_profile = _default_profile_name(registry_cfg, config_path)
+    if default_profile:
+        return default_profile, "profile.yaml.default"
     raise ValueError(
-        "No IPA profile selected. Pass --profile, create a .ipa-profile file, "
-        "or set IPA_PROFILE."
+        "No IPA profile selected. Pass --profile, pass --vault, create a "
+        ".ipa-profile file, set IPA_PROFILE, or mark one profile as "
+        "default: true in ~/.config/ipa/profile.yaml."
     )
+
+
+def _mark_sources(sources: dict[str, str], cfg: MappingABC[str, Any], label: str) -> None:
+    for key, value in cfg.items():
+        if key == "default":
+            continue
+        sources[str(key)] = label
+        if isinstance(value, MappingABC):
+            for sub_key, sub_value in value.items():
+                sources[f"{key}.{sub_key}"] = label
+                if key == "search" and sub_key == "weights" and isinstance(
+                    sub_value, MappingABC
+                ):
+                    for weight_key in sub_value:
+                        sources[f"search.weights.{weight_key}"] = label
+
+
+def _vault_config_path(vault_path: Path) -> Path:
+    return vault_path / ".ipa" / "config.yaml"
+
+
+def _vault_cache_dir(vault_path: Path) -> Path:
+    return vault_path / ".ipa" / "cache" / "search"
+
+
+def _vault_tune_results_dir(vault_path: Path) -> Path:
+    return vault_path / ".ipa" / "tune" / "results"
+
+
+def _vault_testsets_dir(vault_path: Path) -> Path:
+    return vault_path / ".ipa" / "tune" / "testsets"
+
+
+def _nested(mapping: MappingABC[str, Any], *keys: str) -> Any:
+    node: Any = mapping
+    for key in keys:
+        if not isinstance(node, MappingABC):
+            return None
+        node = node.get(key)
+    return node
+
+
+def _first_target(*values: Any) -> Any:
+    for value in values:
+        if value is not None and value != "":
+            return value
+    return None
+
+
+def _resolve_vault_target(
+    vault_path: Path,
+    raw: Any,
+    *,
+    single_name_dir: Path,
+) -> Path | None:
+    if raw is None or raw == "":
+        return None
+    p = Path(str(raw)).expanduser()
+    if p.is_absolute():
+        return p
+    if len(p.parts) == 1:
+        return single_name_dir / p
+    return vault_path / p
+
+
+def _vault_targets(
+    vault_path: Path,
+    vault_cfg: dict[str, Any],
+) -> tuple[Path | None, Path | None]:
+    test_raw = _first_target(
+        _nested(vault_cfg, "test", "file"),
+        vault_cfg.get("test_file"),
+        _nested(vault_cfg, "tune", "test_file"),
+    )
+    weight_raw = _first_target(
+        _nested(vault_cfg, "weights", "file"),
+        _nested(vault_cfg, "weight", "file"),
+        vault_cfg.get("weight_file"),
+        _nested(vault_cfg, "tune", "weight_file"),
+        _nested(vault_cfg, "tune", "result_file"),
+    )
+    return (
+        _resolve_vault_target(
+            vault_path,
+            test_raw,
+            single_name_dir=_vault_testsets_dir(vault_path),
+        ),
+        _resolve_vault_target(
+            vault_path,
+            weight_raw,
+            single_name_dir=_vault_tune_results_dir(vault_path),
+        ),
+    )
+
+
+def _read_vault_config(vault_path: Path) -> tuple[dict[str, Any], Path]:
+    if vault_path == Path():
+        return {}, Path()
+    path = _vault_config_path(vault_path)
+    cfg = _read_yaml(path)
+    return _interpolate(cfg, dict(os.environ)), path
+
+
+def _apply_weight_result(
+    weight_path: Path | None,
+    merged: dict[str, Any],
+    sources: dict[str, str],
+) -> None:
+    if weight_path is None:
+        return
+
+    from ipa_cli.tune.results import TuneResult
+
+    try:
+        with weight_path.open("r", encoding="utf-8") as f:
+            payload = json.load(f)
+        if not isinstance(payload, dict):
+            raise ValueError("weight result root must be a mapping")
+        result = TuneResult.from_dict(payload)
+    except Exception:
+        sources["weights.file.warning"] = (
+            f"active weight result '{weight_path}' is missing or invalid; "
+            "using fallback params"
+        )
+        return
+
+    search_section = merged.setdefault("search", {})
+    search_section["threshold"] = result.threshold
+    search_section["max_results"] = result.max_results
+    weights = search_section.setdefault("weights", {})
+    weights.update(result.weights)
+    sources["search.threshold"] = "weights.file"
+    sources["search.max_results"] = "weights.file"
+    for key in result.weights:
+        sources[f"search.weights.{key}"] = "weights.file"
 
 
 def load_settings(
@@ -185,43 +382,68 @@ def load_settings(
     if env_path.is_file():
         load_dotenv(env_path, override=False)
 
+    registry_cfg = _interpolate(_read_yaml(cfg_path), dict(os.environ))
+    profile_registry = _profile_entries(registry_cfg, cfg_path)
+
     active_profile, profile_source = _resolve_profile(
         profile=profile,
         vault=vault,
         cwd=cwd,
+        registry_cfg=registry_cfg,
+        config_path=cfg_path,
     )
     profile_dir = profile_workspace_dir(active_profile)
     profile_yaml = profile_dir / "profile.yaml"
 
-    profile_cfg = _read_yaml(profile_yaml)
-    if not isinstance(profile_cfg, dict):
-        raise ValueError(
-            f"profile '{active_profile}' in {profile_yaml} must be a mapping"
-        )
+    legacy_profile_cfg = _interpolate(_read_yaml(profile_yaml), dict(os.environ))
+    profile_cfg = _interpolate(
+        profile_registry.get(active_profile, {}),
+        dict(os.environ),
+    )
 
     merged = _build_defaults()
     sources: dict[str, str] = {
         "profile": profile_source,
+        "profile_dir": "derived",
+        "profile_config": "default",
+        "vault_config": "derived",
         "vault_path": "default",
+        "cache_dir": "derived",
         "search.threshold": "default",
         "search.max_results": "default",
     }
 
+    if legacy_profile_cfg:
+        merged = _deep_merge(merged, legacy_profile_cfg)
+        _mark_sources(sources, legacy_profile_cfg, "profile_workspace")
     if profile_cfg:
-        interpolated = _interpolate(profile_cfg, dict(os.environ))
-        merged = _deep_merge(merged, interpolated)
-        for k in interpolated:
-            sources[k] = "profile.yaml"
-        if "search" in interpolated and isinstance(interpolated["search"], dict):
-            for sub in interpolated["search"]:
-                sources[f"search.{sub}"] = "profile.yaml"
+        merged = _deep_merge(merged, profile_cfg)
+        _mark_sources(sources, profile_cfg, "profile.yaml")
 
-    # P6: profile.yaml tune.result_file points at an immutable JSON under
-    # ``tune/results/`` whose contents override static profile settings.
-    _apply_active_tune_result(active_profile, cfg_path, merged, sources)
+    # Apply only vault path env/CLI early so vault-local config is read from
+    # the actual target vault. Full env/CLI overrides are applied again below.
+    env_vault = os.environ.get("IPA_VAULT_PATH")
+    if env_vault:
+        merged["vault_path"] = env_vault
+        sources["vault_path"] = "env"
+    if vault is not None:
+        merged["vault_path"] = str(vault)
+        sources["vault_path"] = "cli"
 
-    # Env wins over profile.yaml and active tune result. ``load_dotenv`` above
-    # loaded the shared .env file into process env without overriding real env.
+    vault_raw = merged.get("vault_path")
+    vault_path = Path(vault_raw).expanduser() if vault_raw else Path()
+
+    vault_cfg, vault_cfg_path = _read_vault_config(vault_path)
+    testset_path, weight_result_path = _vault_targets(vault_path, vault_cfg)
+    if testset_path is not None:
+        sources["test.file"] = "vault.config"
+    if weight_result_path is not None:
+        sources["weights.file"] = "vault.config"
+    _apply_weight_result(weight_result_path, merged, sources)
+
+    # Env wins over profile registry and active weight result. ``load_dotenv``
+    # above loaded the shared .env file into process env without overriding
+    # real env.
     sources.update(_apply_env_overrides(merged))
 
     if vault is not None:
@@ -229,11 +451,12 @@ def load_settings(
         sources["vault_path"] = "cli"
     if cli_overrides:
         merged = _deep_merge(merged, cli_overrides)
-        for k in cli_overrides:
-            sources[k] = "cli"
+        for key in cli_overrides:
+            sources[key] = "cli"
 
     vault_raw = merged.get("vault_path")
     vault_path = Path(vault_raw).expanduser() if vault_raw else Path()
+    cache_dir = _vault_cache_dir(vault_path) if vault_path != Path() else Path()
 
     search_raw = merged.get("search") or {}
     weights = dict(DEFAULT_WEIGHTS)
@@ -249,69 +472,27 @@ def load_settings(
         profile=active_profile,
         profile_dir=profile_dir,
         vault_path=vault_path,
-        cache_dir=profile_dir / ".cache",
+        cache_dir=cache_dir,
         config_path=cfg_path,
+        vault_config_path=vault_cfg_path,
+        testset_path=testset_path,
+        weight_result_path=weight_result_path,
         search=search,
         source_map=sources,
     )
 
 
-def _apply_active_tune_result(
-    profile: str,
-    config_path: Path,
-    merged: dict[str, Any],
-    sources: dict[str, str],
-) -> None:
-    """Read the active tune result JSON (if any) and merge into ``merged``.
-
-    Called from ``load_settings`` before env/CLI overrides so:
-      profile.yaml < tune_result < env < cli
-    Missing/invalid pointer is silently skipped — the CLI prints the
-    user-facing warning when needed.
-    """
-    # Late import to avoid circular dependency at module import time.
-    from ipa_cli.tune.results import load_result, read_active_result_filename
-
-    name = read_active_result_filename(profile, config_path)
-    if not name:
-        return
-    try:
-        result = load_result(profile, name)
-    except Exception:
-        sources["tune.result_file.warning"] = (
-            f"active tune result '{name}' is missing or invalid; using fallback params"
-        )
-        return
-
-    search_section = merged.setdefault("search", {})
-    search_section["threshold"] = result.threshold
-    search_section["max_results"] = result.max_results
-    weights = search_section.setdefault("weights", {})
-    weights.update(result.weights)
-    sources["search.threshold"] = "tune_result"
-    sources["search.max_results"] = "tune_result"
-    for k in result.weights:
-        sources[f"search.weights.{k}"] = "tune_result"
-
-
 def list_profiles(config_path: Path | None = None) -> tuple[list[str], str | None]:
-    """Return profile workspace names and the nearest project selection.
-
-    ``config_path`` is accepted for the old public signature but no longer
-    drives profile discovery; profile workspaces live under
-    ``$XDG_CONFIG_HOME/ipa/profiles``.
-    """
-    profiles_dir = xdg_config_home() / "ipa" / "profiles"
-    if profiles_dir.is_dir():
-        names = sorted(
-            p.name
-            for p in profiles_dir.iterdir()
-            if p.is_dir() and not p.name.startswith(".")
-        )
-    else:
-        names = []
-    active = find_dotipa_profile(Path.cwd()) or os.environ.get(f"{_ENV_PREFIX}PROFILE")
-    return names, active
+    """Return profile registry names and the current active selection."""
+    cfg_path = config_path or default_config_path()
+    registry_cfg = _interpolate(_read_yaml(cfg_path), dict(os.environ))
+    profile_registry = _profile_entries(registry_cfg, cfg_path)
+    active = (
+        find_dotipa_profile(Path.cwd())
+        or os.environ.get(f"{_ENV_PREFIX}PROFILE")
+        or _default_profile_name(registry_cfg, cfg_path)
+    )
+    return sorted(profile_registry), active
 
 
 def _ruamel() -> YAML:
@@ -338,12 +519,24 @@ def write_yaml_preserving(path: Path, data: Any) -> None:
 
 
 def set_default_profile(name: str, config_path: Path | None = None) -> None:
-    """Write the project-local ``.ipa-profile`` selection.
+    """Mark one profile as the global default in ``profile.yaml``."""
+    path = config_path or default_config_path()
+    data = read_yaml_preserving(path)
+    if not isinstance(data, MutableMapping):
+        data = {}
 
-    Kept under the old function name so existing imports keep working while
-    the semantics match the 2차 plan: there is no global ``default_profile``.
-    """
-    target = (
-        config_path.parent if config_path is not None else Path.cwd()
-    ) / ".ipa-profile"
-    target.write_text(f"{name}\n", encoding="utf-8")
+    profiles = data.setdefault("profiles", {})
+    if not isinstance(profiles, MutableMapping):
+        raise ValueError(f"'profiles' in {path} must be a mapping")
+
+    if name not in profiles or profiles[name] is None:
+        profiles[name] = {"vault_path": ""}
+    if not isinstance(profiles[name], MutableMapping):
+        raise ValueError(f"profile '{name}' in {path} must be a mapping")
+
+    for profile_name, profile_cfg in profiles.items():
+        if not isinstance(profile_cfg, MutableMapping):
+            continue
+        profile_cfg["default"] = profile_name == name
+
+    write_yaml_preserving(path, data)

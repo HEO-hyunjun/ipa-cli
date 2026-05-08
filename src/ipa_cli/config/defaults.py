@@ -2,8 +2,8 @@
 
 Search channel weights mirror `_shared/scripts/vault_search.py:55`
 (`_CHANNEL_WEIGHTS`, P9-rerun, 2000 trials Optuna). `ipa tune --apply`
-writes immutable results under the profile workspace; these defaults are
-the fallback only.
+writes immutable results under the vault-local `.ipa/tune/results/`
+directory; these defaults are the fallback only.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ def xdg_config_home() -> Path:
 
 
 def default_config_path() -> Path:
-    return xdg_config_home() / "ipa" / "config.yaml"
+    return xdg_config_home() / "ipa" / "profile.yaml"
 
 
 def default_dotenv_path() -> Path:

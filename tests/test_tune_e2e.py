@@ -47,10 +47,12 @@ def isolated_xdg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def _seed_config(isolated_xdg: Path, vault: Path, profile: str = "tunee2e") -> Path:
-    profile_yaml = isolated_xdg / "ipa" / "profiles" / profile / "profile.yaml"
+    profile_yaml = isolated_xdg / "ipa" / "profile.yaml"
     profile_yaml.parent.mkdir(parents=True, exist_ok=True)
     profile_yaml.write_text(
-        yaml.safe_dump({"vault_path": str(vault)}),
+        yaml.safe_dump(
+            {"profiles": {profile: {"vault_path": str(vault), "default": True}}}
+        ),
         encoding="utf-8",
     )
     return profile_yaml
@@ -80,7 +82,7 @@ def _write_testset(tmp_path: Path) -> Path:
 def test_tune_run_apply_then_engine_search_uses_new_weights(
     vault: Path, isolated_xdg: Path, tmp_path: Path
 ) -> None:
-    cfg = _seed_config(isolated_xdg, vault)
+    _seed_config(isolated_xdg, vault)
     testset = _write_testset(tmp_path)
 
     runner = CliRunner()
@@ -101,15 +103,15 @@ def test_tune_run_apply_then_engine_search_uses_new_weights(
     assert result.exit_code == 0, result.stdout
     assert "applied" in result.stdout
 
-    # Pointer flipped in profile.yaml.
-    after = yaml.safe_load(cfg.read_text(encoding="utf-8"))
-    pointer = after["tune"]["result_file"]
+    # Pointer flipped in vault-local config.yaml.
+    vault_cfg = vault / ".ipa" / "config.yaml"
+    after = yaml.safe_load(vault_cfg.read_text(encoding="utf-8"))
+    pointer_path = after["weights"]["file"]
+    pointer = Path(pointer_path).name
     assert pointer.endswith(".json")
 
     # tune/results/{ts}.json exists and has the expected keys.
-    result_path = (
-        isolated_xdg / "ipa" / "profiles" / "tunee2e" / "tune" / "results" / pointer
-    )
+    result_path = vault / ".ipa" / "tune" / "results" / pointer
     payload = json.loads(result_path.read_text(encoding="utf-8"))
     assert "threshold" in payload
     assert "max_results" in payload

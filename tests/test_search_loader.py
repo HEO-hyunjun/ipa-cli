@@ -52,6 +52,99 @@ channels = [CustomChannel()]
     assert channels[0].name == "custom"
 
 
+def test_loads_vault_local_search_plugins(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    plugin_dir = vault / ".ipa" / "plugins" / "search"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "vault_channel.py").write_text(
+        '''"""vault-local search plugin."""
+from typing import ClassVar
+
+from ipa_cli.api.base_channels import BaseSearchChannel
+
+
+class VaultChannel(BaseSearchChannel):
+    name: ClassVar[str] = "vault-local"
+    description: ClassVar[str] = "vault local"
+    default_weight: ClassVar[float] = 0.25
+
+    def search(self, ctx, query):
+        return {}
+
+
+channels = [VaultChannel()]
+''',
+        encoding="utf-8",
+    )
+
+    channels = load_search_channels(None, vault_path=vault)
+    names = [c.name for c in channels]
+    assert "keyword" in names
+    assert names[-1] == "vault-local"
+
+
+def test_profile_search_is_extended_by_vault_local_plugins(tmp_path: Path) -> None:
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    (profile / "search.py").write_text(
+        '''"""profile search."""
+from typing import ClassVar
+
+from ipa_cli.api.base_channels import BaseSearchChannel
+
+
+class ProfileChannel(BaseSearchChannel):
+    name: ClassVar[str] = "profile"
+    description: ClassVar[str] = "profile"
+    default_weight: ClassVar[float] = 0.5
+
+    def search(self, ctx, query):
+        return {}
+
+
+channels = [ProfileChannel()]
+''',
+        encoding="utf-8",
+    )
+
+    vault = tmp_path / "vault"
+    plugin_dir = vault / ".ipa" / "plugins" / "search"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "vault_channel.py").write_text(
+        '''"""vault-local search plugin."""
+from typing import ClassVar
+
+from ipa_cli.api.base_channels import BaseSearchChannel
+
+
+class VaultChannel(BaseSearchChannel):
+    name: ClassVar[str] = "vault-local"
+    description: ClassVar[str] = "vault local"
+    default_weight: ClassVar[float] = 0.25
+
+    def search(self, ctx, query):
+        return {}
+
+
+channels = [VaultChannel()]
+''',
+        encoding="utf-8",
+    )
+
+    channels = load_search_channels(profile, vault_path=vault)
+    assert [c.name for c in channels] == ["profile", "vault-local"]
+
+
+def test_vault_search_plugin_missing_channels_fails(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    plugin_dir = vault / ".ipa" / "plugins" / "search"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "bad.py").write_text("# no channels here\n", encoding="utf-8")
+
+    with pytest.raises(ImportError, match="must define a module-level"):
+        load_search_channels(None, vault_path=vault)
+
+
 def test_raises_when_channels_attr_missing(tmp_path: Path) -> None:
     (tmp_path / "search.py").write_text("# no channels here\n", encoding="utf-8")
     with pytest.raises(ImportError, match="must define a module-level"):
