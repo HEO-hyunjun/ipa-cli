@@ -24,6 +24,7 @@ import re
 from typing import TYPE_CHECKING, ClassVar
 
 from ipa_cli.api.base_channels import BaseSearchChannel
+from ipa_cli.builtins.channels.weights import DEFAULT_CHANNEL_WEIGHTS
 from ipa_cli.parse.links import extract_ref_targets, extract_wikilinks
 
 if TYPE_CHECKING:
@@ -81,7 +82,7 @@ class RelatedChannel(BaseSearchChannel):
         "Graph-neighbor expansion (common refs / tags / wikilink edges) "
         "from filename-matched seeds, max-normalized"
     )
-    default_weight: ClassVar[float] = 0.032
+    default_weight: ClassVar[float] = DEFAULT_CHANNEL_WEIGHTS[name]
 
     def search(self, ctx: "SetupContext", query: "Query") -> dict[str, float]:
         q = query.raw

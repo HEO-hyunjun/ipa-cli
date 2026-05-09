@@ -1,9 +1,9 @@
 """Built-in defaults for ipa-cli.
 
-Search channel weights mirror `_shared/scripts/vault_search.py:55`
-(`_CHANNEL_WEIGHTS`, P9-rerun, 2000 trials Optuna). `ipa tune --apply`
-writes immutable results under the vault-local `.ipa/tune/results/`
-directory; these defaults are the fallback only.
+Search channel weights come from
+``ipa_cli.builtins.channels.weights.DEFAULT_CHANNEL_WEIGHTS``. `ipa tune
+--apply` writes immutable results under the vault-local
+`.ipa/tune/results/` directory; these defaults are the fallback only.
 """
 
 from __future__ import annotations
@@ -11,19 +11,12 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from ipa_cli.builtins.channels.weights import DEFAULT_CHANNEL_WEIGHTS
+
 DEFAULT_THRESHOLD = 0.30
 DEFAULT_MAX_RESULTS = 10
 
-DEFAULT_WEIGHTS: dict[str, float] = {
-    "fuzzy": 0.268,
-    "keyword": 0.055,
-    "related": 0.032,
-    "body_match": 0.363,
-    "sequence_match": 0.078,
-    "filename_partial": 0.150,
-    "child_body_match": 0.169,
-    "project": 0.033,
-}
+DEFAULT_WEIGHTS: dict[str, float] = dict(DEFAULT_CHANNEL_WEIGHTS)
 
 
 def xdg_config_home() -> Path:

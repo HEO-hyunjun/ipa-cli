@@ -56,10 +56,10 @@ ipa convention check --summary
 ipa formatter plan
 ipa formatter apply
 
-# Tune (Optuna TPE) and roll the active result pointer in {vault}/.ipa/config.yaml.
-ipa tune --apply --trials 200
+# Tune (Optuna TPE), save best JSON, then optionally activate it.
+ipa tune --trials 200
 ipa tune list
-ipa tune use 2026-05-04T09-12-44.json   # rollback
+ipa tune use 2026-05-04T09-12-44.json
 ```
 
 ## Vault-local plugins
@@ -108,7 +108,29 @@ test:
   file: .ipa/tune/testsets/testset.json
 weights:
   file: .ipa/tune/results/2026-05-06T21-30-00.json
+convention:
+  enabled: true
+  builtin: true
+  plugins:
+    lint: true
+    formatter: true
+  ignore:
+    - ipa.heading.no_h1
+formatter:
+  enabled: true
+  builtin: false
+  plugins:
+    lint: false
+    formatter: true
+  only:
+    - vault.formatter.frontmatter_order
 ```
+
+`convention` controls `ipa convention check`; `formatter` controls
+`ipa formatter plan/apply`. `builtin: false` disables builtin rules for
+that surface. `plugins` can be `true`/`false`, a list like
+`["lint"]`, or a mapping of plugin directories. `only` and `ignore`
+filter by rule code after loading.
 
 Optional profile workspaces can still hold machine-local base overrides:
 
@@ -184,8 +206,9 @@ skip the parser.
 
 ## Tune workflow
 
-`ipa tune --apply` saves an immutable JSON under
-`{vault}/.ipa/tune/results/{timestamp}.json` and rotates the active pointer:
+`ipa tune` saves the best params from each run as an immutable JSON under
+`{vault}/.ipa/tune/results/{timestamp}.json`. `ipa tune --apply` saves the
+same artifact and also rotates the active pointer:
 
 ```yaml
 # {vault}/.ipa/config.yaml
@@ -203,10 +226,16 @@ Useful subcommands:
 | Command | What it does |
 |---|---|
 | `ipa tune eval [--testset NAME]` | Baseline loss/metrics with the *current* active params |
-| `ipa tune` (run, with optional `--apply`) | Optuna TPE study |
+| `ipa tune` (run, with optional `--apply`) | Run tuning and save the best result JSON |
 | `ipa tune analyze` | Threshold distribution diagnostics |
 | `ipa tune list` | History (newest first), ★ active marker |
 | `ipa tune use <filename>` | Flip the pointer; rollback to a past result |
+
+Tune precomputes raw channel scores once per unique testset query, then
+each trial only recombines cached scores with candidate weights, threshold,
+and cap. Progress prints the precompute query count/time plus `iter
+current/total`, last-trial seconds, average seconds, ETA, current loss,
+and best loss. Use `--progress-every N` to reduce output during long runs.
 
 ## Vault skill compatibility
 

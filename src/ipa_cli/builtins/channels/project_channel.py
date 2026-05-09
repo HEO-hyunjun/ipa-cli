@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, ClassVar
 
 from ipa_cli.api.base_channels import BaseSearchChannel
+from ipa_cli.builtins.channels.weights import DEFAULT_CHANNEL_WEIGHTS
 from ipa_cli.parse.links import extract_ref_targets
 
 if TYPE_CHECKING:
@@ -32,7 +33,7 @@ class ProjectChannel(BaseSearchChannel):
     description: ClassVar[str] = (
         "Note lives in mapping.project_dir or refs into one — score 1.0"
     )
-    default_weight: ClassVar[float] = 0.033
+    default_weight: ClassVar[float] = DEFAULT_CHANNEL_WEIGHTS[name]
 
     def search(self, ctx: "SetupContext", query: "Query") -> dict[str, float]:
         mapping = ctx.mapping

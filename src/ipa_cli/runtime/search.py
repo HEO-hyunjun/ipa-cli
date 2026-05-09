@@ -43,7 +43,30 @@ def _multi_search(
         for hit in engine.search(Query(raw=q), weights=weights):
             combined[hit.note_id] = combined.get(hit.note_id, 0.0) + hit.score
             if hit.explanations:
-                explanations[hit.note_id] = hit.explanations
+                note_exp = explanations.setdefault(hit.note_id, {})
+                for ch_name, payload in hit.explanations.items():
+                    dest = note_exp.setdefault(
+                        ch_name,
+                        {
+                            "raw": 0.0,
+                            "weighted": 0.0,
+                            "weight": payload.get("weight"),
+                        },
+                    )
+                    dest["raw"] = float(dest.get("raw") or 0.0) + float(
+                        payload.get("raw") or 0.0
+                    )
+                    weighted_value = payload.get("weighted")
+                    if weighted_value is None:
+                        weighted_value = payload.get("raw")
+                    dest["weighted"] = float(dest.get("weighted") or 0.0) + float(
+                        weighted_value or 0.0
+                    )
+                    if dest.get("weight") is None:
+                        dest["weight"] = payload.get("weight")
+                    for key, value in payload.items():
+                        if key not in dest:
+                            dest[key] = value
     ranked = [
         Hit(note_id=nid, score=score, explanations=explanations.get(nid))
         for nid, score in combined.items()
@@ -177,6 +200,32 @@ def render_search(
         channels=channels,
         cache_dir=cache_dir,
     )
+    return render_search_results(
+        queries,
+        visible,
+        notes,
+        cut,
+        threshold=threshold,
+        show_all=show_all,
+        reasons=reasons,
+        mapping=mapping,
+    )
+
+
+def render_search_results(
+    queries: list[str],
+    visible: list[Hit],
+    notes: list[Note],
+    cut: int,
+    *,
+    threshold: float,
+    show_all: bool,
+    reasons: bool,
+    mapping: Mapping | None = None,
+) -> str:
+    """Render precomputed search hits in the legacy ``ipa search`` format."""
+    if mapping is None:
+        mapping = Mapping()
     notes_by_id = {n.id: n for n in notes}
 
     label = " + ".join(queries)

@@ -26,7 +26,7 @@ from typing import Any
 
 from ipa_cli.config.defaults import xdg_config_home
 
-TIMESTAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}$")
+TIMESTAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}(?:-\d{2})?$")
 
 
 @dataclass(frozen=True)
@@ -138,9 +138,18 @@ def save_result(
     target_dir = results_dir(profile, vault_path=vault_path)
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    name = filename or timestamp_filename()
-    if not name.endswith(".json"):
-        name = f"{name}.json"
+    if filename is None:
+        base = timestamp_filename()
+        stem = base.removesuffix(".json")
+        name = base
+        counter = 1
+        while (target_dir / name).exists():
+            name = f"{stem}-{counter:02d}.json"
+            counter += 1
+    else:
+        name = filename
+        if not name.endswith(".json"):
+            name = f"{name}.json"
     path = target_dir / name
     if path.exists():
         raise FileExistsError(

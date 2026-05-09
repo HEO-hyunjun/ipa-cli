@@ -16,6 +16,7 @@ import re
 from typing import TYPE_CHECKING, ClassVar
 
 from ipa_cli.api.base_channels import BaseSearchChannel
+from ipa_cli.builtins.channels.weights import DEFAULT_CHANNEL_WEIGHTS
 
 if TYPE_CHECKING:
     from ipa_cli.api.base_channels import Query, SetupContext
@@ -36,9 +37,9 @@ def _tokenize(query: str) -> list[str]:
 class SequenceMatchChannel(BaseSearchChannel):
     name: ClassVar[str] = "sequence_match"
     description: ClassVar[str] = (
-        "All query tokens (in any order) appear in normalized note.id, score 1.0"
+        "All query tokens appear in normalized note.id or aliases, score 1.0"
     )
-    default_weight: ClassVar[float] = 0.078
+    default_weight: ClassVar[float] = DEFAULT_CHANNEL_WEIGHTS[name]
 
     def search(self, ctx: "SetupContext", query: "Query") -> dict[str, float]:
         tokens = _tokenize(query.raw)
@@ -46,7 +47,7 @@ class SequenceMatchChannel(BaseSearchChannel):
             return {}
         scores: dict[str, float] = {}
         for note in ctx.notes:
-            normalized = _normalize_id(note.id)
-            if all(t in normalized for t in tokens):
+            names = [note.id, *note.aliases(ctx.mapping)]
+            if any(all(t in _normalize_id(name) for t in tokens) for name in names):
                 scores[note.id] = 1.0
         return scores

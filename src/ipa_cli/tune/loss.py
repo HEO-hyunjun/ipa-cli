@@ -31,6 +31,8 @@ from .eval_set import topn_for_mode
 if TYPE_CHECKING:
     from ipa_cli.runtime.search_engine import SearchEngine
 
+QueryScoreCache = dict[str, dict[str, dict[str, float]]]
+
 REGRESSION_MISS_PENALTY = 100
 SCENARIO_MISS_PENALTY = 50
 
@@ -62,6 +64,7 @@ def _multi_search(
     weights: dict[str, float] | None,
     threshold: float,
     cap: int,
+    query_score_cache: QueryScoreCache | None = None,
 ) -> list[_Ranked]:
     """Sum per-query Hit scores → threshold filter → cap.
 
@@ -72,14 +75,56 @@ def _multi_search(
     for q in queries:
         if not q:
             continue
-        hits = engine.search(Query(raw=q), weights=weights)
-        for h in hits:
-            combined[h.note_id] = combined.get(h.note_id, 0.0) + h.score
+        if query_score_cache is not None and q in query_score_cache:
+            _accumulate_channel_scores(
+                engine, query_score_cache[q], weights, combined
+            )
+        else:
+            hits = engine.search(Query(raw=q), weights=weights)
+            for h in hits:
+                combined[h.note_id] = combined.get(h.note_id, 0.0) + h.score
     ranked = [
         _Ranked(note_id=nid, score=s) for nid, s in combined.items() if s >= threshold
     ]
     ranked.sort(key=lambda r: r.score, reverse=True)
     return ranked[:cap]
+
+
+def _accumulate_channel_scores(
+    engine: "SearchEngine",
+    channel_scores: dict[str, dict[str, float]],
+    weights: dict[str, float] | None,
+    combined: dict[str, float],
+) -> None:
+    """Apply trial weights to cached raw channel scores."""
+    weight_map = dict(weights or {})
+    channels_by_name = {channel.name: channel for channel in engine.channels}
+    for channel_name, scores in channel_scores.items():
+        channel = channels_by_name.get(channel_name)
+        if channel is None:
+            continue
+        weight = weight_map.get(channel_name, channel.default_weight)
+        if weight == 0:
+            continue
+        for note_id, raw in scores.items():
+            combined[note_id] = combined.get(note_id, 0.0) + raw * weight
+
+
+def build_query_score_cache(
+    engine: "SearchEngine",
+    regression_cases: list[dict[str, Any]],
+    scenario_cases: list[dict[str, Any]],
+) -> QueryScoreCache:
+    """Precompute raw per-channel scores once per unique testset query."""
+    engine.setup()
+    seen: set[str] = set()
+    queries: list[str] = []
+    for case in [*regression_cases, *scenario_cases]:
+        for raw in case.get("queries") or []:
+            if raw and raw not in seen:
+                seen.add(raw)
+                queries.append(raw)
+    return {raw: engine.score_channels(Query(raw=raw)) for raw in queries}
 
 
 def evaluate_regression(
@@ -88,10 +133,13 @@ def evaluate_regression(
     weights: dict[str, float] | None,
     threshold: float,
     cap: int,
+    query_score_cache: QueryScoreCache | None = None,
 ) -> tuple[bool, int | None]:
     """Return ``(hit, rank)`` for a regression case via ``engine.search``."""
     target = nfc(str(case["target_filename"]))
-    ranked = _multi_search(engine, case["queries"], weights, threshold, cap)
+    ranked = _multi_search(
+        engine, case["queries"], weights, threshold, cap, query_score_cache
+    )
     for i, r in enumerate(ranked, 1):
         if nfc(r.note_id) == target:
             return True, i
@@ -104,6 +152,7 @@ def evaluate_scenario(
     weights: dict[str, float] | None,
     threshold: float,
     cap: int,
+    query_score_cache: QueryScoreCache | None = None,
 ) -> tuple[bool, int | None]:
     """Return ``(hit, best_rank)`` for a scenario case.
 
@@ -116,7 +165,9 @@ def evaluate_scenario(
     if not queries:
         return False, None
     n_top = topn_for_mode(case.get("recall_mode", "top10"))
-    ranked = _multi_search(engine, queries, weights, threshold, cap)[:n_top]
+    ranked = _multi_search(
+        engine, queries, weights, threshold, cap, query_score_cache
+    )[:n_top]
     topn_ids = [nfc(r.note_id) for r in ranked]
 
     raw_targets = case.get("target_filenames") or [case.get("target_filename")]
@@ -137,19 +188,24 @@ def compute_loss(
     weights: dict[str, float] | None,
     threshold: float,
     cap: int,
+    query_score_cache: QueryScoreCache | None = None,
 ) -> tuple[float, Metrics]:
     """Engine-based total loss + ``Metrics``. Engine must be ``setup()``-ed."""
     reg_miss = 0
     scn_miss = 0
     ranks: list[int] = []
     for c in regression_cases:
-        hit, rank = evaluate_regression(c, engine, weights, threshold, cap)
+        hit, rank = evaluate_regression(
+            c, engine, weights, threshold, cap, query_score_cache
+        )
         if hit and rank is not None:
             ranks.append(rank)
         else:
             reg_miss += 1
     for c in scenario_cases:
-        hit, rank = evaluate_scenario(c, engine, weights, threshold, cap)
+        hit, rank = evaluate_scenario(
+            c, engine, weights, threshold, cap, query_score_cache
+        )
         if hit and rank is not None:
             ranks.append(rank)
         else:

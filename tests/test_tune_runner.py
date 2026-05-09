@@ -1,4 +1,4 @@
-"""tune/runner.py tests — Optuna trials reuse a single SearchEngine.setup."""
+"""tune/runner.py tests — Optuna trials reuse setup and cached query scores."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from ipa_cli.tune.runner import run_study
 
 class _CountingChannel(BaseSearchChannel):
     """Channel that records every ``setup`` call so tests can assert
-    setup runs exactly once across an N-trial study (the G7 invariant)."""
+    setup and query scoring are amortized across an N-trial study."""
 
     name: ClassVar[str] = "counting"
     description: ClassVar[str] = ""
@@ -56,10 +56,10 @@ def test_setup_runs_once_across_trials() -> None:
         tune_cap=False,
         seed=1,
     )
-    # The whole point of G7: setup runs exactly once even though
-    # n_trials × |regression| trial-objective evaluations happened.
+    # The whole point of the tune cache: setup and raw channel scoring
+    # happen once, then trials only recombine cached scores.
     assert ch.setup_calls == 1
-    assert ch.search_calls > 0
+    assert ch.search_calls == 1
 
 
 def test_setup_not_re_run_when_caller_already_setup() -> None:

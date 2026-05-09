@@ -10,12 +10,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from time import monotonic
 from typing import TYPE_CHECKING, Any
 
 import optuna
 from optuna.samplers import TPESampler
 
-from .loss import Metrics, compute_loss
+from .loss import Metrics, build_query_score_cache, compute_loss
 
 if TYPE_CHECKING:
     from ipa_cli.runtime.search_engine import SearchEngine
@@ -61,6 +62,7 @@ def run_study(
     study_name: str = "ipa-tune",
     seed: int = 42,
     on_trial: Any = None,
+    on_precompute_done: Any = None,
 ) -> StudyResult:
     """Run a TPE study using ``engine`` as the search backend.
 
@@ -77,17 +79,27 @@ def run_study(
     engine.setup()
 
     if study_dir is None:
-        storage_url = "sqlite:///:memory:"
+        storage = None
+        storage_url = "memory"
     else:
         study_dir.mkdir(parents=True, exist_ok=True)
         storage_url = f"sqlite:///{study_dir / 'optuna.db'}"
+        storage = storage_url
+
+    precompute_started = monotonic()
+    query_score_cache = build_query_score_cache(
+        engine, regression_cases, scenario_cases
+    )
+    if on_precompute_done is not None:
+        on_precompute_done(len(query_score_cache), monotonic() - precompute_started)
 
     sampler = TPESampler(seed=seed, n_startup_trials=min(30, n_trials // 4 or 1))
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
     study = optuna.create_study(
         direction="minimize",
         sampler=sampler,
         study_name=study_name,
-        storage=storage_url,
+        storage=storage,
         load_if_exists=True,
     )
 
@@ -102,11 +114,18 @@ def run_study(
         )
         cap = trial.suggest_int("cap", *CAP_RANGE) if tune_cap else fixed_cap
         loss, _ = compute_loss(
-            engine, regression_cases, scenario_cases, w, threshold, cap
+            engine,
+            regression_cases,
+            scenario_cases,
+            w,
+            threshold,
+            cap,
+            query_score_cache=query_score_cache,
         )
         return loss
 
     for i in range(n_trials):
+        trial_started = monotonic()
         trial = study.ask()
         try:
             loss = objective(trial)
@@ -115,7 +134,7 @@ def run_study(
             continue
         study.tell(trial, loss)
         if on_trial is not None:
-            on_trial(i, loss, study.best_value)
+            on_trial(i, loss, study.best_value, monotonic() - trial_started)
 
     best_params = dict(study.best_params)
     best_threshold = best_params.pop("threshold", fixed_threshold)
@@ -132,6 +151,7 @@ def run_study(
         best_weights,
         best_threshold,
         best_cap,
+        query_score_cache=query_score_cache,
     )
 
     return StudyResult(

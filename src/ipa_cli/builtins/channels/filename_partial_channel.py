@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 from ipa_cli.api.base_channels import BaseSearchChannel
 from ipa_cli.builtins.channels.sequence_channel import _normalize_id, _tokenize
+from ipa_cli.builtins.channels.weights import DEFAULT_CHANNEL_WEIGHTS
 
 if TYPE_CHECKING:
     from ipa_cli.api.base_channels import Query, SetupContext
@@ -24,9 +25,9 @@ if TYPE_CHECKING:
 class FilenamePartialChannel(BaseSearchChannel):
     name: ClassVar[str] = "filename_partial"
     description: ClassVar[str] = (
-        "Partial token match on normalized note.id, score = matched / total"
+        "Partial token match on normalized note.id or aliases, score = matched / total"
     )
-    default_weight: ClassVar[float] = 0.150
+    default_weight: ClassVar[float] = DEFAULT_CHANNEL_WEIGHTS[name]
 
     def search(self, ctx: "SetupContext", query: "Query") -> dict[str, float]:
         tokens = _tokenize(query.raw)
@@ -35,8 +36,12 @@ class FilenamePartialChannel(BaseSearchChannel):
         total = len(tokens)
         scores: dict[str, float] = {}
         for note in ctx.notes:
-            normalized = _normalize_id(note.id)
-            matched = sum(1 for t in tokens if t in normalized)
-            if 0 < matched < total:
-                scores[note.id] = matched / total
+            best = 0.0
+            for name in [note.id, *note.aliases(ctx.mapping)]:
+                normalized = _normalize_id(name)
+                matched = sum(1 for t in tokens if t in normalized)
+                if 0 < matched < total:
+                    best = max(best, matched / total)
+            if best > 0.0:
+                scores[note.id] = best
         return scores

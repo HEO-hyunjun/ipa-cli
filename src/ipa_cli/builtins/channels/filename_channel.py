@@ -16,6 +16,7 @@ import re
 from typing import TYPE_CHECKING, ClassVar
 
 from ipa_cli.api.base_channels import BaseSearchChannel
+from ipa_cli.builtins.channels.weights import DEFAULT_CHANNEL_WEIGHTS
 
 if TYPE_CHECKING:
     from ipa_cli.api.base_channels import Query, SetupContext
@@ -31,9 +32,9 @@ def _normalize(name: str) -> str:
 class FilenameMatchChannel(BaseSearchChannel):
     name: ClassVar[str] = "filename"
     description: ClassVar[str] = (
-        "Exact / case-insensitive / substring / no-space match on note.id"
+        "Exact / case-insensitive / substring / no-space match on note.id and aliases"
     )
-    default_weight: ClassVar[float] = 0.2
+    default_weight: ClassVar[float] = DEFAULT_CHANNEL_WEIGHTS[name]
 
     def search(self, ctx: "SetupContext", query: "Query") -> dict[str, float]:
         q = query.raw
@@ -43,15 +44,16 @@ class FilenameMatchChannel(BaseSearchChannel):
         qns = ql.replace(" ", "")
         scores: dict[str, float] = {}
         for note in ctx.notes:
-            nid = note.id
-            nl = nid.lower()
-            stripped = _normalize(nid)
-            if (
-                nid == q
-                or nl == ql
-                or ql in nl
-                or ql in stripped
-                or (qns and qns in nl.replace(" ", ""))
-            ):
-                scores[nid] = 1.0
+            for name in [note.id, *note.aliases(ctx.mapping)]:
+                nl = name.lower()
+                stripped = _normalize(name)
+                if (
+                    name == q
+                    or nl == ql
+                    or ql in nl
+                    or ql in stripped
+                    or (qns and qns in nl.replace(" ", ""))
+                ):
+                    scores[note.id] = 1.0
+                    break
         return scores

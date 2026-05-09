@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, ClassVar
 
 from ipa_cli.api.base_channels import BaseSearchChannel
+from ipa_cli.builtins.channels.weights import DEFAULT_CHANNEL_WEIGHTS
 from ipa_cli.parse.bm25 import jamo_trigrams
 from ipa_cli.parse.links import extract_ref_targets
 
@@ -32,7 +33,7 @@ class ChildBodyMatchChannel(BaseSearchChannel):
     description: ClassVar[str] = (
         "Index/root inherits the max raw BM25 score across notes that ref it"
     )
-    default_weight: ClassVar[float] = 0.169
+    default_weight: ClassVar[float] = DEFAULT_CHANNEL_WEIGHTS[name]
 
     def search(self, ctx: "SetupContext", query: "Query") -> dict[str, float]:
         q_tokens = jamo_trigrams(query.raw)

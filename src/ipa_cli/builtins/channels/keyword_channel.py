@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, ClassVar
 
 from ipa_cli.api.base_channels import BaseSearchChannel
+from ipa_cli.builtins.channels.weights import DEFAULT_CHANNEL_WEIGHTS
 
 if TYPE_CHECKING:
     from ipa_cli.api.base_channels import Query, SetupContext
@@ -26,9 +27,9 @@ def _tokenize(text: str) -> list[str]:
 class KeywordChannel(BaseSearchChannel):
     name: ClassVar[str] = "keyword"
     description: ClassVar[str] = (
-        "Token AND match against note id + body, score = matched/total tokens"
+        "Token AND match against note id + aliases + body, score = matched/total tokens"
     )
-    default_weight: ClassVar[float] = 0.1
+    default_weight: ClassVar[float] = DEFAULT_CHANNEL_WEIGHTS[name]
 
     def search(self, ctx: "SetupContext", query: "Query") -> dict[str, float]:
         tokens = _tokenize(query.raw)
@@ -36,7 +37,9 @@ class KeywordChannel(BaseSearchChannel):
             return {}
         scores: dict[str, float] = {}
         for note in ctx.notes:
-            haystack = (note.id + " " + note.body).lower()
+            haystack = " ".join(
+                [note.id, *note.aliases(ctx.mapping), note.body]
+            ).lower()
             matched = sum(1 for t in tokens if t in haystack)
             if matched > 0:
                 scores[note.id] = matched / len(tokens)

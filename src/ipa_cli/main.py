@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import Any
 
 import typer
 from rich.console import Console
@@ -45,6 +46,7 @@ config_app = typer.Typer(help="설정 조회·관리.", no_args_is_help=True)
 profile_app = typer.Typer(help="프로필 관리.", no_args_is_help=True)
 convention_app = typer.Typer(help="convention runtime 명령.", no_args_is_help=True)
 formatter_app = typer.Typer(help="formatter runtime 명령.", no_args_is_help=True)
+inbox_app = typer.Typer(help="Inbox 파일 수용 명령.", no_args_is_help=True)
 engine_app = typer.Typer(
     help="search runtime 명령 (channels / search).",
     no_args_is_help=True,
@@ -53,6 +55,7 @@ app.add_typer(config_app, name="config")
 app.add_typer(profile_app, name="profile")
 app.add_typer(convention_app, name="convention")
 app.add_typer(formatter_app, name="formatter")
+app.add_typer(inbox_app, name="inbox")
 app.add_typer(engine_app, name="engine")
 
 console = Console()
@@ -110,13 +113,25 @@ def search(
     ),
     show_all: bool = typer.Option(False, "--all", help="threshold/cap 무시"),
     reasons: bool = typer.Option(False, "--reasons", help="채널별 매칭 사유 표시"),
+    log: bool = typer.Option(False, "--log", help="AI search event log 강제 기록"),
+    actor: str | None = typer.Option(None, "--actor", help="search log actor"),
+    log_context: Path | None = typer.Option(
+        None, "--log-context", help="turn context JSON 파일"
+    ),
 ):
     """통합 검색 (legacy unified_search)."""
     if not query:
         raise typer.BadParameter("검색 쿼리를 1개 이상 지정해주세요")
     from ipa_cli.runtime.mapping_loader import load_mapping
-    from ipa_cli.runtime.search import render_search
+    from ipa_cli.runtime.search import render_search_results, search_hits
     from ipa_cli.runtime.search_loader import load_search_channels
+    from ipa_cli.tune.search_log import (
+        append_event,
+        build_event,
+        finalize_result_ranks,
+        load_turn_context,
+        should_log_search,
+    )
 
     s = _settings(ctx)
     workspace = s.profile_dir
@@ -125,17 +140,46 @@ def search(
     channels = load_search_channels(workspace_arg, vault_path=s.vault_path)
     eff_threshold = threshold if threshold is not None else s.search.threshold
     eff_max = max_results if max_results is not None else s.search.max_results
-    output = render_search(
+    hits, notes, cut = search_hits(
         s.vault_path,
         list(query),
         threshold=eff_threshold,
         max_results=eff_max,
         show_all=show_all,
-        reasons=reasons,
         weights=s.search.weights,
         mapping=mapping,
         channels=channels,
         cache_dir=s.cache_dir,
+    )
+    if should_log_search(explicit=log):
+        context = load_turn_context(actor=actor, context_path=log_context)
+        try:
+            event = build_event(
+                settings=s,
+                queries=list(query),
+                threshold=eff_threshold,
+                max_results=eff_max,
+                show_all=show_all,
+                reasons=reasons,
+                hits=hits,
+                notes=notes,
+                cut_count=cut,
+                actor=actor,
+                context=context,
+            )
+            append_event(s.vault_path, finalize_result_ranks(event))
+        except Exception:
+            # Logging is best-effort; search output must not break.
+            pass
+    output = render_search_results(
+        list(query),
+        hits,
+        notes,
+        cut,
+        threshold=eff_threshold,
+        show_all=show_all,
+        reasons=reasons,
+        mapping=mapping,
     )
     typer.echo(output)
 
@@ -277,8 +321,11 @@ def profile_list(ctx: typer.Context):
 
 @profile_app.command("current")
 def profile_current(ctx: typer.Context):
-    """현재 활성 프로필 이름만 출력 (스크립팅용)."""
-    typer.echo(_settings(ctx).profile)
+    """현재 활성 프로필과 vault 경로 출력."""
+    s = _settings(ctx)
+    vault_path = str(s.vault_path) if s.vault_path != Path() else "(unset)"
+    typer.echo(f"profile: {s.profile}")
+    typer.echo(f"vault_path: {vault_path}")
 
 
 @profile_app.command("use")
@@ -335,7 +382,11 @@ def convention_check(
     workspace_arg = workspace if workspace.is_dir() else None
 
     mapping = load_mapping(workspace_arg)
-    convention = load_convention(workspace_arg, vault_path=s.vault_path)
+    convention = load_convention(
+        workspace_arg,
+        vault_path=s.vault_path,
+        surface="convention",
+    )
     notes = load_notes(s.vault_path, mapping)
 
     folder_resolved: Path | None = None
@@ -436,7 +487,11 @@ def _resolve_formatter_inputs(
     workspace = s.profile_dir
     workspace_arg = workspace if workspace.is_dir() else None
     mapping = load_mapping(workspace_arg)
-    convention = load_convention(workspace_arg, vault_path=s.vault_path)
+    convention = load_convention(
+        workspace_arg,
+        vault_path=s.vault_path,
+        surface="formatter",
+    )
     notes = load_notes(s.vault_path, mapping)
 
     folder_resolved: Path | None = None
@@ -547,6 +602,65 @@ def _render_plan(plan_result, *, summary: bool, header_extra: str) -> None:
                 f"  [red]conflict[/red] L{a.span.start_line} "
                 f"({a.replacement!r} ⨯ {b.replacement!r})"
             )
+
+
+# ── inbox intake ──
+
+
+def _run_inbox_add(
+    ctx: typer.Context,
+    file: Path,
+    *,
+    title: str | None,
+    refs: list[str] | None,
+    tags: list[str] | None,
+    dry_run: bool,
+) -> None:
+    from ipa_cli.runtime.inbox import InboxAddError, add_file_to_inbox
+
+    s = _settings(ctx)
+    try:
+        result = add_file_to_inbox(
+            file,
+            vault_path=s.vault_path,
+            title=title,
+            refs=refs or [],
+            tags=tags or [],
+            dry_run=dry_run,
+        )
+    except InboxAddError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    rel = result.destination.relative_to(s.vault_path.expanduser().resolve())
+    console.print(f"[green]inbox[/green] {rel}")
+    if dry_run:
+        console.print(result.rendered)
+
+
+@inbox_app.command("add")
+def inbox_add(
+    ctx: typer.Context,
+    file: Path = typer.Argument(..., help="Inbox로 이동할 파일"),
+    title: str | None = typer.Option(None, "--title", help="대상 노트 제목"),
+    refs: list[str] | None = typer.Option(None, "--ref", help="ref wikilink 대상"),
+    tags: list[str] | None = typer.Option(None, "--tag", help="추가 tag"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="쓰기 없이 결과 미리보기"),
+):
+    """파일을 IPA Inbox 노트 형식으로 포맷한 뒤 00 Inbox로 이동."""
+    _run_inbox_add(ctx, file, title=title, refs=refs, tags=tags, dry_run=dry_run)
+
+
+@app.command("add")
+def add_alias(
+    ctx: typer.Context,
+    file: Path = typer.Argument(..., help="Inbox로 이동할 파일"),
+    title: str | None = typer.Option(None, "--title", help="대상 노트 제목"),
+    refs: list[str] | None = typer.Option(None, "--ref", help="ref wikilink 대상"),
+    tags: list[str] | None = typer.Option(None, "--tag", help="추가 tag"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="쓰기 없이 결과 미리보기"),
+):
+    """`ipa inbox add`의 전역 agent-friendly alias."""
+    _run_inbox_add(ctx, file, title=title, refs=refs, tags=tags, dry_run=dry_run)
 
 
 # ── search runtime ──
@@ -696,7 +810,7 @@ def list_channels(ctx: typer.Context):
     table.add_column("active", style="green", justify="right")
     table.add_column("description", style="white")
     for ch in channels:
-        active = s.search.weights.get(ch.name, 0.0)
+        active = s.search.weights.get(ch.name, ch.default_weight)
         table.add_row(
             ch.name,
             f"{ch.default_weight:.4f}",
@@ -748,7 +862,13 @@ tune_app = typer.Typer(
     invoke_without_command=True,
     no_args_is_help=False,
 )
+log_app = typer.Typer(help="AI search event log 조회·샘플링.", no_args_is_help=True)
+pack_app = typer.Typer(help="golden query pack 관리.", no_args_is_help=True)
+testset_app = typer.Typer(help="log 기반 testset draft 관리.", no_args_is_help=True)
 app.add_typer(tune_app, name="tune")
+tune_app.add_typer(log_app, name="log")
+tune_app.add_typer(pack_app, name="pack")
+tune_app.add_typer(testset_app, name="testset")
 
 
 def _parse_fixed(items: list[str] | None) -> dict[str, float]:
@@ -765,6 +885,452 @@ def _parse_only(value: str | None) -> list[str] | None:
     if not value:
         return None
     return [s.strip() for s in value.split(",") if s.strip()]
+
+
+def _event_created(event: dict[str, Any]) -> str:
+    return str(event.get("created_at") or "")
+
+
+def _target_rank(results: list[dict[str, Any]], target: str) -> int | None:
+    target_cf = target.casefold()
+    for idx, item in enumerate(results, start=1):
+        title = str(item.get("title") or "")
+        note = str(item.get("note") or "")
+        if title.casefold() == target_cf or Path(note).stem.casefold() == target_cf:
+            return idx
+    return None
+
+
+@log_app.command("list")
+def tune_log_list(ctx: typer.Context, since: str | None = typer.Option(None, "--since")):
+    """Search event log 목록."""
+    from ipa_cli.tune.search_log import read_events
+
+    s = _settings(ctx)
+    events = read_events(s.vault_path)
+    table = Table(title=f"search events ({len(events)})")
+    table.add_column("event", style="cyan")
+    table.add_column("created", style="dim")
+    table.add_column("actor", style="magenta")
+    table.add_column("query", style="white")
+    for event in sorted(events, key=_event_created, reverse=True):
+        table.add_row(
+            str(event.get("event_id") or ""),
+            str(event.get("created_at") or ""),
+            str(event.get("actor") or ""),
+            str(event.get("agent_search_query") or ""),
+        )
+    console.print(table)
+
+
+@log_app.command("show")
+def tune_log_show(
+    ctx: typer.Context,
+    event_id: str = typer.Argument(...),
+    format_: str = typer.Option("markdown", "--format", help="markdown | json"),
+):
+    """Search event 상세 출력."""
+    from ipa_cli.tune.search_log import event_to_markdown, find_event
+
+    s = _settings(ctx)
+    try:
+        event = find_event(s.vault_path, event_id)
+    except KeyError as exc:
+        raise typer.BadParameter(f"unknown event: {event_id}") from exc
+    if format_ == "json":
+        typer.echo(__import__("json").dumps(event, ensure_ascii=False, indent=2))
+    else:
+        typer.echo(event_to_markdown(event))
+
+
+@log_app.command("sample")
+def tune_log_sample(
+    ctx: typer.Context,
+    limit: int = typer.Option(20, "--limit"),
+    strategy: str = typer.Option("diverse", "--strategy"),
+    format_: str = typer.Option("markdown", "--format", help="markdown | json"),
+):
+    """라벨링 후보 search event를 샘플링."""
+    import json
+
+    from ipa_cli.tune.search_log import event_to_markdown, read_events, sample_events
+
+    s = _settings(ctx)
+    events = sample_events(read_events(s.vault_path), strategy=strategy, limit=limit)
+    if format_ == "json":
+        typer.echo(json.dumps(events, ensure_ascii=False, indent=2))
+        return
+    typer.echo("\n\n".join(event_to_markdown(event) for event in events))
+
+
+@log_app.command("prune")
+def tune_log_prune(
+    ctx: typer.Context,
+    older_than: str = typer.Option(..., "--older-than", help="예: 30d, 12h"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+):
+    """오래된 search event 삭제."""
+    from ipa_cli.tune.search_log import prune_events, read_events, write_events
+
+    s = _settings(ctx)
+    events = read_events(s.vault_path)
+    kept, removed = prune_events(events, older_than=older_than)
+    if dry_run:
+        console.print(f"[yellow]would prune[/yellow] {len(removed)} event(s)")
+        for event in removed:
+            console.print(f"  {event.get('event_id')}")
+        return
+    write_events(s.vault_path, kept)
+    console.print(f"[green]pruned[/green] {len(removed)} event(s)")
+
+
+@log_app.command("redact")
+def tune_log_redact(
+    ctx: typer.Context,
+    field: str = typer.Option(..., "--field", help="redact할 필드명"),
+    older_than: str = typer.Option(..., "--older-than", help="예: 14d"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+):
+    """오래된 event의 민감 필드 제거."""
+    from ipa_cli.tune.search_log import prune_events, read_events, write_events
+
+    s = _settings(ctx)
+    events = read_events(s.vault_path)
+    kept, targets = prune_events(events, older_than=older_than)
+    redacted = []
+    for event in targets:
+        event = dict(event)
+        event[field] = None
+        redacted.append(event)
+    if dry_run:
+        console.print(f"[yellow]would redact[/yellow] {len(redacted)} event(s)")
+        return
+    write_events(s.vault_path, kept + redacted)
+    console.print(f"[green]redacted[/green] {len(redacted)} event(s)")
+
+
+@log_app.command("compact")
+def tune_log_compact(
+    ctx: typer.Context,
+    before: str = typer.Option(..., "--before", help="YYYY-MM-DD"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+):
+    """오래된 event의 result 상세를 줄인다."""
+    from datetime import datetime, timezone
+
+    from ipa_cli.tune.search_log import read_events, write_events
+
+    cutoff = datetime.fromisoformat(before).replace(tzinfo=timezone.utc)
+    s = _settings(ctx)
+    changed = 0
+    events = read_events(s.vault_path)
+    for event in events:
+        created_raw = str(event.get("created_at") or "")
+        try:
+            created = datetime.fromisoformat(created_raw.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        if created < cutoff and event.get("results"):
+            event["results"] = event["results"][:3]
+            event["compacted"] = True
+            changed += 1
+    if dry_run:
+        console.print(f"[yellow]would compact[/yellow] {changed} event(s)")
+        return
+    write_events(s.vault_path, events)
+    console.print(f"[green]compacted[/green] {changed} event(s)")
+
+
+@tune_app.command("replay")
+def tune_replay(
+    ctx: typer.Context,
+    event_id: str = typer.Argument(...),
+    weights_path: Path | None = typer.Option(None, "--weights"),
+):
+    """과거 search event를 현재 engine/weight로 재실행."""
+    from ipa_cli.api.base_channels import Query
+    from ipa_cli.tune.search_log import find_event
+
+    s, _channels, engine, _notes = _build_engine(ctx)
+    try:
+        event = find_event(s.vault_path, event_id)
+    except KeyError as exc:
+        raise typer.BadParameter(f"unknown event: {event_id}") from exc
+    query = str(event.get("agent_search_query") or "")
+    weights = dict(s.search.weights)
+    if weights_path is not None:
+        import json
+
+        payload = json.loads(weights_path.read_text(encoding="utf-8"))
+        weights.update(payload.get("weights") or {})
+    hits = engine.search(
+        Query(raw=query),
+        weights=weights,
+        threshold=s.search.threshold,
+        cap=s.search.max_results,
+    )
+    previous = event.get("results") or []
+    target = str(previous[0].get("title") if previous else "")
+    current_results = [
+        {"title": h.note_id, "total_score": h.score, "rank": idx}
+        for idx, h in enumerate(hits, start=1)
+    ]
+    rank = _target_rank(current_results, target) if target else None
+    console.print(f"[bold]event[/bold] {event_id}")
+    console.print(f"[bold]query[/bold] {query}")
+    console.print(f"[bold]target[/bold] {target or '(none)'}")
+    console.print(f"[bold]current rank[/bold] {rank if rank is not None else 'MISS'}")
+    for idx, hit in enumerate(hits[:5], start=1):
+        console.print(f"  {idx}. {hit.note_id} ({hit.score:.4f})")
+
+
+@tune_app.command("label")
+def tune_label(
+    ctx: typer.Context,
+    event_id: str = typer.Argument(...),
+    target: str | None = typer.Option(None, "--target"),
+    failure_type: str | None = typer.Option(None, "--failure-type"),
+    reject: bool = typer.Option(False, "--reject"),
+    reason: str | None = typer.Option(None, "--reason"),
+):
+    """Search event에 사람이 라벨을 달아 draft JSONL에 누적."""
+    import json
+
+    from ipa_cli.tune.search_log import drafts_dir, find_event
+
+    s = _settings(ctx)
+    event = find_event(s.vault_path, event_id)
+    path = drafts_dir(s.vault_path) / "latest.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    record = {
+        "source_event_id": event_id,
+        "user_query": event.get("user_query"),
+        "agent_search_query": event.get("agent_search_query"),
+        "target_filename": target,
+        "failure_type": failure_type,
+        "rejected": reject,
+        "reason": reason,
+    }
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    console.print(f"[green]labeled[/green] {event_id} -> {path}")
+
+
+@testset_app.command("draft")
+def tune_testset_draft(
+    ctx: typer.Context,
+    from_log: bool = typer.Option(False, "--from-log"),
+    strategy: str = typer.Option("low-confidence", "--strategy"),
+    limit: int = typer.Option(30, "--limit"),
+):
+    """Search log에서 draft 후보 JSONL을 생성."""
+    import json
+
+    from ipa_cli.tune.search_log import drafts_dir, read_events, sample_events
+
+    if not from_log:
+        raise typer.BadParameter("--from-log is required")
+    s = _settings(ctx)
+    events = sample_events(read_events(s.vault_path), strategy=strategy, limit=limit)
+    path = drafts_dir(s.vault_path) / "latest.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        for event in events:
+            record = {
+                "source_event_id": event.get("event_id"),
+                "user_query": event.get("user_query"),
+                "agent_search_query": event.get("agent_search_query"),
+                "target_filename": None,
+            }
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    console.print(f"[green]draft[/green] {len(events)} case(s) -> {path}")
+
+
+@testset_app.command("add")
+def tune_testset_add(
+    ctx: typer.Context,
+    event: str = typer.Option(..., "--event"),
+    target: str = typer.Option(..., "--target"),
+):
+    """단일 event를 draft case로 추가."""
+    tune_label(ctx, event, target=target, failure_type=None, reject=False, reason=None)
+
+
+@testset_app.command("export")
+def tune_testset_export(
+    ctx: typer.Context,
+    draft: str = typer.Option("latest", "--draft"),
+    target: Path | None = typer.Option(None, "--target"),
+):
+    """Draft JSONL을 ipa tune eval testset JSON으로 export."""
+    import json
+
+    from ipa_cli.tune.search_log import drafts_dir
+
+    s = _settings(ctx)
+    draft_path = drafts_dir(s.vault_path) / (draft if draft.endswith(".jsonl") else f"{draft}.jsonl")
+    if target is None:
+        target = s.vault_path / ".ipa" / "tune" / "testsets" / "testset.json"
+    elif not target.is_absolute():
+        target = s.vault_path / target
+    cases = []
+    for line in draft_path.read_text(encoding="utf-8").splitlines():
+        record = json.loads(line)
+        if record.get("rejected") or not record.get("target_filename"):
+            continue
+        cases.append(
+            {
+                "id": record.get("source_event_id"),
+                "queries": [record.get("agent_search_query")],
+                "target_filename": record.get("target_filename"),
+                "source_event_id": record.get("source_event_id"),
+                "user_query": record.get("user_query"),
+            }
+        )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps({"version": "v1", "cases": cases}, ensure_ascii=False, indent=2), encoding="utf-8")
+    console.print(f"[green]exported[/green] {len(cases)} case(s) -> {target}")
+
+
+def _pack_path(vault_path: Path, name: str) -> Path:
+    from ipa_cli.tune.search_log import querypack_dir
+
+    filename = name if name.endswith(".json") else f"{name}.json"
+    return querypack_dir(vault_path) / filename
+
+
+def _read_pack(vault_path: Path, name: str) -> dict[str, Any]:
+    import json
+
+    path = _pack_path(vault_path, name)
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _write_pack(vault_path: Path, name: str, payload: dict[str, Any]) -> Path:
+    import json
+
+    path = _pack_path(vault_path, name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+@pack_app.command("list")
+def tune_pack_list(ctx: typer.Context):
+    """Golden query pack 목록."""
+    from ipa_cli.tune.search_log import querypack_dir
+
+    s = _settings(ctx)
+    root = querypack_dir(s.vault_path)
+    for path in sorted(root.glob("*.json")) if root.is_dir() else []:
+        console.print(path.name)
+
+
+@pack_app.command("create")
+def tune_pack_create(
+    ctx: typer.Context,
+    name: str = typer.Argument(...),
+    description: str = typer.Option("", "--description"),
+):
+    """빈 golden query pack 생성."""
+    s = _settings(ctx)
+    payload = {
+        "schema_version": 1,
+        "name": name,
+        "description": description,
+        "cases": [],
+    }
+    path = _write_pack(s.vault_path, name, payload)
+    console.print(f"[green]created[/green] {path}")
+
+
+@pack_app.command("add")
+def tune_pack_add(
+    ctx: typer.Context,
+    name: str = typer.Argument(...),
+    event_id: str = typer.Option(..., "--event"),
+    target: str = typer.Option(..., "--target"),
+    top_k: int = typer.Option(5, "--top-k"),
+):
+    """Search event를 golden query pack case로 추가."""
+    from ipa_cli.tune.search_log import find_event
+
+    s = _settings(ctx)
+    pack = _read_pack(s.vault_path, name)
+    event = find_event(s.vault_path, event_id)
+    cases = pack.setdefault("cases", [])
+    case_id = f"{name}-{len(cases) + 1:03d}"
+    cases.append(
+        {
+            "id": case_id,
+            "user_query": event.get("user_query"),
+            "agent_search_query": event.get("agent_search_query"),
+            "target": target,
+            "expect": {"top_k": top_k},
+            "source_event_id": event_id,
+        }
+    )
+    path = _write_pack(s.vault_path, name, pack)
+    console.print(f"[green]added[/green] {case_id} -> {path}")
+
+
+@pack_app.command("eval")
+def tune_pack_eval(ctx: typer.Context, name: str = typer.Argument(...)):
+    """Golden query pack을 현재 search engine으로 평가."""
+    from ipa_cli.api.base_channels import Query
+
+    s, _channels, engine, _notes = _build_engine(ctx)
+    pack = _read_pack(s.vault_path, name)
+    cases = pack.get("cases") or []
+    passed = 0
+    for case in cases:
+        query = str(case.get("agent_search_query") or "")
+        top_k = int((case.get("expect") or {}).get("top_k") or 5)
+        target = str(case.get("target") or "")
+        hits = engine.search(
+            Query(raw=query),
+            weights=dict(s.search.weights),
+            threshold=s.search.threshold,
+            cap=max(s.search.max_results, top_k),
+        )[:top_k]
+        if any(hit.note_id.casefold() == target.casefold() for hit in hits):
+            passed += 1
+    console.print(f"[bold]pack[/bold] {name}  [bold]pass[/bold] {passed}/{len(cases)}")
+
+
+@pack_app.command("promote")
+def tune_pack_promote(
+    ctx: typer.Context,
+    draft: str = typer.Option("latest", "--draft"),
+    pack: str = typer.Option(..., "--pack"),
+):
+    """Draft의 라벨링 완료 case를 golden pack으로 승격."""
+    import json
+
+    from ipa_cli.tune.search_log import drafts_dir
+
+    s = _settings(ctx)
+    pack_payload = _read_pack(s.vault_path, pack)
+    cases = pack_payload.setdefault("cases", [])
+    draft_path = drafts_dir(s.vault_path) / (draft if draft.endswith(".jsonl") else f"{draft}.jsonl")
+    for line in draft_path.read_text(encoding="utf-8").splitlines():
+        record = json.loads(line)
+        if record.get("rejected") or not record.get("target_filename"):
+            continue
+        cases.append(
+            {
+                "id": f"{pack}-{len(cases) + 1:03d}",
+                "user_query": record.get("user_query"),
+                "agent_search_query": record.get("agent_search_query"),
+                "target": record.get("target_filename"),
+                "expect": {"top_k": 5},
+                "source_event_id": record.get("source_event_id"),
+            }
+        )
+    path = _write_pack(s.vault_path, pack, pack_payload)
+    console.print(f"[green]promoted[/green] -> {path}")
 
 
 def _filter_excluded(notes: list, exclude_filenames: list[str] | None) -> list:
@@ -822,6 +1388,24 @@ def _study_fingerprint(
     return hashlib.sha1(serialized.encode("utf-8")).hexdigest()[:12]
 
 
+def _format_duration(seconds: float) -> str:
+    total = max(0, int(round(seconds)))
+    hours, rem = divmod(total, 3600)
+    minutes, secs = divmod(rem, 60)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+
+def _count_unique_testset_queries(
+    regression_cases: list[dict], scenario_cases: list[dict]
+) -> int:
+    seen: set[str] = set()
+    for case in [*regression_cases, *scenario_cases]:
+        for raw in case.get("queries") or []:
+            if raw:
+                seen.add(raw)
+    return len(seen)
+
+
 @tune_app.callback(invoke_without_command=True)
 def tune_run(
     ctx: typer.Context,
@@ -829,7 +1413,12 @@ def tune_run(
     apply_best: bool = typer.Option(
         False,
         "--apply",
-        help="best params를 result JSON으로 저장하고 vault config 포인터 갱신",
+        help="저장된 best result JSON을 vault config weights.file로 활성화",
+    ),
+    save_best: bool = typer.Option(
+        True,
+        "--save/--no-save",
+        help="best params를 result JSON으로 저장 (default: ON)",
     ),
     fix: list[str] = typer.Option(
         None, "--fix", help="채널 weight 고정 (예: --fix body_match=0.30)"
@@ -848,8 +1437,21 @@ def tune_run(
     testset_path: Path | None = typer.Option(
         None, "--testset", help="testset NAME|PATH (default: vault .ipa config)"
     ),
-    no_persist: bool = typer.Option(
-        False, "--no-persist", help="study sqlite 영속화 끄고 in-memory만"
+    persist_study: bool = typer.Option(
+        False,
+        "--persist-study/--no-persist-study",
+        help="Optuna study sqlite resume cache 저장 (default: OFF)",
+    ),
+    no_persist_legacy: bool = typer.Option(
+        False,
+        "--no-persist",
+        help="deprecated alias: study sqlite 저장 안 함 (현재 기본값)",
+    ),
+    progress_every: int = typer.Option(
+        1,
+        "--progress-every",
+        help="N trial마다 진행 상황 출력 (default: every trial)",
+        min=1,
     ),
 ):
     """채널 weight + threshold + cap을 동시 튜닝하는 TPE study.
@@ -880,10 +1482,21 @@ def tune_run(
         f"[bold]regression[/bold] {len(regression)}  "
         f"[bold]scenario[/bold] {len(scenario)}"
     )
+    unique_queries = _count_unique_testset_queries(regression, scenario)
+    console.print(
+        f"[dim]precompute: {unique_queries} unique queries × "
+        f"{len(engine.channels)} channels once; trials reuse cached raw scores[/dim]"
+    )
 
     fixed_weights = _parse_fixed(fix)
     only_keys = _parse_only(only)
-    if no_persist:
+    if apply_best and not save_best:
+        raise typer.BadParameter("--apply requires saving a result JSON")
+
+    if no_persist_legacy:
+        persist_study = False
+
+    if not persist_study:
         study_dir = None
     else:
         fp = _study_fingerprint(
@@ -899,9 +1512,41 @@ def tune_run(
         )
         study_dir = s.vault_path / ".ipa" / "cache" / "tune-studies" / fp
 
-    def _on_trial(i: int, loss: float, best: float) -> None:
-        if loss <= best:  # only print when we improve or equal
-            console.print(f"  trial {i:4d}  loss={loss:8.2f}  ★ best={best:.2f}")
+    progress_started_at: float | None = None
+    width = len(str(max(trials, 1)))
+
+    def _on_trial(i: int, loss: float, best: float, duration: float) -> None:
+        nonlocal progress_started_at
+        from time import monotonic
+
+        now = monotonic()
+        if progress_started_at is None:
+            progress_started_at = now - duration
+        completed = i + 1
+        should_print = (
+            completed == 1
+            or completed == trials
+            or completed % progress_every == 0
+            or loss <= best
+        )
+        if not should_print:
+            return
+        elapsed = max(0.0, now - progress_started_at)
+        avg = elapsed / completed if completed else 0.0
+        eta = max(0, trials - completed) * avg
+        marker = "  ★" if loss <= best else ""
+        console.print(
+            f"  iter {completed:>{width}d}/{trials}  "
+            f"last={duration:.2f}s  avg={avg:.2f}s  "
+            f"eta={_format_duration(eta)}  "
+            f"loss={loss:8.2f}  best={best:.2f}{marker}"
+        )
+
+    def _on_precompute_done(query_count: int, duration: float) -> None:
+        console.print(
+            f"[dim]precompute done: {query_count} queries in "
+            f"{duration:.2f}s[/dim]"
+        )
 
     result = run_study(
         engine,
@@ -916,6 +1561,7 @@ def tune_run(
         fixed_cap=s.search.max_results,
         study_dir=study_dir,
         on_trial=_on_trial,
+        on_precompute_done=_on_precompute_done,
     )
 
     table = Table(
@@ -931,53 +1577,66 @@ def tune_run(
     table.add_row("scn hit", f"{result.best_metrics.scn_hit}/{len(scenario)}")
     table.add_row("avg_rank", f"{result.best_metrics.avg_rank:.2f}")
     console.print(table)
-    console.print(f"[dim]storage: {result.storage_url}[/dim]")
+    if result.storage_url in {"memory", "sqlite:///:memory:"}:
+        console.print("[dim]study: in-memory (not persisted)[/dim]")
+    else:
+        console.print(f"[dim]study storage: {result.storage_url}[/dim]")
 
-    if apply_best:
-        _apply_best_to_config(s, result)
+    if save_best:
+        _save_best_result(s, result, activate=apply_best)
 
 
-def _apply_best_to_config(settings: Settings, result) -> None:
-    """Persist tune result as immutable artifact + flip active pointer.
+def _save_best_result(settings: Settings, result, *, activate: bool) -> Path:
+    """Persist tune result as immutable artifact and optionally activate it.
 
-    Saves ``.ipa/tune/results/{timestamp}.json`` (immutable) and updates
-    ``weights.file`` in vault-local config via ruamel round-trip. Past
-    results stay on disk for rollback via ``ipa tune use``.
+    Saves ``.ipa/tune/results/{timestamp}.json`` (immutable). If
+    ``activate`` is true, also updates ``weights.file`` in vault-local
+    config. Past results stay on disk for rollback via ``ipa tune use``.
     """
     from ipa_cli.tune import (
         TuneResult,
         save_result,
-        timestamp_filename,
         write_active_result_filename,
     )
+
+    study_meta = {
+        "optimizer": "optuna-tpe",
+        "n_trials": int(result.n_trials),
+        "best_loss": float(result.best_loss),
+        "study_name": result.study_name,
+        "saved_at": _utc_now_iso(),
+    }
+    if result.storage_url not in {"memory", "sqlite:///:memory:"}:
+        study_meta["storage_url"] = result.storage_url
 
     artifact = TuneResult(
         threshold=round(result.best_threshold, 4),
         max_results=int(result.best_cap),
         weights={k: round(float(v), 4) for k, v in result.best_weights.items()},
-        study={
-            "n_trials": int(result.n_trials),
-            "best_loss": float(result.best_loss),
-            "saved_at": _utc_now_iso(),
-        },
+        study=study_meta,
     )
-    fname = timestamp_filename()
     saved_path = save_result(
         settings.profile,
         artifact,
-        filename=fname,
         vault_path=settings.vault_path,
     )
-    write_active_result_filename(
-        settings.profile,
-        fname,
-        vault_path=settings.vault_path,
-    )
-
-    console.print(
-        f"[green]applied[/green] tune result → {saved_path}\n"
-        f"  pointer: {settings.vault_config_path} weights.file = .ipa/tune/results/{fname}"
-    )
+    fname = saved_path.name
+    if activate:
+        write_active_result_filename(
+            settings.profile,
+            fname,
+            vault_path=settings.vault_path,
+        )
+        console.print(
+            f"[green]applied[/green] tune result → {saved_path}\n"
+            f"  pointer: {settings.vault_config_path} weights.file = .ipa/tune/results/{fname}"
+        )
+    else:
+        console.print(
+            f"[green]saved[/green] tune result → {saved_path}\n"
+            f"  activate: ipa tune use {fname}"
+        )
+    return saved_path
 
 
 def _utc_now_iso() -> str:
@@ -1109,7 +1768,7 @@ def tune_list(ctx: typer.Context):
     if not history:
         console.print(
             f"[dim]no tune results yet for profile '{s.profile}'. "
-            "Run `ipa tune --apply` to create the first one.[/dim]"
+            "Run `ipa tune` to create the first one.[/dim]"
         )
         return
 

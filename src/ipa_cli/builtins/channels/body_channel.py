@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, ClassVar
 
 from ipa_cli.api.base_channels import BaseSearchChannel
+from ipa_cli.builtins.channels.weights import DEFAULT_CHANNEL_WEIGHTS
 from ipa_cli.parse.bm25 import jamo_trigrams
 
 if TYPE_CHECKING:
@@ -25,7 +26,7 @@ class BodyMatchChannel(BaseSearchChannel):
     description: ClassVar[str] = (
         "BM25 over jamo trigrams of (note.id + body), max-normalized to [0,1]"
     )
-    default_weight: ClassVar[float] = 0.363
+    default_weight: ClassVar[float] = DEFAULT_CHANNEL_WEIGHTS[name]
 
     def search(self, ctx: "SetupContext", query: "Query") -> dict[str, float]:
         q_tokens = jamo_trigrams(query.raw)

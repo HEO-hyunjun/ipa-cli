@@ -69,6 +69,20 @@ def test_keyword_skips_zero_match_notes(tmp_path: Path) -> None:
     assert ch.search(_ctx(notes, tmp_path), Query(raw="zzz")) == {}
 
 
+def test_keyword_matches_aliases(tmp_path: Path) -> None:
+    ch = KeywordChannel()
+    notes = [
+        Note(
+            id="코드·구현 노트 작성 지침",
+            path=Path("/tmp/guide.md"),
+            body="",
+            frontmatter={"aliases": ["구현 결과 노트 작성"]},
+        )
+    ]
+    scores = ch.search(_ctx(notes, tmp_path), Query(raw="구현 결과"))
+    assert scores == {"코드·구현 노트 작성 지침": 1.0}
+
+
 # --- FilenameMatchChannel ----------------------------------------------
 
 
@@ -117,6 +131,20 @@ def test_filename_empty_query_returns_empty(tmp_path: Path) -> None:
     ch = FilenameMatchChannel()
     notes = [_note("Alpha")]
     assert ch.search(_ctx(notes, tmp_path), Query(raw="")) == {}
+
+
+def test_filename_matches_alias_substring(tmp_path: Path) -> None:
+    ch = FilenameMatchChannel()
+    notes = [
+        Note(
+            id="코드·구현 노트 작성 지침",
+            path=Path("/tmp/guide.md"),
+            body="",
+            frontmatter={"aliases": ["구현 결과 노트 작성"]},
+        )
+    ]
+    scores = ch.search(_ctx(notes, tmp_path), Query(raw="구현 결과"))
+    assert scores == {"코드·구현 노트 작성 지침": 1.0}
 
 
 # --- BodyMatchChannel ---------------------------------------------------
@@ -301,6 +329,20 @@ def test_sequence_match_empty_query_returns_empty(tmp_path: Path) -> None:
     assert ch.search(_ctx(notes, tmp_path), Query(raw="")) == {}
 
 
+def test_sequence_match_uses_aliases(tmp_path: Path) -> None:
+    ch = SequenceMatchChannel()
+    notes = [
+        Note(
+            id="코드·구현 노트 작성 지침",
+            path=Path("/tmp/guide.md"),
+            body="",
+            frontmatter={"aliases": ["구현 결과 노트 작성"]},
+        )
+    ]
+    scores = ch.search(_ctx(notes, tmp_path), Query(raw="구현 결과"))
+    assert scores == {"코드·구현 노트 작성 지침": 1.0}
+
+
 # --- FilenamePartialChannel --------------------------------------------
 
 
@@ -330,6 +372,20 @@ def test_filename_partial_skips_single_token_query(tmp_path: Path) -> None:
     ch = FilenamePartialChannel()
     notes = [_note("RAG Notes")]
     assert ch.search(_ctx(notes, tmp_path), Query(raw="rag")) == {}
+
+
+def test_filename_partial_uses_aliases(tmp_path: Path) -> None:
+    ch = FilenamePartialChannel()
+    notes = [
+        Note(
+            id="코드·구현 노트 작성 지침",
+            path=Path("/tmp/guide.md"),
+            body="",
+            frontmatter={"aliases": ["구현 결과 노트 작성"]},
+        )
+    ]
+    scores = ch.search(_ctx(notes, tmp_path), Query(raw="결과 문서"))
+    assert scores == {"코드·구현 노트 작성 지침": 0.5}
 
 
 # --- RelatedChannel ----------------------------------------------------

@@ -76,17 +76,14 @@ class SearchEngine:
         cap: int | None = None,
     ) -> list[Hit]:
         """Combine per-channel scores into a sorted Hit list."""
-        self.setup()
+        per_channel = self.score_channels(query)
         weight_map = dict(weights or {})
 
-        per_channel: dict[str, dict[str, float]] = {}
         channels_by_name = {channel.name: channel for channel in self.channels}
         combined: dict[str, float] = {}
 
-        for channel in self.channels:
-            channel.prepare(query)
-            scores = channel.search(self.ctx, query)
-            per_channel[channel.name] = scores
+        for channel_name, scores in per_channel.items():
+            channel = channels_by_name[channel_name]
             w = weight_map.get(channel.name, channel.default_weight)
             for note_id, raw in scores.items():
                 combined[note_id] = combined.get(note_id, 0.0) + raw * w
@@ -101,6 +98,20 @@ class SearchEngine:
         if cap is not None:
             hits = hits[:cap]
         return hits
+
+    def score_channels(self, query: "Query") -> dict[str, dict[str, float]]:
+        """Return raw per-channel scores for ``query`` without explanations.
+
+        Tune can cache this payload once per unique query and then vary
+        weights/threshold/cap cheaply across many trials.
+        """
+        self.setup()
+        per_channel: dict[str, dict[str, float]] = {}
+        for channel in self.channels:
+            channel.prepare(query)
+            scores = channel.search(self.ctx, query)
+            per_channel[channel.name] = scores
+        return per_channel
 
 
 def _build_explanations(

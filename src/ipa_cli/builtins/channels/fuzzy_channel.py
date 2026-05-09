@@ -18,6 +18,7 @@ from difflib import SequenceMatcher
 from typing import TYPE_CHECKING, ClassVar
 
 from ipa_cli.api.base_channels import BaseSearchChannel
+from ipa_cli.builtins.channels.weights import DEFAULT_CHANNEL_WEIGHTS
 from ipa_cli.parse.bm25 import jamo_trigrams
 
 if TYPE_CHECKING:
@@ -55,7 +56,7 @@ class FuzzyChannel(BaseSearchChannel):
         "Graded jamo trigram overlap (>=0.4) + SequenceMatcher fallback "
         "(>=0.55) on note.id and aliases"
     )
-    default_weight: ClassVar[float] = 0.268
+    default_weight: ClassVar[float] = DEFAULT_CHANNEL_WEIGHTS[name]
 
     def search(self, ctx: "SetupContext", query: "Query") -> dict[str, float]:
         q = query.raw

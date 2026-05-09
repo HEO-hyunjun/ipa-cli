@@ -5,14 +5,16 @@
 │ fuzzy            │ 0.2680 │ 0.2680 │ Graded jamo trigram overlap (>=0.4) +   │
 │                  │        │        │ SequenceMatcher fallback (>=0.55) on    │
 │                  │        │        │ note.id and aliases                     │
-│ keyword          │ 0.1000 │ 0.0550 │ Token AND match against note id + body, │
-│                  │        │        │ score = matched/total tokens            │
-│ filename         │ 0.2000 │ 0.0000 │ Exact / case-insensitive / substring /  │
-│                  │        │        │ no-space match on note.id               │
-│ sequence_match   │ 0.0780 │ 0.0780 │ All query tokens (in any order) appear  │
-│                  │        │        │ in normalized note.id, score 1.0        │
+│ keyword          │ 0.0550 │ 0.0550 │ Token AND match against note id +       │
+│                  │        │        │ aliases + body, score = matched/total   │
+│                  │        │        │ tokens                                  │
+│ filename         │ 0.2000 │ 0.2000 │ Exact / case-insensitive / substring /  │
+│                  │        │        │ no-space match on note.id and aliases   │
+│ sequence_match   │ 0.0780 │ 0.0780 │ All query tokens appear in normalized   │
+│                  │        │        │ note.id or aliases, score 1.0           │
 │ filename_partial │ 0.1500 │ 0.1500 │ Partial token match on normalized       │
-│                  │        │        │ note.id, score = matched / total        │
+│                  │        │        │ note.id or aliases, score = matched /   │
+│                  │        │        │ total                                   │
 │ body_match       │ 0.3630 │ 0.3630 │ BM25 over jamo trigrams of (note.id +   │
 │                  │        │        │ body), max-normalized to [0,1]          │
 │ child_body_match │ 0.1690 │ 0.1690 │ Index/root inherits the max raw BM25    │

@@ -69,6 +69,16 @@ def test_search_calls_setup_lazily(tmp_path: Path) -> None:
     assert ch.setup_calls == 1
 
 
+def test_score_channels_returns_raw_scores_without_weighting(tmp_path: Path) -> None:
+    ch = _Recorder({"n": 0.5}, name="ch", weight=0.2)
+    engine = SearchEngine([ch], _ctx(tmp_path))
+    scores = engine.score_channels(Query(raw="q"))
+    assert scores == {"ch": {"n": 0.5}}
+    assert ch.setup_calls == 1
+    assert ch.prepare_calls == 1
+    assert ch.search_calls == 1
+
+
 def test_search_combines_weighted_scores(tmp_path: Path) -> None:
     a = _Recorder({"n1": 0.5, "n2": 1.0}, name="a", weight=0.4)
     b = _Recorder({"n1": 1.0}, name="b", weight=0.2)
