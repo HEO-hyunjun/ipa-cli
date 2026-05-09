@@ -51,12 +51,28 @@ engine_app = typer.Typer(
     help="search runtime 명령 (channels / search).",
     no_args_is_help=True,
 )
+harness_app = typer.Typer(help="Codex/Claude AI harness 관리.", no_args_is_help=True)
+harness_guard_app = typer.Typer(help="harness write guard 관리.", no_args_is_help=True)
+cache_app = typer.Typer(help="vault-local cache 관리.", no_args_is_help=True)
+link_app = typer.Typer(help="wikilink 추천/plan/apply.", no_args_is_help=True)
+review_app = typer.Typer(help="vault 품질 감사.", no_args_is_help=True)
+contract_app = typer.Typer(help="이관 contract/fixture 검증.", no_args_is_help=True)
+plugin_app = typer.Typer(help="vault-local plugin dry-run.", no_args_is_help=True)
+plugin_dry_run_app = typer.Typer(help="plugin dry-run 실행.", no_args_is_help=True)
 app.add_typer(config_app, name="config")
 app.add_typer(profile_app, name="profile")
 app.add_typer(convention_app, name="convention")
 app.add_typer(formatter_app, name="formatter")
 app.add_typer(inbox_app, name="inbox")
 app.add_typer(engine_app, name="engine")
+app.add_typer(harness_app, name="harness")
+harness_app.add_typer(harness_guard_app, name="guard")
+app.add_typer(cache_app, name="cache")
+app.add_typer(link_app, name="link")
+app.add_typer(review_app, name="review")
+app.add_typer(contract_app, name="contract")
+app.add_typer(plugin_app, name="plugin")
+plugin_app.add_typer(plugin_dry_run_app, name="dry-run")
 
 console = Console()
 
@@ -140,6 +156,16 @@ def _settings(ctx: typer.Context) -> Settings:
     if not isinstance(ctx.obj, Settings):
         ctx.obj = load_settings()
     return ctx.obj
+
+
+def _workspace_arg(s: Settings) -> Path | None:
+    return s.profile_dir if s.profile_dir.is_dir() else None
+
+
+def _active_mapping(s: Settings):
+    from ipa_cli.runtime.mapping_loader import load_mapping
+
+    return load_mapping(_workspace_arg(s), vault_config_path=s.vault_config_path)
 
 
 # ── legacy 명령 (runtime/* 모듈로 라우팅) ──
@@ -300,6 +326,577 @@ def refactor(ctx: typer.Context):
     s = _settings(ctx)
     output = render_refactor(s.vault_path, list(ctx.args))
     typer.echo(output, nl=False)
+
+
+# ── 4차 운영 유틸 ──
+
+
+@app.command("doctor")
+def doctor_cmd(
+    ctx: typer.Context,
+    json_output: bool = typer.Option(False, "--json", help="JSON 출력"),
+    fix_dirs: bool = typer.Option(False, "--fix-dirs", help="누락된 .ipa 디렉터리 생성"),
+    check: str | None = typer.Option(None, "--check", help="특정 검사만 실행"),
+):
+    """profile/vault/config/cache/plugin/tune 상태를 점검."""
+    from ipa_cli.runtime.doctor import build_doctor_report, render_doctor_report
+
+    s = _settings(ctx)
+    report = build_doctor_report(s, fix_dirs=fix_dirs, check=check)
+    typer.echo(render_doctor_report(report, json_output=json_output))
+    raise typer.Exit(1 if report["status"] == "error" else 0)
+
+
+@harness_app.command("status")
+def harness_status_cmd(
+    ctx: typer.Context,
+    kind: str = typer.Argument("codex", help="codex | claude"),
+    json_output: bool = typer.Option(False, "--json"),
+):
+    """AI harness 설치 상태 출력."""
+    from ipa_cli.runtime.harness import harness_status, render_json
+
+    s = _settings(ctx)
+    payload = harness_status(kind, vault_path=s.vault_path)
+    typer.echo(render_json(payload) if json_output else _plain_dict(payload))
+
+
+@harness_app.command("install")
+def harness_install_cmd(
+    ctx: typer.Context,
+    kind: str = typer.Argument(..., help="codex | claude"),
+    json_output: bool = typer.Option(False, "--json"),
+):
+    """Codex/Claude user-global skill과 context hook을 설치."""
+    from ipa_cli.runtime.harness import install_harness, render_json
+
+    s = _settings(ctx)
+    payload = install_harness(kind, vault_path=s.vault_path)
+    typer.echo(render_json(payload) if json_output else _plain_dict(payload))
+
+
+@harness_app.command("uninstall")
+def harness_uninstall_cmd(
+    ctx: typer.Context,
+    kind: str = typer.Argument(..., help="codex | claude"),
+    json_output: bool = typer.Option(False, "--json"),
+):
+    """ipa harness가 설치한 user-global 파일을 제거."""
+    from ipa_cli.runtime.harness import render_json, uninstall_harness
+
+    s = _settings(ctx)
+    payload = uninstall_harness(kind, vault_path=s.vault_path)
+    typer.echo(render_json(payload) if json_output else _plain_dict(payload))
+
+
+@harness_app.command("doctor")
+def harness_doctor_cmd(
+    ctx: typer.Context,
+    json_output: bool = typer.Option(False, "--json"),
+):
+    """Codex/Claude harness 상태를 함께 진단."""
+    from ipa_cli.runtime.harness import harness_status, render_json
+
+    s = _settings(ctx)
+    payload = {
+        "codex": harness_status("codex", vault_path=s.vault_path),
+        "claude": harness_status("claude", vault_path=s.vault_path),
+    }
+    typer.echo(render_json(payload) if json_output else _plain_dict(payload))
+
+
+@harness_guard_app.command("install")
+def harness_guard_install_cmd(
+    ctx: typer.Context,
+    name: str = typer.Argument(..., help="archive-write"),
+    json_output: bool = typer.Option(False, "--json"),
+):
+    """Archive 직접 신규 작성 차단 guard policy 설치."""
+    from ipa_cli.runtime.harness import install_archive_guard, render_json
+
+    if name != "archive-write":
+        raise typer.BadParameter("지원 guard는 archive-write 뿐입니다")
+    s = _settings(ctx)
+    payload = install_archive_guard(s.vault_path)
+    typer.echo(render_json(payload) if json_output else _plain_dict(payload))
+
+
+@harness_guard_app.command("status")
+def harness_guard_status_cmd(
+    ctx: typer.Context,
+    json_output: bool = typer.Option(False, "--json"),
+):
+    """Archive write guard 상태 출력."""
+    from ipa_cli.runtime.harness import guard_status, render_json
+
+    s = _settings(ctx)
+    payload = guard_status(s.vault_path)
+    typer.echo(render_json(payload) if json_output else _plain_dict(payload))
+
+
+@harness_guard_app.command("check")
+def harness_guard_check_cmd(
+    ctx: typer.Context,
+    path: Path = typer.Argument(..., help="검사할 vault 상대/절대 파일 경로"),
+    operation: str = typer.Option("create", "--operation", help="create | edit"),
+    actor: str | None = typer.Option(None, "--actor", help="codex | claude | human"),
+    source: str | None = typer.Option(None, "--source", help="예: ipa_inbox_add"),
+    json_output: bool = typer.Option(False, "--json"),
+):
+    """hook에서 호출 가능한 archive-write 정책 검사."""
+    from ipa_cli.runtime.harness import check_archive_write_guard, render_json
+
+    s = _settings(ctx)
+    payload = check_archive_write_guard(
+        s.vault_path, path, operation=operation, actor=actor, source=source
+    )
+    typer.echo(render_json(payload) if json_output else _plain_dict(payload))
+    raise typer.Exit(0 if payload["allowed"] else 1)
+
+
+@app.command("context")
+def context_cmd(
+    ctx: typer.Context,
+    query: str = typer.Argument(..., help="검색어 또는 --by-note 노트명"),
+    depth: int = typer.Option(1, "--depth", help="예약 필드: graph depth"),
+    format_: str = typer.Option("markdown", "--format", help="markdown | json"),
+    by_note: bool = typer.Option(False, "--by-note", help="query를 노트명으로 해석"),
+    include: str = typer.Option(
+        "backlinks,siblings,children", "--include", help="포함할 graph 보강 항목"
+    ),
+):
+    """AI agent용 vault context pack 생성."""
+    from ipa_cli.runtime.context_pack import build_context_pack, render_context_pack
+    from ipa_cli.runtime.search_loader import load_search_channels
+
+    if format_ not in {"markdown", "json"}:
+        raise typer.BadParameter("--format must be markdown|json")
+    s = _settings(ctx)
+    mapping = _active_mapping(s)
+    channels = load_search_channels(_workspace_arg(s), vault_path=s.vault_path)
+    pack = build_context_pack(
+        s.vault_path,
+        query,
+        mapping=mapping,
+        threshold=s.search.threshold,
+        max_results=s.search.max_results,
+        weights=dict(s.search.weights),
+        channels=channels,
+        cache_dir=s.cache_dir,
+        by_note=by_note,
+        include=include.split(","),
+    )
+    pack["depth"] = depth
+    typer.echo(render_context_pack(pack, format_=format_))
+
+
+@cache_app.command("status")
+def cache_status_cmd(ctx: typer.Context, json_output: bool = typer.Option(False, "--json")):
+    """vault-local portable cache 상태 출력."""
+    from ipa_cli.runtime.cache_manager import cache_status, render_cache
+
+    s = _settings(ctx)
+    payload = cache_status(s.vault_path, _active_mapping(s))
+    typer.echo(render_cache(payload, json_output=json_output))
+
+
+@cache_app.command("rebuild")
+def cache_rebuild_cmd(ctx: typer.Context, json_output: bool = typer.Option(False, "--json")):
+    """manifest/files/graph cache를 재생성."""
+    from ipa_cli.runtime.cache_manager import rebuild_cache, render_cache
+
+    s = _settings(ctx)
+    payload = rebuild_cache(s.vault_path, _active_mapping(s))
+    typer.echo(render_cache(payload, json_output=json_output))
+
+
+@cache_app.command("clean")
+def cache_clean_cmd(
+    ctx: typer.Context,
+    stale: bool = typer.Option(False, "--stale", help="stale cache 재생성"),
+    json_output: bool = typer.Option(False, "--json"),
+):
+    """stale cache 정리."""
+    from ipa_cli.runtime.cache_manager import cache_clean_stale, render_cache
+
+    if not stale:
+        raise typer.BadParameter("현재는 --stale만 지원합니다")
+    s = _settings(ctx)
+    payload = cache_clean_stale(s.vault_path, _active_mapping(s))
+    typer.echo(render_cache(payload, json_output=json_output))
+
+
+@cache_app.command("inspect")
+def cache_inspect_cmd(
+    ctx: typer.Context,
+    note: str = typer.Option(..., "--note", help="노트명"),
+    json_output: bool = typer.Option(False, "--json"),
+):
+    """단일 노트 cache record를 계산."""
+    from ipa_cli.runtime.cache_manager import inspect_note_cache, render_cache
+
+    s = _settings(ctx)
+    try:
+        payload = inspect_note_cache(s.vault_path, _active_mapping(s), note)
+    except KeyError as exc:
+        raise typer.BadParameter(f"note not found: {note}") from exc
+    typer.echo(render_cache(payload, json_output=json_output))
+
+
+@cache_app.command("doctor")
+def cache_doctor_cmd(ctx: typer.Context, json_output: bool = typer.Option(False, "--json")):
+    """cache schema와 absolute path 누수를 검사."""
+    from ipa_cli.runtime.cache_manager import cache_doctor, render_cache
+
+    s = _settings(ctx)
+    payload = cache_doctor(s.vault_path, _active_mapping(s))
+    typer.echo(render_cache(payload, json_output=json_output))
+    raise typer.Exit(1 if payload["status"] == "error" else 0)
+
+
+def _plain_dict(payload: dict[str, Any]) -> str:
+    return "\n".join(f"{key}: {value}" for key, value in payload.items())
+
+
+@link_app.command("suggest")
+def link_suggest_cmd(
+    ctx: typer.Context,
+    note: str | None = typer.Argument(None, help="노트명"),
+    json_output: bool = typer.Option(False, "--json"),
+):
+    """본문 mention/ref/tag 기반 wikilink 후보 제안."""
+    from ipa_cli.runtime.linker import render_link_payload, suggest_links
+
+    s = _settings(ctx)
+    payload = suggest_links(s.vault_path, _active_mapping(s), note_id=note)
+    typer.echo(render_link_payload(payload, json_output=json_output))
+
+
+@link_app.command("plan")
+def link_plan_cmd(
+    ctx: typer.Context,
+    note: str | None = typer.Option(None, "--note", help="단일 노트"),
+    scope: str = typer.Option("vault", "--scope", help="vault | inbox"),
+    output: Path | None = typer.Option(None, "--output", help="plan JSON 저장 위치"),
+    json_output: bool = typer.Option(False, "--json"),
+):
+    """wikilink 적용 plan 생성."""
+    from ipa_cli.runtime.linker import build_link_plan, render_link_payload
+
+    s = _settings(ctx)
+    payload = build_link_plan(
+        s.vault_path,
+        _active_mapping(s),
+        note_id=note,
+        scope=scope,
+        output=output,
+    )
+    typer.echo(render_link_payload(payload, json_output=json_output))
+
+
+@link_app.command("apply")
+def link_apply_cmd(
+    ctx: typer.Context,
+    plan: Path = typer.Argument(..., help="link plan JSON"),
+    json_output: bool = typer.Option(False, "--json"),
+):
+    """hash guard를 확인한 뒤 link plan 적용."""
+    from ipa_cli.runtime.linker import apply_link_plan, render_link_payload
+
+    s = _settings(ctx)
+    payload = apply_link_plan(s.vault_path, plan)
+    typer.echo(render_link_payload(payload, json_output=json_output))
+    raise typer.Exit(1 if payload["errors"] else 0)
+
+
+@app.command("rename")
+def rename_cmd(
+    ctx: typer.Context,
+    old: str = typer.Argument(...),
+    new: str = typer.Argument(...),
+    apply: bool = typer.Option(False, "--apply", help="실제 파일 변경"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="plan만 출력"),
+    json_output: bool = typer.Option(False, "--json"),
+):
+    """노트명 변경과 backlinks/frontmatter ref 갱신."""
+    from ipa_cli.runtime.note_ops import (
+        NoteOperationError,
+        apply_rename,
+        plan_rename,
+        render_plan_or_result,
+    )
+
+    s = _settings(ctx)
+    try:
+        plan = plan_rename(s.vault_path, _active_mapping(s), old, new)
+    except NoteOperationError as exc:
+        raise typer.BadParameter(exc.message) from exc
+    payload = apply_rename(s.vault_path, plan) if apply and not dry_run else plan
+    typer.echo(render_plan_or_result(payload, json_output=json_output))
+    if isinstance(payload, dict) and payload.get("errors"):
+        raise typer.Exit(1)
+
+
+@app.command("move")
+def move_cmd(
+    ctx: typer.Context,
+    note: str = typer.Argument(...),
+    target_folder: str = typer.Argument(...),
+    apply: bool = typer.Option(False, "--apply", help="실제 파일 변경"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="plan만 출력"),
+    json_output: bool = typer.Option(False, "--json"),
+):
+    """노트를 다른 vault 상대 폴더로 이동."""
+    from ipa_cli.runtime.note_ops import (
+        NoteOperationError,
+        apply_move,
+        plan_move,
+        render_plan_or_result,
+    )
+
+    s = _settings(ctx)
+    try:
+        plan = plan_move(s.vault_path, _active_mapping(s), note, target_folder)
+    except NoteOperationError as exc:
+        raise typer.BadParameter(exc.message) from exc
+    payload = apply_move(s.vault_path, plan) if apply and not dry_run else plan
+    typer.echo(render_plan_or_result(payload, json_output=json_output))
+    if isinstance(payload, dict) and payload.get("errors"):
+        raise typer.Exit(1)
+
+
+@inbox_app.command("triage")
+def inbox_triage_cmd(
+    ctx: typer.Context,
+    note: str | None = typer.Option(None, "--note", help="단일 Inbox 노트"),
+    apply: bool = typer.Option(False, "--apply", help="추천 이동 적용"),
+    json_output: bool = typer.Option(False, "--json"),
+):
+    """Inbox 노트의 ref/tag/Archive 이동 후보를 계산."""
+    from ipa_cli.runtime.inbox_triage import apply_triage, render_triage, triage_inbox
+
+    s = _settings(ctx)
+    mapping = _active_mapping(s)
+    recommendations = triage_inbox(s.vault_path, mapping, note_id=note)
+    payload = apply_triage(s.vault_path, mapping, recommendations) if apply else recommendations
+    typer.echo(render_triage(payload, json_output=json_output))
+    if isinstance(payload, dict) and payload.get("errors"):
+        raise typer.Exit(1)
+
+
+def _run_review(
+    ctx: typer.Context,
+    scope: str,
+    *,
+    json_output: bool,
+    suggest_refactor: bool,
+    content: bool = False,
+    threshold: float = 0.85,
+) -> None:
+    from ipa_cli.runtime.review import render_review, review_vault
+
+    s = _settings(ctx)
+    report = review_vault(
+        s.vault_path,
+        _active_mapping(s),
+        profile_dir=_workspace_arg(s),
+        scope=scope,  # type: ignore[arg-type]
+        suggest_refactor=suggest_refactor,
+        content_duplicates=content,
+        threshold=threshold,
+    )
+    typer.echo(render_review(report, json_output=json_output))
+
+
+@review_app.command("all")
+def review_all_cmd(
+    ctx: typer.Context,
+    json_output: bool = typer.Option(False, "--json"),
+    suggest_refactor: bool = typer.Option(False, "--suggest-refactor"),
+):
+    """Inbox, Index, Tag, Duplicate, Convention 전체 감사."""
+    _run_review(
+        ctx,
+        "all",
+        json_output=json_output,
+        suggest_refactor=suggest_refactor,
+        content=False,
+    )
+
+
+@review_app.command("inbox")
+def review_inbox_cmd(ctx: typer.Context, json_output: bool = typer.Option(False, "--json")):
+    _run_review(ctx, "inbox", json_output=json_output, suggest_refactor=False)
+
+
+@review_app.command("index")
+def review_index_cmd(ctx: typer.Context, json_output: bool = typer.Option(False, "--json")):
+    _run_review(ctx, "index", json_output=json_output, suggest_refactor=False)
+
+
+@review_app.command("tags")
+def review_tags_cmd(
+    ctx: typer.Context,
+    json_output: bool = typer.Option(False, "--json"),
+    suggest_refactor: bool = typer.Option(False, "--suggest-refactor"),
+):
+    _run_review(ctx, "tags", json_output=json_output, suggest_refactor=suggest_refactor)
+
+
+@review_app.command("duplicates")
+def review_duplicates_cmd(
+    ctx: typer.Context,
+    json_output: bool = typer.Option(False, "--json"),
+    content: bool = typer.Option(False, "--content", help="본문 near-duplicate 검사"),
+    threshold: float = typer.Option(0.85, "--threshold"),
+):
+    _run_review(
+        ctx,
+        "duplicates",
+        json_output=json_output,
+        suggest_refactor=False,
+        content=content,
+        threshold=threshold,
+    )
+
+
+@review_app.command("convention")
+def review_convention_cmd(ctx: typer.Context, json_output: bool = typer.Option(False, "--json")):
+    _run_review(ctx, "convention", json_output=json_output, suggest_refactor=False)
+
+
+@contract_app.command("list")
+def contract_list_cmd(json_output: bool = typer.Option(False, "--json")):
+    """지원 contract 목록."""
+    from ipa_cli.runtime.contract import list_contracts, render_contract
+
+    typer.echo(render_contract(list_contracts(), json_output=json_output))
+
+
+@contract_app.command("validate")
+def contract_validate_cmd(
+    ctx: typer.Context,
+    path: Path = typer.Argument(...),
+    json_output: bool = typer.Option(False, "--json"),
+):
+    """파일 contract 검증."""
+    from ipa_cli.runtime.contract import render_contract, validate_contract
+
+    s = _settings(ctx)
+    payload = validate_contract(path, vault_path=s.vault_path)
+    typer.echo(render_contract(payload, json_output=json_output))
+    raise typer.Exit(1 if payload["status"] == "error" else 0)
+
+
+@contract_app.command("validate-output")
+def contract_validate_output_cmd(
+    ctx: typer.Context,
+    kind: str = typer.Argument(..., help="context | review"),
+    path: Path = typer.Argument(...),
+    json_output: bool = typer.Option(False, "--json"),
+):
+    """command JSON output fixture 검증."""
+    from ipa_cli.runtime.contract import render_contract, validate_output
+
+    s = _settings(ctx)
+    payload = validate_output(kind, path, vault_path=s.vault_path)
+    typer.echo(render_contract(payload, json_output=json_output))
+    raise typer.Exit(1 if payload["status"] == "error" else 0)
+
+
+@contract_app.command("export-fixtures")
+def contract_export_fixtures_cmd(
+    ctx: typer.Context,
+    target: Path = typer.Option(..., "--target"),
+    json_output: bool = typer.Option(False, "--json"),
+):
+    """JS/TS 이관 테스트용 golden fixture 샘플 생성."""
+    from ipa_cli.runtime.contract import export_fixtures, render_contract
+
+    s = _settings(ctx)
+    payload = export_fixtures(target, vault_path=s.vault_path)
+    typer.echo(render_contract(payload, json_output=json_output))
+
+
+@plugin_app.command("list")
+def plugin_list_cmd(ctx: typer.Context, json_output: bool = typer.Option(False, "--json")):
+    """vault-local plugin 목록."""
+    from ipa_cli.runtime.plugin_dry_run import list_plugins, render_plugin
+
+    s = _settings(ctx)
+    typer.echo(render_plugin(list_plugins(s.vault_path), json_output=json_output))
+
+
+@plugin_app.command("doctor")
+def plugin_doctor_cmd(ctx: typer.Context, json_output: bool = typer.Option(False, "--json")):
+    """plugin load error 진단."""
+    from ipa_cli.runtime.plugin_dry_run import plugin_doctor, render_plugin
+
+    s = _settings(ctx)
+    payload = plugin_doctor(s.vault_path)
+    typer.echo(render_plugin(payload, json_output=json_output))
+    raise typer.Exit(1 if payload["status"] == "error" else 0)
+
+
+@plugin_app.command("validate")
+def plugin_validate_cmd(
+    ctx: typer.Context,
+    path: Path = typer.Argument(...),
+    json_output: bool = typer.Option(False, "--json"),
+):
+    """단일 plugin 파일 로드 계약 검증."""
+    from ipa_cli.runtime.plugin_dry_run import render_plugin, validate_plugin
+
+    s = _settings(ctx)
+    target = path if path.is_absolute() else s.vault_path / path
+    payload = validate_plugin(target)
+    typer.echo(render_plugin(payload, json_output=json_output))
+    raise typer.Exit(1 if payload["issues"] else 0)
+
+
+@plugin_dry_run_app.command("search")
+def plugin_dry_run_search_cmd(
+    ctx: typer.Context,
+    path: Path = typer.Argument(...),
+    query: str = typer.Option(..., "--query"),
+    json_output: bool = typer.Option(False, "--json"),
+):
+    """search channel plugin을 sample query로 dry-run."""
+    from ipa_cli.runtime.plugin_dry_run import dry_run_search, render_plugin
+
+    s = _settings(ctx)
+    payload = dry_run_search(s.vault_path, _active_mapping(s), path, query)
+    typer.echo(render_plugin(payload, json_output=json_output))
+
+
+@plugin_dry_run_app.command("lint")
+def plugin_dry_run_lint_cmd(
+    ctx: typer.Context,
+    path: Path = typer.Argument(...),
+    note: str = typer.Option(..., "--note"),
+    json_output: bool = typer.Option(False, "--json"),
+):
+    """lint plugin을 단일 note에 대해 dry-run."""
+    from ipa_cli.runtime.plugin_dry_run import dry_run_lint, render_plugin
+
+    s = _settings(ctx)
+    payload = dry_run_lint(s.vault_path, _active_mapping(s), path, note)
+    typer.echo(render_plugin(payload, json_output=json_output))
+
+
+@plugin_dry_run_app.command("formatter")
+def plugin_dry_run_formatter_cmd(
+    ctx: typer.Context,
+    path: Path = typer.Argument(...),
+    note: str = typer.Option(..., "--note"),
+    json_output: bool = typer.Option(False, "--json"),
+):
+    """formatter plugin을 write 없이 patch/diff로 dry-run."""
+    from ipa_cli.runtime.plugin_dry_run import dry_run_formatter, render_plugin
+
+    s = _settings(ctx)
+    payload = dry_run_formatter(s.vault_path, _active_mapping(s), path, note)
+    typer.echo(render_plugin(payload, json_output=json_output))
 
 
 # ── config / profile ──
@@ -1252,7 +1849,35 @@ def _read_pack(vault_path: Path, name: str) -> dict[str, Any]:
     import json
 
     path = _pack_path(vault_path, name)
+    if not path.is_file():
+        builtin = _builtin_query_pack(name)
+        if builtin is not None:
+            return builtin
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _builtin_query_pack(name: str) -> dict[str, Any] | None:
+    if name != "ipa-cli-core":
+        return None
+    return {
+        "schema_version": 1,
+        "name": "ipa-cli-core",
+        "description": "Built-in IPA CLI smoke query pack used when no vault-local pack exists.",
+        "cases": [
+            {
+                "id": "ipa-cli-core-001",
+                "agent_search_query": "ipa cli",
+                "target": "🔖 ipa-cli",
+                "expect": {"top_k": 5},
+            },
+            {
+                "id": "ipa-cli-core-002",
+                "agent_search_query": "IPA CLI 4차 최종 확장 계획",
+                "target": "IPA CLI 4차 최종 확장 계획",
+                "expect": {"top_k": 5},
+            },
+        ],
+    }
 
 
 def _write_pack(vault_path: Path, name: str, payload: dict[str, Any]) -> Path:
