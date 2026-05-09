@@ -8,7 +8,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from ipa_cli.api.base_channels import SetupContext
 from ipa_cli.api.mappings import Mapping
 from ipa_cli.parse.links import extract_ref_targets
 from ipa_cli.parse.note_model import Note

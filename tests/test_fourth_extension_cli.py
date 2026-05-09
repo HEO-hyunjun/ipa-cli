@@ -95,6 +95,21 @@ def test_doctor_context_cache_contract_and_review(vault: Path) -> None:
     assert doctor.exit_code == 0, doctor.stdout
     assert json.loads(doctor.stdout)["checks"]["notes"] == 4
 
+    fixed = _run(vault, "doctor", "--fix-dirs", "--json")
+    assert fixed.exit_code == 0, fixed.stdout
+    for rel in (".ipa/cache", ".ipa/tune", ".ipa/plugins"):
+        assert (vault / rel).is_dir()
+
+    bad_cache = vault / ".ipa" / "cache" / "bad.json"
+    bad_cache.write_text(json.dumps({"path": str(vault / "00 Inbox" / "Alpha.md")}), encoding="utf-8")
+    absolute_path_check = _run(vault, "doctor", "--check", "absolute-paths", "--json")
+    assert absolute_path_check.exit_code == 1
+    assert any(
+        issue["code"] == "doctor.cache.absolute_path"
+        for issue in json.loads(absolute_path_check.stdout)["issues"]
+    )
+    bad_cache.unlink()
+
     context = _run(vault, "context", "Alpha", "--by-note", "--format", "json")
     assert context.exit_code == 0, context.stdout
     payload = json.loads(context.stdout)
@@ -157,13 +172,52 @@ def test_harness_guard_blocks_archive_new_note(vault: Path, tmp_path: Path, monk
     assert allowed.exit_code == 0, allowed.stdout
     assert json.loads(allowed.stdout)["allowed"] is True
 
+    (vault / "02 Archive" / "Existing.md").write_text("existing\n", encoding="utf-8")
+    edit_allowed = _run(
+        vault,
+        "harness",
+        "guard",
+        "check",
+        "02 Archive/Existing.md",
+        "--operation",
+        "edit",
+        "--actor",
+        "codex",
+        "--json",
+    )
+    assert edit_allowed.exit_code == 0, edit_allowed.stdout
+    assert json.loads(edit_allowed.stdout)["reason"] == "existing-edit"
 
-def test_link_rename_move_and_inbox_triage(vault: Path, tmp_path: Path) -> None:
+    inbox_add_allowed = _run(
+        vault,
+        "harness",
+        "guard",
+        "check",
+        "02 Archive/New Note.md",
+        "--actor",
+        "codex",
+        "--source",
+        "ipa_inbox_add",
+        "--json",
+    )
+    assert inbox_add_allowed.exit_code == 0, inbox_add_allowed.stdout
+    assert json.loads(inbox_add_allowed.stdout)["reason"] == "allowed-source"
+
+
+def test_link_rename_move_and_inbox_triage(vault: Path) -> None:
     plan_path = Path(".ipa/plans/link-alpha.json")
     planned = _run(vault, "link", "plan", "--note", "Alpha", "--output", str(plan_path), "--json")
     assert planned.exit_code == 0, planned.stdout
     assert json.loads(planned.stdout)["changes"]
 
+    alpha_path = vault / "00 Inbox" / "Alpha.md"
+    alpha_path.write_text(alpha_path.read_text(encoding="utf-8") + "\nPlan drift.\n", encoding="utf-8")
+    stale_apply = _run(vault, "link", "apply", str(plan_path), "--json")
+    assert stale_apply.exit_code == 1
+    assert json.loads(stale_apply.stdout)["errors"][0]["error"] == "hash_changed"
+
+    planned = _run(vault, "link", "plan", "--note", "Alpha", "--output", str(plan_path), "--json")
+    assert planned.exit_code == 0, planned.stdout
     applied = _run(vault, "link", "apply", str(plan_path), "--json")
     assert applied.exit_code == 0, applied.stdout
     assert "[[Beta]]" in (vault / "00 Inbox" / "Alpha.md").read_text(encoding="utf-8")
@@ -180,6 +234,10 @@ def test_link_rename_move_and_inbox_triage(vault: Path, tmp_path: Path) -> None:
     triage = _run(vault, "inbox", "triage", "--json")
     assert triage.exit_code == 0, triage.stdout
     assert json.loads(triage.stdout)[0]["target_folder"] == "02 Archive"
+
+    triage_apply = _run(vault, "inbox", "triage", "--apply", "--json")
+    assert triage_apply.exit_code == 0, triage_apply.stdout
+    assert json.loads(triage_apply.stdout)["moved"] == ["02 Archive/Alpha.md"]
 
 
 def test_plugin_dry_run_surfaces_search_lint_and_formatter(vault: Path) -> None:
