@@ -34,6 +34,19 @@ def test_refactor_help_when_no_subcommand(vault: Path) -> None:
     out = render_refactor(vault, [])
     assert "ipa refactor" in out
     assert "ref-replace" in out
+    assert "기본은 dry-run" in out
+    assert "--filter" in out
+    assert "--apply" in out
+
+
+def test_cli_refactor_help_describes_usage() -> None:
+    runner = CliRunner()
+    res = runner.invoke(app, ["refactor", "--help"])
+    assert res.exit_code == 0, res.stdout
+    assert "기본은 dry-run" in res.stdout
+    assert "tag-add TAG" in res.stdout
+    assert "--scope-ref" in res.stdout
+    assert "ipa refactor tag-add project" in res.stdout
 
 
 def test_ref_replace_dry_run_reports_change(vault: Path) -> None:

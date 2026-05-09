@@ -32,6 +32,38 @@ class Colors:
     BOLD = "\033[1m"
 
 
+REFACTOR_DESCRIPTION = """Vault 구조 리팩토링 (legacy)
+
+기본은 dry-run입니다. 실제 파일 변경은 각 하위 명령에 --apply를 붙일 때만 저장됩니다.
+"""
+
+REFACTOR_EPILOG = """사용법:
+  ipa refactor <command> [args] [filters] [--apply]
+
+Commands:
+  ref-replace OLD NEW          frontmatter ref의 OLD를 NEW로 교체
+  tag-rename OLD NEW           tags의 OLD를 NEW로 변경
+  tag-remove TAG               tags에서 TAG 제거
+  tag-add TAG                  tags에 TAG 추가
+  wikilink-replace OLD NEW     본문 wikilink OLD를 NEW로 교체
+  ref-add REF                  frontmatter ref에 REF 추가
+  ref-remove REF               frontmatter ref에서 REF 제거
+
+Common filters:
+  --filter "Note A,Note B"     파일명 stem 기준 대상 제한
+  --scope-ref "🔖 Index"       해당 ref를 가진 노트만
+  --scope-tag TAG              해당 tag를 가진 노트만
+  --scope-type note|index|root type 기준
+  --scope-folder "00 Inbox/"   vault 상대 경로 prefix 기준
+
+Examples:
+  ipa refactor tag-add project --filter "Note A"
+  ipa refactor tag-add project --filter "Note A" --apply
+  ipa refactor ref-replace "🔖 Old" "🔖 New" --scope-type note --apply
+  ipa refactor wikilink-replace "Old Note" "New Note" --scope-ref "🔖 Index" --apply
+"""
+
+
 @dataclass
 class RefactorResult:
     note_name: str
@@ -394,7 +426,8 @@ def _format_results(results: list[RefactorResult], apply: bool) -> str:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ipa refactor",
-        description="Vault 구조 리팩토링 (legacy)",
+        description=REFACTOR_DESCRIPTION,
+        epilog=REFACTOR_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     sub = parser.add_subparsers(dest="command", help="리팩토링 명령")

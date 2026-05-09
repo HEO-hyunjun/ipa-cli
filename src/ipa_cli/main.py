@@ -61,6 +61,50 @@ app.add_typer(engine_app, name="engine")
 console = Console()
 
 
+class PlainHelpTyperCommand(typer.core.TyperCommand):
+    """Use Click's plain help formatter for commands with preformatted usage."""
+
+    def __init__(self, *args, **kwargs):
+        kwargs["rich_markup_mode"] = None
+        super().__init__(*args, **kwargs)
+
+
+REFACTOR_HELP = (
+    "기본은 dry-run입니다. vault의 frontmatter ref/tags와 본문 wikilink를 "
+    "일괄 수정하며, 실제 파일 변경은 각 하위 명령에 --apply를 붙일 때만 저장됩니다."
+)
+
+REFACTOR_EPILOG = """\b
+사용법:
+  ipa refactor <command> [args] [filters] [--apply]
+
+\b
+Commands:
+  ref-replace OLD NEW          frontmatter ref의 OLD를 NEW로 교체
+  tag-rename OLD NEW           tags의 OLD를 NEW로 변경
+  tag-remove TAG               tags에서 TAG 제거
+  tag-add TAG                  tags에 TAG 추가
+  wikilink-replace OLD NEW     본문 wikilink OLD를 NEW로 교체
+  ref-add REF                  frontmatter ref에 REF 추가
+  ref-remove REF               frontmatter ref에서 REF 제거
+
+\b
+Common filters:
+  --filter "Note A,Note B"     파일명 stem 기준 대상 제한
+  --scope-ref "🔖 Index"       해당 ref를 가진 노트만
+  --scope-tag TAG              해당 tag를 가진 노트만
+  --scope-type note|index|root type 기준
+  --scope-folder "00 Inbox/"   vault 상대 경로 prefix 기준
+
+\b
+Examples:
+  ipa refactor tag-add project --filter "Note A"
+  ipa refactor tag-add project --filter "Note A" --apply
+  ipa refactor ref-replace "🔖 Old" "🔖 New" --scope-type note --apply
+  ipa refactor wikilink-replace "Old Note" "New Note" --scope-ref "🔖 Index" --apply
+"""
+
+
 @app.callback()
 def _global(
     ctx: typer.Context,
@@ -136,7 +180,7 @@ def search(
     s = _settings(ctx)
     workspace = s.profile_dir
     workspace_arg = workspace if workspace.is_dir() else None
-    mapping = load_mapping(workspace_arg)
+    mapping = load_mapping(workspace_arg, vault_config_path=s.vault_config_path)
     channels = load_search_channels(workspace_arg, vault_path=s.vault_path)
     eff_threshold = threshold if threshold is not None else s.search.threshold
     eff_max = max_results if max_results is not None else s.search.max_results
@@ -244,7 +288,10 @@ def validator(
 
 
 @app.command(
-    context_settings={"allow_extra_args": True, "ignore_unknown_options": True}
+    cls=PlainHelpTyperCommand,
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+    help=REFACTOR_HELP,
+    epilog=REFACTOR_EPILOG,
 )
 def refactor(ctx: typer.Context):
     """vault 일괄 수정 (legacy; 모든 인자를 새 dispatcher에 전달)."""
@@ -381,7 +428,7 @@ def convention_check(
     workspace = s.profile_dir
     workspace_arg = workspace if workspace.is_dir() else None
 
-    mapping = load_mapping(workspace_arg)
+    mapping = load_mapping(workspace_arg, vault_config_path=s.vault_config_path)
     convention = load_convention(
         workspace_arg,
         vault_path=s.vault_path,
@@ -486,7 +533,7 @@ def _resolve_formatter_inputs(
 
     workspace = s.profile_dir
     workspace_arg = workspace if workspace.is_dir() else None
-    mapping = load_mapping(workspace_arg)
+    mapping = load_mapping(workspace_arg, vault_config_path=s.vault_config_path)
     convention = load_convention(
         workspace_arg,
         vault_path=s.vault_path,
@@ -683,7 +730,7 @@ def _build_engine(ctx: typer.Context):
 
     workspace = s.profile_dir
     workspace_arg = workspace if workspace.is_dir() else None
-    mapping = load_mapping(workspace_arg)
+    mapping = load_mapping(workspace_arg, vault_config_path=s.vault_config_path)
     channels = load_search_channels(workspace_arg, vault_path=s.vault_path)
     notes = load_notes(s.vault_path, mapping)
 

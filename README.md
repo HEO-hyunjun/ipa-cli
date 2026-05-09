@@ -104,6 +104,18 @@ no selected profile and no default, the command fails.
 Vault-local portable config lives at `{vault}/.ipa/config.yaml`:
 
 ```yaml
+mapping:
+  fields:
+    note_type: type
+    refs: ref
+    tags: tags
+    created_at: date_created
+    updated_at: date_modified
+    aliases: aliases
+  folders:
+    inbox: "00 Inbox"
+    project: "01 Project"
+    archive: "02 Archive"
 test:
   file: .ipa/tune/testsets/testset.json
 weights:
@@ -126,6 +138,12 @@ formatter:
     - vault.formatter.frontmatter_order
 ```
 
+`mapping` is the vault-local declarative replacement for legacy
+`mapping.py`. It maps IPA's semantic fields/folders to the actual
+frontmatter keys and directory names used by the vault. If `mapping` is
+absent, IPA falls back to the default convention and then to the legacy
+profile-local `mapping.py` for compatibility.
+
 `convention` controls `ipa convention check`; `formatter` controls
 `ipa formatter plan/apply`. `builtin: false` disables builtin rules for
 that surface. `plugins` can be `true`/`false`, a list like
@@ -138,6 +156,7 @@ Optional profile workspaces can still hold machine-local base overrides:
 ~/.config/ipa/profiles/sample/
   convention.py           # optional explicit base rules before vault plugins
   search.py               # optional explicit base channels before vault plugins
+  mapping.py              # legacy fallback; prefer {vault}/.ipa/config.yaml mapping
 ```
 
 Portable runtime state stays in the vault:
