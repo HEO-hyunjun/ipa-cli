@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 from typer.testing import CliRunner
@@ -13,7 +16,7 @@ from ipa_cli.main import app
 
 @pytest.fixture
 def vault(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    for key in list(__import__("os").environ.keys()):
+    for key in list(os.environ.keys()):
         if key.startswith("IPA_"):
             monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
@@ -137,11 +140,34 @@ def test_doctor_context_cache_contract_and_review(vault: Path) -> None:
 
 def test_harness_guard_blocks_archive_new_note(vault: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
+    monkeypatch.setenv("CLAUDE_HOME", str(tmp_path / "claude-home"))
     status = _run(vault, "harness", "install", "codex", "--json")
     assert status.exit_code == 0, status.stdout
     payload = json.loads(status.stdout)
     assert payload["skill_installed"] is True
     assert payload["hook_installed"] is True
+
+    hook_path = tmp_path / "codex-home" / "hooks" / "ipa-context-writer.py"
+    context_dir = tmp_path / "search-context"
+    subprocess.run(
+        [sys.executable, str(hook_path)],
+        input=json.dumps({"prompt": "How should ipa cli work?"}),
+        text=True,
+        check=True,
+        env={
+            **os.environ,
+            "IPA_SEARCH_CONTEXT_DIR": str(context_dir),
+            "IPA_SEARCH_ACTOR": "codex",
+        },
+    )
+    context = json.loads((context_dir / "codex" / "current.json").read_text(encoding="utf-8"))
+    assert context["actor"] == "codex"
+    assert context["turn_id"]
+    assert context["user_query"] == "How should ipa cli work?"
+
+    claude_install = _run(vault, "harness", "install", "claude", "--json")
+    assert claude_install.exit_code == 0, claude_install.stdout
+    assert json.loads(claude_install.stdout)["skill_installed"] is True
 
     guard = _run(vault, "harness", "guard", "install", "archive-write", "--json")
     assert guard.exit_code == 0, guard.stdout
@@ -202,6 +228,13 @@ def test_harness_guard_blocks_archive_new_note(vault: Path, tmp_path: Path, monk
     )
     assert inbox_add_allowed.exit_code == 0, inbox_add_allowed.stdout
     assert json.loads(inbox_add_allowed.stdout)["reason"] == "allowed-source"
+
+    codex_uninstall = _run(vault, "harness", "uninstall", "codex", "--json")
+    assert codex_uninstall.exit_code == 0, codex_uninstall.stdout
+    assert json.loads(codex_uninstall.stdout)["skill_installed"] is False
+    claude_uninstall = _run(vault, "harness", "uninstall", "claude", "--json")
+    assert claude_uninstall.exit_code == 0, claude_uninstall.stdout
+    assert json.loads(claude_uninstall.stdout)["skill_installed"] is False
 
 
 def test_link_rename_move_and_inbox_triage(vault: Path) -> None:

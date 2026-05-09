@@ -182,11 +182,53 @@ Search the vault before answering IPA-related requests and create new notes thro
 def _hook_text() -> str:
     return f"""#!/usr/bin/env python3
 # {HARNESS_MARKER}
+from datetime import datetime, timezone
+import hashlib
 import json
 import os
+import sys
+import uuid
 from pathlib import Path
 
-target = Path(os.environ.get("IPA_SEARCH_CONTEXT_DIR", "/tmp/ipa-search-context"))
+def _payload():
+    raw = sys.stdin.read().strip()
+    if not raw:
+        return {{}}
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return {{"user_query": raw}}
+    return data if isinstance(data, dict) else {{}}
+
+def _pick(data, *keys):
+    for key in keys:
+        value = data.get(key)
+        if value:
+            return str(value)
+    return None
+
+data = _payload()
+actor = os.environ.get("IPA_SEARCH_ACTOR") or _pick(data, "actor") or "agent"
+user_query = (
+    _pick(data, "prompt", "user_query", "userPrompt", "message")
+    or os.environ.get("IPA_USER_QUERY")
+)
+turn_id = _pick(data, "turn_id", "turnId", "prompt_id", "promptId")
+if not turn_id:
+    seed = f"{{actor}}\\0{{user_query or ''}}\\0{{uuid.uuid4().hex}}"
+    turn_id = "turn_" + hashlib.sha1(seed.encode("utf-8")).hexdigest()[:16]
+context = {{
+    "schema_version": 1,
+    "actor": actor,
+    "turn_id": turn_id,
+    "user_query": user_query,
+    "created_at": datetime.now(timezone.utc).isoformat(),
+    "ttl_seconds": int(os.environ.get("IPA_SEARCH_CONTEXT_TTL", "1800")),
+}}
+target = Path(os.environ.get("IPA_SEARCH_CONTEXT_DIR", "/tmp/ipa-search-context")).expanduser()
+(target / actor).mkdir(parents=True, exist_ok=True)
 target.mkdir(parents=True, exist_ok=True)
-(target / "current.json").write_text(json.dumps({{"actor": os.environ.get("IPA_SEARCH_ACTOR")}}, ensure_ascii=False), encoding="utf-8")
+text = json.dumps(context, ensure_ascii=False, indent=2)
+(target / actor / "current.json").write_text(text, encoding="utf-8")
+(target / "current.json").write_text(text, encoding="utf-8")
 """
