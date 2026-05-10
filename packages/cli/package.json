@@ -1,0 +1,12 @@
+{
+  "name": "@ipa/cli",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "ipa": "dist/main.js"
+  },
+  "dependencies": {
+    "@ipa/core": "workspace:*",
+    "@ipa/builtin-rules": "workspace:*"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "query": "Alpha",
+  "notes": [
+    {
+      "id": "Alpha",
+      "path": "00 Inbox/Alpha.md",
+      "type": "note",
+      "refs": ["🔖 Topic Index"],
+      "tags": ["note"],
+      "body": "# Alpha\n\nAlpha mentions Beta in plain text.\n\n## Details\n\nAlpha belongs to the IPA CLI topic.\n"
+    }
+  ],
+  "edges": {},
+  "sources": ["00 Inbox/Alpha.md"],
+  "warnings": []
+}

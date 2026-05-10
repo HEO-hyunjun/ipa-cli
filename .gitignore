@@ -5,10 +5,18 @@ build/
 dist/
 wheels/
 *.egg-info
+.DS_Store
+.tmp/
 
 # Virtual environments
 .venv
 
+# Node workspace artifacts
+node_modules/
+packages/*/dist/
+
 # Test fixture caches written by SearchEngine/BM25 channels.
 tests/fixtures/**/.cache/
 tests/fixtures/**/*.pkl
+legacy/python-reference/tests/fixtures/**/.cache/
+legacy/python-reference/tests/fixtures/**/*.pkl

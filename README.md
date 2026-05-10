@@ -1,16 +1,16 @@
 # ipa-cli
 
 Search, validate, format, and tune your [IPA](https://github.com/) Obsidian
-vault from the terminal. Channels and rules live as plain Python — no DSL —
-and vault-local plugins add project-specific behavior without touching the
-package.
+vault from the terminal. The active runtime is the JS/TS workspace under
+`packages/`; the previous Python implementation remains as an inactive
+reference until the follow-up removal pass.
 
 Surface:
 
 - `ipa engine search / channels` — multi-channel weighted search
 - `ipa convention check` — validate vault against active convention rules
 - `ipa formatter plan / apply` — autofix issues that rules know how to fix
-- `ipa tune (run) / eval / list / use / analyze` — Optuna TPE on weights
+- `ipa tune / eval / list / use / analyze` — tpe-lite tuning on weights
 - `ipa config show / profile list / use / current` — config introspection
 - `ipa search / view / traversal / validator / refactor` — legacy
   surface now backed by `runtime/*` modules built on the same service
@@ -23,13 +23,14 @@ Surface:
 ## Install
 
 ```sh
-uv sync                # dev workflow
-uv run pytest -q       # confirm green
-uv run ipa --help      # CLI surface
+pnpm install           # workspace install
+pnpm test              # JS runtime tests
+pnpm run build         # build packages/*/dist
+node packages/cli/dist/main.js --help
 ```
 
-The CLI entrypoint is `ipa` (defined in `pyproject.toml` as
-`ipa = ipa_cli.main:app`).
+The CLI entrypoint is `ipa` via `@ipa/cli` (`packages/cli/dist/main.js` after
+build).
 
 ## Quickstart
 
@@ -56,7 +57,7 @@ ipa convention check --summary
 ipa formatter plan
 ipa formatter apply
 
-# Tune (Optuna TPE), save best JSON, then optionally activate it.
+# Tune with the built-in tpe-lite optimizer, save best JSON, then optionally activate it.
 ipa tune --trials 200
 ipa tune list
 ipa tune use 2026-05-04T09-12-44.json
@@ -68,21 +69,21 @@ User plugins live inside the vault:
 
 ```text
 {vault}/.ipa/plugins/
-  search/              # *.py exporting channels = [BaseSearchChannel(...)]
-  lint/                # *.py exporting rules = [BaseConventionRule(...)]
-  formatter/           # *.py exporting rules = [BaseConventionRule(...)]
+  search/              # *.js exporting search(query, notes)
+  lint/                # *.js exporting lint(note, context)
+  formatter/           # *.js exporting format(note, context)
 ```
 
 Load order is:
 
-1. builtin defaults, or the profile's explicit `search.py` / `convention.py`
-2. `{vault}/.ipa/plugins/search/*.py`
-3. `{vault}/.ipa/plugins/lint/*.py`
-4. `{vault}/.ipa/plugins/formatter/*.py`
+1. builtin defaults
+2. `{vault}/.ipa/plugins/search/*.js`
+3. `{vault}/.ipa/plugins/lint/*.js`
+4. `{vault}/.ipa/plugins/formatter/*.js`
 
-`lint` and `formatter` use the same `BaseConventionRule` API. Rules that
-only implement `check()` participate in `ipa convention check`; rules that
-also produce fixes participate in `ipa formatter plan/apply`.
+Vault-local plugins are trusted local code and are enabled by default.
+`.ipa/config.yaml` can disable builtin/plugin behavior globally, by surface,
+by kind, or by individual plugin path.
 
 ## Profiles and vault config
 
@@ -138,26 +139,15 @@ formatter:
     - vault.formatter.frontmatter_order
 ```
 
-`mapping` is the vault-local declarative replacement for legacy
-`mapping.py`. It maps IPA's semantic fields/folders to the actual
-frontmatter keys and directory names used by the vault. If `mapping` is
-absent, IPA falls back to the default convention and then to the legacy
-profile-local `mapping.py` for compatibility.
+`mapping` is the vault-local declarative mapping for IPA's semantic
+fields/folders. In the JS/TS runtime, custom mapping must live in
+`{vault}/.ipa/config.yaml`; profile-local code fallbacks are not loaded.
 
 `convention` controls `ipa convention check`; `formatter` controls
 `ipa formatter plan/apply`. `builtin: false` disables builtin rules for
 that surface. `plugins` can be `true`/`false`, a list like
 `["lint"]`, or a mapping of plugin directories. `only` and `ignore`
 filter by rule code after loading.
-
-Optional profile workspaces can still hold machine-local base overrides:
-
-```text
-~/.config/ipa/profiles/sample/
-  convention.py           # optional explicit base rules before vault plugins
-  search.py               # optional explicit base channels before vault plugins
-  mapping.py              # legacy fallback; prefer {vault}/.ipa/config.yaml mapping
-```
 
 Portable runtime state stays in the vault:
 
@@ -167,9 +157,11 @@ Portable runtime state stays in the vault:
   plugins/
   tune/
     testsets/             # *.json eval sets used by ipa tune
-    results/              # 2026-05-06T21-30-00.json — immutable artifacts
+    results/              # immutable tune artifacts
   cache/
-    search/               # auto-managed pickles (BM25, parsed AST)
+    manifest.json
+    files.jsonl
+    graph.json
 ```
 
 A working sample lives at [`examples/sample_profile/`](examples/sample_profile/) —
@@ -250,11 +242,9 @@ Useful subcommands:
 | `ipa tune list` | History (newest first), ★ active marker |
 | `ipa tune use <filename>` | Flip the pointer; rollback to a past result |
 
-Tune precomputes raw channel scores once per unique testset query, then
-each trial only recombines cached scores with candidate weights, threshold,
-and cap. Progress prints the precompute query count/time plus `iter
-current/total`, last-trial seconds, average seconds, ETA, current loss,
-and best loss. Use `--progress-every N` to reduce output during long runs.
+Tune evaluates the active query pack and stores immutable result artifacts
+under `.ipa/tune/results`. The optimizer is fixed to `tpe-lite`; users keep
+the existing `ipa tune --trials N` command shape.
 
 ## Vault skill compatibility
 
@@ -290,27 +280,25 @@ guarded by golden snapshots and migrated-runtime regression tests.
 ## Layout
 
 ```text
-src/ipa_cli/
-  main.py            # Typer entrypoints
-  api/               # public types: BaseConventionRule, BaseSearchChannel, Mapping ...
-  parse/             # vault loader, markdown-it wrapper, parsed cache
-  runtime/           # service engines + legacy-surface entrypoints
-                     # (view, traversal, search, legacy_validator_view, refactor)
-  builtins/          # default convention rules + search channels + refactor metadata
-  config/            # Settings resolver, defaults
-  tune/              # Optuna runner, threshold dist analyzer, immutable results
+packages/
+  core/              # parser, graph, search, validation, cache, contract, plugin, tune
+  cli/               # ipa command entrypoint and renderers
+  builtin-rules/     # builtin registry metadata
+  test-vaults/       # canonical JS runtime fixtures
+legacy/
+  python-reference/  # inactive reference implementation and characterization tests
 ```
 
 ## Testing
 
 ```sh
-uv run pytest -q
+pnpm test
+pnpm run test:contracts
+pnpm run test:cli
+pnpm run smoke
 ```
 
-(The suite includes legacy-surface characterization snapshots,
-migrated-runtime regression checks, and `runtime/*` unit tests. Hit-rate
-parity against your own testset depends on the vault and is measured
-outside CI via `ipa tune eval --testset`.)
+The JS test suite does not invoke the inactive reference implementation.
 
 ## License
 

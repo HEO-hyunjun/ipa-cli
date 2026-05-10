@@ -1,0 +1,22 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .: {}
+
+  packages/builtin-rules: {}
+
+  packages/cli:
+    dependencies:
+      '@ipa/builtin-rules':
+        specifier: workspace:*
+        version: link:../builtin-rules
+      '@ipa/core':
+        specifier: workspace:*
+        version: link:../core
+
+  packages/core: {}

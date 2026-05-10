@@ -1,0 +1,21 @@
+{
+  "name": "ipa-cli-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.11.0",
+  "bin": {
+    "ipa": "packages/cli/dist/main.js"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "lint": "node scripts/lint.mjs",
+    "test": "node scripts/build.mjs && node --test packages/core/tests/*.test.mjs packages/cli/tests/*.test.mjs",
+    "test:contracts": "node scripts/build.mjs && node --test packages/core/tests/contracts.test.mjs",
+    "test:cli": "node scripts/build.mjs && node --test packages/cli/tests/cli.test.mjs",
+    "smoke": "node scripts/build.mjs && node scripts/smoke.mjs"
+  },
+  "workspaces": [
+    "packages/*"
+  ]
+}
