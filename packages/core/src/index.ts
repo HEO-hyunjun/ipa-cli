@@ -22,7 +22,8 @@ export const DEFAULT_MAPPING = {
   aliases: "aliases",
   inbox_dir: "00 Inbox",
   project_dir: "01 Project",
-  archive_dir: "02 Archive"
+  archive_dir: "02 Archive",
+  exclude: []
 };
 
 export const CHANNELS = [
@@ -42,9 +43,7 @@ export const RULES = [
   { code: "ipa.frontmatter.date_format", category: "frontmatter", severity: "warn", scope: "note" },
   { code: "ipa.frontmatter.invalid_type", category: "frontmatter", severity: "error", scope: "note" },
   { code: "ipa.frontmatter.missing_ref", category: "frontmatter", severity: "warn", scope: "note" },
-  { code: "ipa.title.root_prefix_missing", category: "title", severity: "warn", scope: "note" },
-  { code: "ipa.title.root_suffix_missing", category: "title", severity: "warn", scope: "note" },
-  { code: "ipa.title.index_prefix_missing", category: "title", severity: "warn", scope: "note" },
+  { code: "ipa.inbox.raw_capture", category: "inbox", severity: "warn", scope: "note" },
   { code: "ipa.location.type_mismatch", category: "location", severity: "warn", scope: "note" },
   { code: "ipa.link.ref_target_missing", category: "link", severity: "warn", scope: "vault" },
   { code: "ipa.link.wikilink_target_missing", category: "link", severity: "warn", scope: "vault" },
@@ -229,15 +228,55 @@ function asList(value) {
 export function stripWiki(value) {
   const text = String(value ?? "").trim();
   const match = text.match(/^\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]$/);
-  return (match ? match[1] : text).trim();
+  return normalizeTitle(match ? match[1] : text);
 }
 
 export function extractWikilinks(text) {
   const out = [];
   const re = /\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]/g;
-  let match;
-  while ((match = re.exec(String(text ?? "")))) out.push(match[1].trim());
+  let inCodeBlock = false;
+  for (const line of String(text ?? "").split("\n")) {
+    if (isCodeFence(line)) {
+      inCodeBlock = !inCodeBlock;
+      continue;
+    }
+    if (inCodeBlock) continue;
+    let match;
+    while ((match = re.exec(line))) out.push(normalizeTitle(match[1]));
+  }
   return out;
+}
+
+function normalizeTitle(value) {
+  return String(value ?? "").trim().normalize("NFC");
+}
+
+const EMOJI_RE = /[\p{Extended_Pictographic}\p{Emoji_Presentation}\p{Emoji_Modifier}\uFE0E\uFE0F\u200D]/gu;
+
+function searchableTitle(value) {
+  return normalizeTitle(value).replace(EMOJI_RE, "").replace(/\s+/g, " ").trim();
+}
+
+function searchableKey(value) {
+  return searchableTitle(value).toLowerCase();
+}
+
+function sameNoteName(left, right) {
+  const leftTitle = normalizeTitle(left);
+  const rightTitle = normalizeTitle(right);
+  if (!leftTitle || !rightTitle) return false;
+  if (leftTitle === rightTitle || leftTitle.toLowerCase() === rightTitle.toLowerCase()) return true;
+  const leftKey = searchableKey(leftTitle);
+  const rightKey = searchableKey(rightTitle);
+  return Boolean(leftKey && rightKey && leftKey === rightKey);
+}
+
+function hasNoteName(values, target) {
+  return values.some((value) => sameNoteName(value, target));
+}
+
+function shareNoteNames(leftValues, rightValues) {
+  return leftValues.some((left) => hasNoteName(rightValues, left));
 }
 
 export function normalizeMapping(config = {}) {
@@ -257,6 +296,7 @@ export function normalizeMapping(config = {}) {
   for (const [key, value] of Object.entries(raw)) {
     if (key !== "fields" && key !== "folders" && key in mapping) mapping[key] = value;
   }
+  mapping.exclude = asList(config.files?.exclude ?? config.notes?.exclude ?? raw.exclude);
   for (const required of ["note_type", "refs", "tags", "created_at", "updated_at"]) {
     if (!mapping[required]) throw new Error(`mapping missing required field: ${required}`);
   }
@@ -299,16 +339,19 @@ function parseHeadings(body) {
 }
 
 export async function loadNotes(vaultPath, mapping = DEFAULT_MAPPING) {
-  const files = await walkFiles(vaultPath, (path) => extname(path).toLowerCase() === ".md");
+  const excludes = asList(mapping.exclude);
+  const files = await walkFiles(vaultPath, (path, relPath) =>
+    extname(path).toLowerCase() === ".md" && !isExcludedPath(relPath, excludes)
+  );
   const notes = [];
   for (const path of files.sort()) {
     const raw = await readFile(path, "utf8");
     const relPath = toPosix(relative(vaultPath, path));
     const { frontmatter, body } = readFrontmatter(raw);
-    const id = basename(path, ".md");
+    const id = normalizeTitle(basename(path, ".md"));
     const refs = asList(frontmatter[mapping.refs]).map(stripWiki).filter(Boolean);
     const tags = asList(frontmatter[mapping.tags]).map((tag) => String(tag).replace(/^#/, ""));
-    const aliases = mapping.aliases ? asList(frontmatter[mapping.aliases]) : [];
+    const aliases = mapping.aliases ? asList(frontmatter[mapping.aliases]).map(normalizeTitle) : [];
     notes.push({
       id,
       path,
@@ -328,16 +371,61 @@ export async function loadNotes(vaultPath, mapping = DEFAULT_MAPPING) {
   return notes;
 }
 
+function isExcludedPath(relPath, patterns) {
+  const rel = toPosix(relPath).normalize("NFC");
+  return patterns.some((pattern) => {
+    const raw = toPosix(String(pattern ?? "").trim()).replace(/^\/+/, "").normalize("NFC");
+    return matchesPathPattern(rel, raw);
+  });
+}
+
+function matchesPathPattern(rel, pattern) {
+  if (!pattern) return false;
+  if (pattern.endsWith("/**")) {
+    const dir = pattern.slice(0, -3);
+    return rel === dir || rel.startsWith(`${dir}/`);
+  }
+  if (pattern.endsWith("/")) return rel.startsWith(pattern);
+  if (pattern.includes("*")) return globToRegExp(pattern).test(rel);
+  return rel === pattern || rel.startsWith(`${pattern}/`);
+}
+
+function globToRegExp(pattern) {
+  let source = "";
+  for (let i = 0; i < pattern.length; i += 1) {
+    const ch = pattern[i];
+    if (ch === "*") {
+      if (pattern[i + 1] === "*") {
+        if (pattern[i + 2] === "/") {
+          source += "(?:.*/)?";
+          i += 2;
+        } else {
+          source += ".*";
+          i += 1;
+        }
+      } else {
+        source += "[^/]*";
+      }
+    } else {
+      source += ch.replace(/[|\\{}()[\]^$+?.]/g, "\\$&");
+    }
+  }
+  return new RegExp(`^${source}$`);
+}
+
 export function indexNotes(notes) {
   return new Map(notes.map((note) => [note.id, note]));
 }
 
 export function buildGraph(notes) {
-  const ids = new Set(notes.map((note) => note.id));
   const edges = {};
   const backlinks = {};
   for (const note of notes) {
-    const targets = [...new Set([...note.refs, ...note.links].filter((target) => ids.has(target)))];
+    const targets = [...new Set(
+      [...note.refs, ...note.links]
+        .map((target) => findNote(notes, target)?.id)
+        .filter(Boolean)
+    )];
     edges[note.id] = targets;
     for (const target of targets) {
       if (!backlinks[target]) backlinks[target] = [];
@@ -365,60 +453,62 @@ function subsequenceScore(needle, haystack) {
   return j / q.length * 0.7;
 }
 
-export function scoreNote(note, query, notes, weights = {}) {
-  const raw = String(query ?? "").trim();
+export function scoreNote(note, query, notes, weights = {}, mapping = DEFAULT_MAPPING) {
+  const raw = searchableTitle(query);
   const lower = raw.toLowerCase();
   const tokens = tokenize(raw);
   const names = [note.id, ...note.aliases];
+  const searchNames = names.map(searchableTitle).filter(Boolean);
   const reasons = {};
   const channelScores = {};
 
-  const bestName = Math.max(0, ...names.map((name) => {
+  const bestName = lower ? Math.max(0, ...searchNames.map((name) => {
     const n = name.toLowerCase();
     if (n === lower) return 1;
     if (n.includes(lower)) return 0.78;
     return 0;
-  }));
+  })) : 0;
   channelScores.filename = bestName;
-  if (bestName) reasons.filename = { matched: names.find((name) => name.toLowerCase().includes(lower)) ?? note.id };
+  if (bestName) reasons.filename = { matched: names.find((name) => searchableKey(name).includes(lower)) ?? note.id };
 
-  const fuzzy = Math.max(0, ...names.map((name) => subsequenceScore(lower, name)));
+  const fuzzy = lower ? Math.max(0, ...searchNames.map((name) => subsequenceScore(lower, name))) : 0;
   channelScores.fuzzy = fuzzy;
   if (fuzzy) reasons.fuzzy = { score: fuzzy };
 
-  const bodyTokens = tokenize(`${note.id} ${note.aliases.join(" ")} ${note.body}`);
+  const bodyTokens = tokenize(`${searchNames.join(" ")} ${searchableTitle(note.body)}`);
   const coverage = tokens.length ? tokens.filter((token) => bodyTokens.includes(token)).length / tokens.length : 0;
-  channelScores.sequence_match = tokens.length && tokens.every((token) => names.some((name) => name.toLowerCase().includes(token))) ? 1 : 0;
+  channelScores.sequence_match = tokens.length && tokens.every((token) => searchNames.some((name) => name.toLowerCase().includes(token))) ? 1 : 0;
   if (channelScores.sequence_match) reasons.sequence_match = { coverage: 1 };
 
   const partialMatches = tokens.length
-    ? tokens.filter((token) => names.some((name) => name.toLowerCase().includes(token))).length / tokens.length
+    ? tokens.filter((token) => searchNames.some((name) => name.toLowerCase().includes(token))).length / tokens.length
     : 0;
   channelScores.filename_partial = partialMatches > 0 && partialMatches < 1 ? partialMatches : 0;
   if (channelScores.filename_partial) reasons.filename_partial = { coverage: channelScores.filename_partial };
 
-  const keywordText = `${note.refs.join(" ")} ${note.tags.join(" ")} ${note.aliases.join(" ")} ${note.body}`.toLowerCase();
+  const keywordText = searchableTitle(`${note.refs.join(" ")} ${note.tags.join(" ")} ${note.aliases.join(" ")} ${note.body}`).toLowerCase();
   const keyword = tokens.length ? tokens.filter((token) => keywordText.includes(token)).length / tokens.length : 0;
   channelScores.keyword = keyword;
   if (keyword) reasons.keyword = { coverage: keyword };
 
-  const bodyLower = note.body.toLowerCase();
+  const bodyLower = searchableTitle(note.body).toLowerCase();
   const body = tokens.length ? tokens.filter((token) => bodyLower.includes(token)).length / tokens.length : 0;
   channelScores.body_match = Math.max(body, coverage);
   if (channelScores.body_match) reasons.body_match = { coverage: channelScores.body_match };
 
-  const directHits = notes.filter((candidate) => candidate.id.toLowerCase().includes(lower));
+  const directHits = lower ? notes.filter((candidate) => searchableKey(candidate.id).includes(lower)) : [];
   const shared = directHits.some((candidate) =>
     candidate.id !== note.id &&
-    (candidate.refs.some((ref) => note.refs.includes(ref)) || candidate.tags.some((tag) => note.tags.includes(tag)))
+    (shareNoteNames(candidate.refs, note.refs) || candidate.tags.some((tag) => note.tags.includes(tag)))
   );
   channelScores.related = shared ? 0.5 : 0;
   if (shared) reasons.related = { shared: true };
 
-  channelScores.project = note.folder.includes(DEFAULT_MAPPING.project_dir) ? 0.35 : 0;
+  const projectDir = mapping.project_dir ?? DEFAULT_MAPPING.project_dir;
+  channelScores.project = note.folder === projectDir || note.folder.startsWith(`${projectDir}/`) ? 0.35 : 0;
   const childBody = note.type === "index" || note.type === "root"
-    ? Math.max(0, ...notes.filter((candidate) => candidate.refs.includes(note.id)).map((candidate) => {
-        const candidateBody = candidate.body.toLowerCase();
+    ? Math.max(0, ...notes.filter((candidate) => hasNoteName(candidate.refs, note.id)).map((candidate) => {
+        const candidateBody = searchableTitle(candidate.body).toLowerCase();
         return tokens.length ? tokens.filter((token) => candidateBody.includes(token)).length / tokens.length : 0;
       }))
     : 0;
@@ -464,7 +554,7 @@ export async function searchVault(vaultPath, query, options = {}) {
   const weights = options.weights ?? active.weights ?? {};
   const hitsByNote = new Map();
   for (const note of notes) {
-    const scored = scoreNote(note, query, notes, weights);
+    const scored = scoreNote(note, query, notes, weights, mapping);
     hitsByNote.set(note.id, {
         note: note.id,
         path: note.relPath,
@@ -727,11 +817,13 @@ function renderActionFooter(note, notes, isOverview = false) {
 }
 
 function countBacklinks(note, notes) {
-  return notes.filter((candidate) => candidate.id !== note.id && [...candidate.refs, ...candidate.links].includes(note.id)).length;
+  return notes.filter((candidate) =>
+    candidate.id !== note.id && hasNoteName([...candidate.refs, ...candidate.links], note.id)
+  ).length;
 }
 
 function countChildren(note, notes) {
-  return notes.filter((candidate) => candidate.refs.includes(note.id)).length;
+  return notes.filter((candidate) => hasNoteName(candidate.refs, note.id)).length;
 }
 
 function formatTagDistribution(note, notes) {
@@ -806,12 +898,33 @@ export function extractSection(body, title) {
   return lines.slice(start, end).join("\n");
 }
 
+function noteNameScore(note, noteName) {
+  const query = searchableKey(noteName);
+  if (!query) return 0;
+  const compactQuery = query.replace(/\s+/g, "");
+  const names = [note.id, ...note.aliases].map(searchableKey).filter(Boolean);
+  return Math.max(0, ...names.map((name) => {
+    const compactName = name.replace(/\s+/g, "");
+    if (name === query) return 1;
+    if (compactName === compactQuery) return 0.98;
+    if (query.length >= 2 && name.includes(query)) return 0.9;
+    if (query.length >= 2 && compactName.includes(compactQuery)) return 0.82;
+    return query.length >= 3 ? subsequenceScore(query, name) : 0;
+  }));
+}
+
 export function findNote(notes, noteName) {
-  const query = String(noteName).toLowerCase();
-  return notes.find((note) => note.id === noteName) ??
+  const normalized = normalizeTitle(noteName);
+  const query = normalized.toLowerCase();
+  const exact = notes.find((note) => note.id === normalized) ??
     notes.find((note) => note.id.toLowerCase() === query) ??
-    notes.find((note) => note.aliases.some((alias) => alias.toLowerCase() === query)) ??
-    null;
+    notes.find((note) => note.aliases.some((alias) => alias.toLowerCase() === query));
+  if (exact) return exact;
+  const scored = notes
+    .map((note) => ({ note, score: noteNameScore(note, normalized) }))
+    .filter((item) => item.score >= 0.65)
+    .sort((a, b) => b.score - a.score || a.note.id.localeCompare(b.note.id));
+  return scored[0]?.note ?? null;
 }
 
 export async function traversal(vaultPath, mode, noteName) {
@@ -841,27 +954,33 @@ function upwardPaths(note, notes, seen = new Set()) {
 
 function downwardTree(noteId, notes, seen = new Set()) {
   const note = findNote(notes, noteId);
-  if (seen.has(noteId)) return { note: noteId, type: note?.type ?? "", children: [] };
-  seen.add(noteId);
+  const id = note?.id ?? noteId;
+  if (seen.has(id)) return { note: id, type: note?.type ?? "", children: [] };
+  seen.add(id);
   const children = notes
-    .filter((candidate) => candidate.refs.includes(noteId))
+    .filter((candidate) => hasNoteName(candidate.refs, id))
     .map((candidate) => candidate.id)
     .sort()
     .map((child) => downwardTree(child, notes, new Set(seen)));
-  return { note: noteId, type: note?.type ?? "", children };
+  return { note: id, type: note?.type ?? "", children };
 }
 
 function siblings(note, notes) {
   if (!note.refs.length) return [];
-  return notes.filter((candidate) => candidate.id !== note.id && candidate.refs.some((ref) => note.refs.includes(ref)));
+  return notes.filter((candidate) => candidate.id !== note.id && shareNoteNames(candidate.refs, note.refs));
 }
 
 export async function validateVault(vaultPath) {
   const { mapping } = await readVaultConfig(vaultPath);
   const notes = await loadNotes(vaultPath, mapping);
-  const ids = new Set(notes.map((note) => note.id));
+  const excludedTitles = await loadExcludedMarkdownTitles(vaultPath, mapping);
+  const markdownTitles = await loadActiveMarkdownTitles(vaultPath, mapping);
   const issues = [];
   for (const note of notes) {
+    if (note.folder === mapping.inbox_dir && Object.keys(note.frontmatter).length === 0) {
+      issues.push(issue("ipa.inbox.raw_capture", "warn", note, "raw inbox capture without frontmatter"));
+      continue;
+    }
     for (const field of [mapping.created_at, mapping.updated_at, mapping.tags, mapping.note_type]) {
       if (note.frontmatter[field] === undefined) {
         issues.push(issue("ipa.frontmatter.required", "error", note, `missing frontmatter field: ${field}`));
@@ -879,10 +998,14 @@ export async function validateVault(vaultPath) {
       }
     }
     for (const ref of note.refs) {
-      if (!ids.has(ref)) issues.push(issue("K001", "warn", note, `ref target missing: ${ref}`));
+      if (!findNote(notes, ref) && !markdownTitleExists(excludedTitles, ref)) {
+        issues.push(issue("K001", "warn", note, `ref target missing: ${ref}`));
+      }
     }
     for (const link of note.links) {
-      if (!ids.has(link)) issues.push(issue("K002", "warn", note, `wikilink target missing: ${link}`));
+      if (!markdownTitleExists(markdownTitles, link) && !markdownTitleExists(excludedTitles, link)) {
+        issues.push(issue("K002", "warn", note, `wikilink target missing: ${link}`));
+      }
     }
   }
   for (const plugin of await loadPluginModules(vaultPath, "lint")) {
@@ -892,6 +1015,39 @@ export async function validateVault(vaultPath) {
     }
   }
   return { notes: notes.length, issues, status: issues.some((item) => item.severity === "error") ? "error" : "ok" };
+}
+
+async function loadActiveMarkdownTitles(vaultPath, mapping) {
+  const excludes = asList(mapping.exclude);
+  const files = await walkFiles(vaultPath, (path, relPath) =>
+    extname(path).toLowerCase() === ".md" && !isExcludedPath(relPath, excludes)
+  );
+  return markdownTitleSet(files);
+}
+
+async function loadExcludedMarkdownTitles(vaultPath, mapping) {
+  const excludes = asList(mapping.exclude);
+  const files = await walkFiles(vaultPath, (path, relPath) =>
+    extname(path).toLowerCase() === ".md" && isExcludedPath(relPath, excludes)
+  );
+  return markdownTitleSet(files);
+}
+
+function markdownTitleSet(files) {
+  const titles = new Set();
+  for (const path of files) {
+    const title = normalizeTitle(basename(path, ".md"));
+    titles.add(title);
+    titles.add(title.toLowerCase());
+    const key = searchableKey(title);
+    if (key) titles.add(key);
+  }
+  return titles;
+}
+
+function markdownTitleExists(titles, title) {
+  const normalized = normalizeTitle(title);
+  return titles.has(normalized) || titles.has(normalized.toLowerCase()) || titles.has(searchableKey(normalized));
 }
 
 function issue(code, severity, note, message) {
@@ -921,12 +1077,45 @@ export async function formatVault(vaultPath, apply = false) {
       patches.push(...normalizeFormatterPatches(output, plugin.path, note));
     }
   }
+  const applied = apply ? await applyFormatterPatches(notes, patches) : undefined;
   return {
     summary: { issues: validation.issues.length, patches: patches.length },
     patches,
-    applied: apply ? [] : undefined,
+    applied,
     issues: validation.issues
   };
+}
+
+async function applyFormatterPatches(notes, patches) {
+  const byNote = new Map(notes.map((note) => [note.id, { note, patches: [] }]));
+  for (const patch of patches) {
+    const entry = byNote.get(patch.note);
+    if (entry) entry.patches.push(patch);
+  }
+  const applied = [];
+  for (const { note, patches: notePatches } of byNote.values()) {
+    if (!notePatches.length) continue;
+    let text = note.raw;
+    for (const patch of notePatches) {
+      text = applyFormatterPatch(text, patch);
+    }
+    if (text !== note.raw) {
+      await writeFile(note.path, text, "utf8");
+      applied.push({ note: note.id, path: note.relPath, patches: notePatches.length });
+    }
+  }
+  return applied;
+}
+
+function applyFormatterPatch(text, patch) {
+  if (typeof patch.content === "string") return patch.content;
+  if (Number.isInteger(patch.line) && typeof patch.replacement === "string") {
+    const lines = String(text ?? "").split("\n");
+    const index = Math.max(0, patch.line - 1);
+    lines.splice(index, 1, patch.replacement);
+    return lines.join("\n");
+  }
+  return text;
 }
 
 function normalizeFormatterPatches(output, pluginPath, note) {
@@ -1091,9 +1280,11 @@ export async function suggestLinks(vaultPath, noteName = null) {
   const selected = noteName ? [findNote(notes, noteName)].filter(Boolean) : notes;
   const suggestions = [];
   for (const note of selected) {
+    const bodyKey = searchableTitle(note.body).toLowerCase();
     for (const other of notes) {
-      if (other.id === note.id || note.links.includes(other.id)) continue;
-      if (note.body.includes(other.id)) {
+      if (other.id === note.id || hasNoteName(note.links, other.id)) continue;
+      const otherKey = searchableKey(other.id);
+      if (note.body.includes(other.id) || (otherKey && bodyKey.includes(otherKey))) {
         suggestions.push({ note: note.id, target: other.id, reason: "plain_text_title_match" });
       }
     }
@@ -1136,7 +1327,7 @@ export async function linkApply(vaultPath, planPath) {
   const changed = [];
   for (const change of plan.changes ?? []) {
     const note = findNote(notes, change.note);
-    if (!note || note.links.includes(change.target)) continue;
+    if (!note || hasNoteName(note.links, change.target)) continue;
     if (change.sha256 && sha256(note.raw) !== change.sha256) {
       throw new Error(`hash guard failed for ${note.id}`);
     }
@@ -1192,12 +1383,12 @@ export async function refactorVault(vaultPath, command, args, options = {}) {
   const changed = [];
   for (const note of notes) {
     let next = note.raw;
-    if (command === "tag-rename") next = rewriteListValue(next, mapping.tags, (items) => items.map((tag) => tag === args[0] ? args[1] : tag));
-    if (command === "tag-remove") next = rewriteListValue(next, mapping.tags, (items) => items.filter((tag) => tag !== args[0]));
-    if (command === "tag-add") next = rewriteListValue(next, mapping.tags, (items) => [...new Set([...items, args[0]])]);
-    if (command === "ref-replace") next = rewriteListValue(next, mapping.refs, (items) => items.map((ref) => stripWiki(ref) === args[0] ? `[[${args[1]}]]` : ref));
-    if (command === "ref-add") next = rewriteListValue(next, mapping.refs, (items) => [...new Set([...items, `[[${args[0]}]]`])]);
-    if (command === "ref-remove") next = rewriteListValue(next, mapping.refs, (items) => items.filter((ref) => stripWiki(ref) !== args[0]));
+    if (command === "tag-rename") next = rewriteListValue(next, mapping.tags, (items) => items.map((tag) => tag === args[0] ? args[1] : tag), mapping.updated_at);
+    if (command === "tag-remove") next = rewriteListValue(next, mapping.tags, (items) => items.filter((tag) => tag !== args[0]), mapping.updated_at);
+    if (command === "tag-add") next = rewriteListValue(next, mapping.tags, (items) => [...new Set([...items, args[0]])], mapping.updated_at);
+    if (command === "ref-replace") next = rewriteListValue(next, mapping.refs, (items) => items.map((ref) => stripWiki(ref) === args[0] ? `[[${args[1]}]]` : ref), mapping.updated_at);
+    if (command === "ref-add") next = rewriteListValue(next, mapping.refs, (items) => [...new Set([...items, `[[${args[0]}]]`])], mapping.updated_at);
+    if (command === "ref-remove") next = rewriteListValue(next, mapping.refs, (items) => items.filter((ref) => stripWiki(ref) !== args[0]), mapping.updated_at);
     if (command === "wikilink-replace") next = next.replaceAll(`[[${args[0]}]]`, `[[${args[1]}]]`);
     if (next !== note.raw) {
       changed.push(note.relPath);
@@ -1207,7 +1398,7 @@ export async function refactorVault(vaultPath, command, args, options = {}) {
   return { command, apply: Boolean(options.apply), changed };
 }
 
-function rewriteListValue(text, key, rewrite) {
+function rewriteListValue(text, key, rewrite, updatedKey = DEFAULT_MAPPING.updated_at) {
   const parsed = readFrontmatter(text);
   const current = asList(parsed.frontmatter[key]);
   const next = rewrite(current).map(String);
@@ -1215,7 +1406,7 @@ function rewriteListValue(text, key, rewrite) {
     return text;
   }
   parsed.frontmatter[key] = next;
-  parsed.frontmatter.date_modified = nowIso();
+  if (updatedKey) parsed.frontmatter[updatedKey] = nowIso();
   return writeFrontmatter(parsed.frontmatter, parsed.body);
 }
 
@@ -1227,10 +1418,10 @@ export async function inboxAdd(vaultPath, sourcePath, options = {}) {
   if (existsSync(target) && !options.force) throw new Error(`target exists: ${title}`);
   const parsed = readFrontmatter(source);
   const frontmatter = {
+    ...parsed.frontmatter,
     [mapping.created_at]: parsed.frontmatter[mapping.created_at] ?? nowIso(),
     [mapping.updated_at]: parsed.frontmatter[mapping.updated_at] ?? nowIso(),
     [mapping.refs]: options.refs?.map((ref) => `[[${stripWiki(ref)}]]`) ?? asList(parsed.frontmatter[mapping.refs]),
-    obsidianUIMode: parsed.frontmatter.obsidianUIMode ?? "preview",
     [mapping.tags]: options.tags ?? asList(parsed.frontmatter[mapping.tags]),
     [mapping.note_type]: parsed.frontmatter[mapping.note_type] ?? "note"
   };
@@ -1448,14 +1639,36 @@ export function builtinQueryPack(name) {
     queries: [
       { query: "Alpha", target: "Alpha" },
       { query: "Beta", target: "Beta" },
-      { query: "Topic", target: "🔖 Topic Index" }
+      { query: "Topic", target: "Topic Index" }
     ]
   };
 }
 
-export async function tuneEval(vaultPath, packName = "ipa-cli-core", params = {}) {
-  const pack = builtinQueryPack(packName);
-  if (!pack) throw new Error(`query pack not found: ${packName}`);
+async function configuredQueryPack(vaultPath) {
+  const { config } = await readVaultConfig(vaultPath);
+  const file = config.test?.file;
+  if (!file) return null;
+  const path = resolve(vaultPath, file);
+  if (!existsSync(path)) return null;
+  const payload = JSON.parse(await readFile(path, "utf8"));
+  const queries = [];
+  for (const item of payload.cases ?? payload.queries ?? []) {
+    const target = normalizeTitle(item.target_filename ?? item.target ?? item.note ?? item.expected);
+    const itemQueries = Array.isArray(item.queries) ? item.queries : [item.query];
+    for (const query of itemQueries.filter(Boolean)) {
+      if (target) queries.push({ query, target });
+    }
+  }
+  return { name: file, queries };
+}
+
+export async function tuneEval(vaultPath, packName = null, params = {}) {
+  let pack = packName ? builtinQueryPack(packName) : await configuredQueryPack(vaultPath);
+  if (!pack) {
+    throw new Error(packName
+      ? `query pack not found: ${packName}`
+      : "tune testset not configured: set test.file in .ipa/config.yaml");
+  }
   const rows = [];
   for (const item of pack.queries) {
     const searchOptions = {
@@ -1464,12 +1677,12 @@ export async function tuneEval(vaultPath, packName = "ipa-cli-core", params = {}
     };
     if (Object.hasOwn(params, "weights")) searchOptions.weights = params.weights;
     const result = await searchVault(vaultPath, item.query, searchOptions);
-    const rank = result.results.findIndex((hit) => hit.note === item.target) + 1;
+    const rank = result.results.findIndex((hit) => sameNoteName(hit.note, item.target)) + 1;
     rows.push({ query: item.query, target: item.target, rank: rank || null, hit: rank > 0 });
   }
   const hits = rows.filter((row) => row.hit).length;
   const avgRank = hits ? rows.filter((row) => row.rank).reduce((sum, row) => sum + row.rank, 0) / hits : null;
-  return { pack: packName, total: rows.length, hits, misses: rows.length - hits, avg_rank: avgRank, rows };
+  return { pack: pack.name, total: rows.length, hits, misses: rows.length - hits, avg_rank: avgRank, rows };
 }
 
 function seeded(seed) {
@@ -1488,7 +1701,7 @@ export async function tuneRun(vaultPath, options = {}) {
   const startupTrials = Math.max(1, Math.min(30, Math.floor(trials / 4) || 1));
   for (let i = 0; i < trials; i += 1) {
     const params = i < startupTrials ? randomTuneParams(rng) : sampleTpeLite(history, rng);
-    const evaluation = await tuneEval(vaultPath, "ipa-cli-core", params);
+    const evaluation = await tuneEval(vaultPath, options.packName ?? null, params);
     const loss = evaluation.misses * 100 + (evaluation.avg_rank ?? 99);
     const trial = { trial: i, optimizer: "tpe-lite", params, loss, metrics: evaluation };
     history.push(trial);

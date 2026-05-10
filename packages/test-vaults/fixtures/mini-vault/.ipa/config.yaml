@@ -21,3 +21,5 @@ formatter:
   builtin: true
   plugins:
     formatter: true
+test:
+  file: .ipa/tune/testsets/ipa-cli-core.json

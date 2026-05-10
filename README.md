@@ -136,6 +136,11 @@ formatter:
     formatter: true
   only:
     - vault.formatter.frontmatter_order
+files:
+  exclude:
+    - AGENTS.md
+    - 90 Settings/Profile Fixtures/**
+    - 99 Fixtures/**
 ```
 
 `mapping` is the vault-local declarative mapping for IPA's semantic
@@ -147,6 +152,14 @@ fields/folders. In the JS/TS runtime, custom mapping must live in
 that surface. `plugins` can be `true`/`false`, a list like
 `["lint"]`, or a mapping of plugin directories. `only` and `ignore`
 filter by rule code after loading.
+
+`files.exclude` removes Markdown files from the active note set for
+search, traversal, validation, review, cache, and refactor operations.
+Exclude patterns are vault-relative paths or globs, and emoji characters
+can be used directly in those patterns, for example `**/🏠 *` for
+emoji-prefixed utility notes.
+Validation ignores refs and wikilinks that point at excluded files, so
+utility notes can stay outside the IPA graph without creating link noise.
 
 Portable runtime state stays in the vault:
 
@@ -170,16 +183,19 @@ copy the directory and read [`examples/sample_profile/README.md`](examples/sampl
 
 ### Convention rule
 
+Builtin validation is limited to IPA concepts and configured field/folder
+mapping. Vault-specific title styles, prefix markers, and app metadata belong
+in vault-local lint/formatter plugins.
+
 ```js
-// {vault}/.ipa/plugins/lint/no-emoji-in-filename.js
+// {vault}/.ipa/plugins/lint/short-note-title.js
 export async function lint(note) {
-  if (note.type === "index" || note.type === "root") return [];
-  if (!/^[🔖🏷]/u.test(note.id)) return [];
+  if ((note.id ?? "").trim().length >= 6) return [];
   return [{
-    code: "sample.no_emoji_in_filename",
+    code: "sample.short_note_title",
     severity: "info",
     note: note.id,
-    message: "filename starts with an emoji; reserve emoji prefixes for index/root notes"
+    message: "note title is very short for this vault convention"
   }];
 }
 ```
@@ -234,7 +250,10 @@ Useful subcommands:
 
 Tune evaluates the active query pack and stores immutable result artifacts
 under `.ipa/tune/results`. The optimizer is fixed to `tpe-lite`; users keep
-the existing `ipa tune --trials N` command shape.
+the existing `ipa tune --trials N` command shape. By default, tune reads the
+vault-local testset declared at `.ipa/config.yaml` `test.file`; the bundled
+`ipa-cli-core` pack is a sample fixture pack and is only used when explicitly
+requested.
 
 ## Vault skill compatibility
 
@@ -249,7 +268,7 @@ old in-package parity oracle has been removed.
 | Command            | Routing                              | Internal logic                                                         |
 |--------------------|--------------------------------------|------------------------------------------------------------------------|
 | `list-channels`    | `packages/cli` → `@ipa/core.CHANNELS` | Registry inspection for the 9 builtin search channels.                 |
-| `list-rules`       | `packages/cli` → `@ipa/core.RULES`    | Registry inspection for the 13 builtin validator rules.                |
+| `list-rules`       | `packages/cli` → `@ipa/core.RULES`    | Registry inspection for the 11 builtin validator rules.                |
 | `list-refactors`   | `packages/cli` → `@ipa/core.REFACTORS`| Registry inspection for the 7 refactor recipes.                        |
 | `view`             | `@ipa/core.viewNote`                 | Note rendering with context header, frontmatter, body/structure, footer. |
 | `traversal`        | `@ipa/core.traversal`                | Ref-based up/down/siblings/root traversal.                             |

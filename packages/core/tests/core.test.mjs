@@ -8,6 +8,7 @@ import {
   buildContext,
   cacheStatus,
   formatVault,
+  inboxAdd,
   loadNotes,
   linkApply,
   linkPlan,
@@ -19,6 +20,7 @@ import {
   rebuildCache,
   reviewVault,
   searchVault,
+  scoreNote,
   traversal,
   tuneEval,
   tuneRun,
@@ -43,6 +45,28 @@ test("loads declarative config mapping and parses notes", async () => {
   assert.equal(mapping.refs, "ref");
   assert.equal(notes.length, 4);
   assert.deepEqual(notes.find((note) => note.id === "Alpha").refs, ["🔖 Topic Index"]);
+});
+
+test("project search channel follows configured folder mapping", async () => {
+  const vault = await fixtureVault();
+  await mkdir(join(vault, "20 Active"), { recursive: true });
+  await writeFile(
+    join(vault, ".ipa", "config.yaml"),
+    `mapping:\n  fields:\n    note_type: type\n    refs: ref\n    tags: tags\n    created_at: date_created\n    updated_at: date_modified\n    aliases: aliases\n  folders:\n    inbox: 00 Inbox\n    project: 20 Active\n    archive: 02 Archive\n`,
+    "utf8"
+  );
+  await writeFile(
+    join(vault, "20 Active", "Custom Project Index.md"),
+    `---\ndate_created: 2026-05-10T00:00:00.000Z\ndate_modified: 2026-05-10T00:00:00.000Z\ntype: index\nref: ["[[🏷️ Topic Root]]"]\ntags: [custom]\n---\n# Custom Project Index\n`,
+    "utf8"
+  );
+
+  const { mapping } = await readVaultConfig(vault);
+  const notes = await loadNotes(vault, mapping);
+  const note = notes.find((item) => item.id === "Custom Project Index");
+  assert.ok(note);
+  assert.equal(scoreNote(note, "zzzz", notes, {}, mapping).channelScores.project, 0.35);
+  assert.equal(scoreNote(note, "zzzz", notes, {}, { ...mapping, project_dir: "01 Project" }).channelScores.project, 0);
 });
 
 test("profile and vault overrides resolve in the documented priority order", async () => {
@@ -116,6 +140,112 @@ test("search, view, traversal and context work in the JS runtime", async () => {
   assert.equal(context.notes[0].id, "Alpha");
 });
 
+test("note-name search and lookup ignore emoji markers but preserve display names", async () => {
+  const vault = await fixtureVault();
+  const search = await searchVault(vault, "Topic Index", { threshold: 0, maxResults: 5 });
+  assert.ok(search.results.some((hit) => hit.note === "🔖 Topic Index"));
+  assert.match(await viewNote(vault, "Topic Index", { full: true }), /^=== 🔖 Topic Index \[index\]/);
+  assert.equal((await traversal(vault, "down", "Topic Index")).note, "🔖 Topic Index");
+
+  await writeFile(
+    join(vault, "00 Inbox", "No Emoji Ref.md"),
+    `---\ndate_created: 2026-05-10T00:00:00.000Z\ndate_modified: 2026-05-10T00:00:00.000Z\ntype: note\nref: ["[[Topic Index]]"]\ntags: [lookup]\n---\n# No Emoji Ref\n`,
+    "utf8"
+  );
+  assert.equal((await validateVault(vault)).status, "ok");
+  const down = await traversal(vault, "down", "🔖 Topic Index");
+  assert.ok(down.tree.children.some((child) => child.note === "No Emoji Ref"));
+});
+
+test("note lookup and graph matching normalize macOS decomposed filenames", async () => {
+  const vault = await fixtureVault();
+  const indexName = "🔖 한글 인덱스";
+  const noteName = "한글 노트";
+  await writeFile(
+    join(vault, "01 Project", `${indexName.normalize("NFD")}.md`),
+    `---\ndate_created: 2026-05-10T00:00:00.000Z\ndate_modified: 2026-05-10T00:00:00.000Z\ntype: index\nref: ["[[🏷️ Topic Root]]"]\ntags: [unicode_test]\n---\n# ${indexName}\n`,
+    "utf8"
+  );
+  await writeFile(
+    join(vault, "00 Inbox", `${noteName.normalize("NFD")}.md`),
+    `---\ndate_created: 2026-05-10T00:00:00.000Z\ndate_modified: 2026-05-10T00:00:00.000Z\ntype: note\nref: ["[[${indexName}]]"]\ntags: [unicode_test]\n---\n# ${noteName}\n\n[[${indexName}]]\n`,
+    "utf8"
+  );
+
+  const notes = await loadNotes(vault, (await readVaultConfig(vault)).mapping);
+  assert.ok(notes.some((note) => note.id === noteName));
+  assert.match(await viewNote(vault, noteName, { full: true }), new RegExp(`# ${noteName}`));
+  assert.deepEqual((await traversal(vault, "down", indexName)).tree.children.map((child) => child.note), [noteName]);
+  assert.equal((await validateVault(vault)).status, "ok");
+});
+
+test("configured file excludes and code fences keep validator focused on notes", async () => {
+  const vault = await fixtureVault();
+  const configPath = join(vault, ".ipa", "config.yaml");
+  await mkdir(join(vault, "99 Fixtures"), { recursive: true });
+  await mkdir(join(vault, "00 Inbox", "Utility"), { recursive: true });
+  await writeFile(join(vault, "AGENTS.md"), "# Agent instructions without IPA frontmatter\n", "utf8");
+  await writeFile(join(vault, "99 Fixtures", "Excluded Target.md"), "# Excluded target\n", "utf8");
+  await writeFile(join(vault, "00 Inbox", "Utility", "🏠 Home.md"), "# Home dashboard\n", "utf8");
+  await writeFile(
+    join(vault, "00 Inbox", "Utility", "Home.md"),
+    `---\ndate_created: 2026-05-10T00:00:00.000Z\ndate_modified: 2026-05-10T00:00:00.000Z\ntype: note\nref: ["[[🔖 Topic Index]]"]\ntags: [utility]\n---\n# Home\n`,
+    "utf8"
+  );
+  await writeFile(
+    join(vault, "00 Inbox", "Code Fence Example.md"),
+    `---\ndate_created: 2026-05-10T00:00:00.000Z\ndate_modified: 2026-05-10T00:00:00.000Z\ntype: note\nref: ["[[🔖 Topic Index]]", "[[Excluded Target]]", "[[Home]]"]\ntags: [parser]\n---\n# Code Fence Example\n\n[[Excluded Target]]\n[[Home]]\n\n\`\`\`md\n[[Missing Target In Code]]\n\`\`\`\n`,
+    "utf8"
+  );
+  await writeFile(
+    configPath,
+    `${await readFile(configPath, "utf8")}\nfiles:\n  exclude:\n    - AGENTS.md\n    - 99 Fixtures/**\n    - "**/🏠 *"\n`,
+    "utf8"
+  );
+
+  const notes = await loadNotes(vault, (await readVaultConfig(vault)).mapping);
+  assert.equal(notes.some((note) => note.id === "AGENTS"), false);
+  assert.equal(notes.some((note) => note.id === "Excluded Target"), false);
+  assert.equal(notes.some((note) => note.id === "🏠 Home"), false);
+  assert.equal(notes.some((note) => note.id === "Home"), true);
+  assert.equal((await searchVault(vault, "Home", { threshold: 0.2, maxResults: 5 })).results.some((hit) => hit.note === "🏠 Home"), false);
+  const validation = await validateVault(vault);
+  assert.equal(validation.status, "ok");
+  assert.equal(validation.issues.some((item) => item.message.includes("Excluded Target") || item.message.includes("Home")), false);
+});
+
+test("empty-frontmatter inbox markdown is reported as raw capture without failing validation", async () => {
+  const vault = await fixtureVault();
+  await writeFile(join(vault, "00 Inbox", "Raw Capture.md"), "quick capture\n\n[[Alpha]]\n", "utf8");
+  const validation = await validateVault(vault);
+  assert.equal(validation.status, "ok");
+  assert.ok(validation.issues.some((item) => item.code === "ipa.inbox.raw_capture" && item.note === "Raw Capture"));
+});
+
+test("mapped vault writes use mapped updated field without core-specific metadata", async () => {
+  const vault = await fixtureVault();
+  await writeFile(
+    join(vault, ".ipa", "config.yaml"),
+    `mapping:\n  fields:\n    note_type: kind\n    refs: parents\n    tags: tags\n    created_at: created\n    updated_at: updated\n    aliases: aliases\n  folders:\n    inbox: 00 Inbox\n    project: 01 Project\n    archive: 02 Archive\n`,
+    "utf8"
+  );
+  const source = join(vault, "source.md");
+  await writeFile(source, "---\naliases: [Mapped Source]\nstage: inbox\n---\n# Mapped Add\n", "utf8");
+  await inboxAdd(vault, source, { title: "Mapped Add", refs: ["🔖 Topic Index"], tags: ["mapped"] });
+  const addedPath = join(vault, "00 Inbox", "Mapped Add.md");
+  const added = await readFile(addedPath, "utf8");
+  assert.match(added, /kind: note/);
+  assert.match(added, /parents: \["\[\[🔖 Topic Index\]\]"\]/);
+  assert.match(added, /aliases: \[Mapped Source\]/);
+  assert.match(added, /stage: inbox/);
+  assert.doesNotMatch(added, /obsidianUIMode/);
+
+  await refactorVault(vault, "tag-add", ["extra"], { apply: true });
+  const refactored = await readFile(addedPath, "utf8");
+  assert.match(refactored, /updated:/);
+  assert.doesNotMatch(refactored, /date_modified:/);
+});
+
 test("validator, cache, review and tune contracts are available", async () => {
   const vault = await fixtureVault();
   const validation = await validateVault(vault);
@@ -132,6 +262,42 @@ test("validator, cache, review and tune contracts are available", async () => {
   assert.equal(runResult.optimizer, "tpe-lite");
   const history = await readFile(join(vault, ".ipa", "tune", "history.jsonl"), "utf8");
   assert.equal(history.trim().split("\n").length, 3);
+});
+
+test("tune eval uses the vault-local configured testset by default", async () => {
+  const vault = await fixtureVault();
+  await mkdir(join(vault, ".ipa", "tune", "testsets"), { recursive: true });
+  await writeFile(
+    join(vault, ".ipa", "tune", "testsets", "testset.json"),
+    JSON.stringify({
+      cases: [
+        { queries: ["Alpha"], target_filename: "Alpha" },
+        { queries: ["Topic"], target_filename: "Topic Index" }
+      ]
+    }),
+    "utf8"
+  );
+  await writeFile(
+    join(vault, ".ipa", "config.yaml"),
+    `${await readFile(join(vault, ".ipa", "config.yaml"), "utf8")}\ntest:\n  file: .ipa/tune/testsets/testset.json\n`,
+    "utf8"
+  );
+  const result = await tuneEval(vault);
+  assert.equal(result.pack, ".ipa/tune/testsets/testset.json");
+  assert.equal(result.total, 2);
+  assert.equal(result.misses, 0);
+});
+
+test("tune defaults require a vault-local testset instead of a sample convention pack", async () => {
+  const vault = await fixtureVault();
+  await writeFile(
+    join(vault, ".ipa", "config.yaml"),
+    `mapping:\n  fields:\n    note_type: type\n    refs: ref\n    tags: tags\n    created_at: date_created\n    updated_at: date_modified\n    aliases: aliases\n  folders:\n    inbox: 00 Inbox\n    project: 01 Project\n    archive: 02 Archive\n`,
+    "utf8"
+  );
+
+  await assert.rejects(() => tuneEval(vault), /tune testset not configured/);
+  await assert.rejects(() => tuneRun(vault, { trials: 1 }), /tune testset not configured/);
 });
 
 test("activated tune results are applied to search defaults", async () => {
@@ -180,7 +346,7 @@ test("vault-local JS plugins run in search, validation and formatter paths", asy
   await writeFile(
     join(vault, ".ipa", "plugins", "formatter", "sample.js"),
     `export async function format(note) {
-      return note.id === "Alpha" ? [{ line: 1, replacement: "formatted" }] : [];
+      return note.id === "Alpha" ? [{ content: note.raw.replace("Alpha mentions Beta", "Alpha formatted Beta") }] : [];
     }\n`,
     "utf8"
   );
@@ -194,6 +360,9 @@ test("vault-local JS plugins run in search, validation and formatter paths", asy
   assert.ok(validation.issues.some((item) => item.code === "sample.alpha" && item.plugin === ".ipa/plugins/lint/sample.js"));
   const format = await formatVault(vault);
   assert.ok(format.patches.some((item) => item.note === "Alpha" && item.plugin === ".ipa/plugins/formatter/sample.js"));
+  const applied = await formatVault(vault, true);
+  assert.deepEqual(applied.applied, [{ note: "Alpha", path: "00 Inbox/Alpha.md", patches: 1 }]);
+  assert.match(await readFile(join(vault, "00 Inbox", "Alpha.md"), "utf8"), /Alpha formatted Beta/);
   await writeFile(
     join(vault, ".ipa", "config.yaml"),
     `mapping:\n  fields:\n    note_type: type\n    refs: ref\n    tags: tags\n    created_at: date_created\n    updated_at: date_modified\n    aliases: aliases\n  folders:\n    inbox: 00 Inbox\n    project: 01 Project\n    archive: 02 Archive\nplugins:\n  search: false\n`,

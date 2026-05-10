@@ -1,0 +1,16 @@
+{
+  "cases": [
+    {
+      "queries": ["Alpha"],
+      "target_filename": "Alpha"
+    },
+    {
+      "queries": ["Beta"],
+      "target_filename": "Beta"
+    },
+    {
+      "queries": ["Topic"],
+      "target_filename": "Topic Index"
+    }
+  ]
+}
