@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import json
 import shutil
+from datetime import datetime, timezone
 from pathlib import Path
+
+import yaml
 
 from ipa_cli.api.mappings import Mapping
 from ipa_cli.parse.links import extract_ref_targets
@@ -69,6 +72,7 @@ def apply_triage(vault_path: Path, mapping: Mapping, recommendations: list[dict]
         if dest.exists():
             errors.append({"note": item["note"], "error": "destination_exists"})
             continue
+        src.write_text(_mark_modified(src.read_text(encoding="utf-8"), mapping), encoding="utf-8")
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(src), str(dest))
         moved.append(dest.relative_to(vault).as_posix())
@@ -93,3 +97,29 @@ def render_triage(payload, *, json_output: bool = False) -> str:
             f"refs={item['ref_candidates']} issues={item['validator_issues']}"
         )
     return "\n".join(lines)
+
+
+def _mark_modified(text: str, mapping: Mapping) -> str:
+    if not text.startswith("---"):
+        return text
+    lines = text.splitlines(keepends=True)
+    for idx in range(1, len(lines)):
+        if lines[idx].strip() != "---":
+            continue
+        fm_text = "".join(lines[1:idx])
+        body = "".join(lines[idx + 1 :])
+        try:
+            frontmatter = yaml.safe_load(fm_text) or {}
+        except yaml.YAMLError:
+            return text
+        if not isinstance(frontmatter, dict):
+            return text
+        frontmatter[mapping.updated_at] = datetime.now(timezone.utc).isoformat()
+        serialized = yaml.safe_dump(
+            frontmatter,
+            allow_unicode=True,
+            sort_keys=False,
+            default_flow_style=False,
+        )
+        return f"---\n{serialized}---\n{body}"
+    return text

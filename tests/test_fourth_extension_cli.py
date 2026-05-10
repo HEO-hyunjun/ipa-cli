@@ -310,6 +310,9 @@ def test_link_rename_move_and_inbox_triage(vault: Path) -> None:
     triage_apply = _run(vault, "inbox", "triage", "--apply", "--json")
     assert triage_apply.exit_code == 0, triage_apply.stdout
     assert json.loads(triage_apply.stdout)["moved"] == ["02 Archive/Alpha.md"]
+    moved_text = (vault / "02 Archive" / "Alpha.md").read_text(encoding="utf-8")
+    modified_line = next(line for line in moved_text.splitlines() if line.startswith("date_modified:"))
+    assert "T" in modified_line
 
 
 def test_plugin_dry_run_surfaces_search_lint_and_formatter(vault: Path) -> None:
