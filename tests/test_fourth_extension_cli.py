@@ -282,6 +282,14 @@ def test_link_rename_move_and_inbox_triage(vault: Path) -> None:
     assert move.exit_code == 0, move.stdout
     assert (vault / "02 Archive" / "Gamma.md").is_file()
 
+    search = _run(vault, "search", "Gamma", "--all")
+    assert search.exit_code == 0, search.stdout
+    assert "Gamma" in search.stdout
+
+    traversal = _run(vault, "traversal", "--up", "Gamma")
+    assert traversal.exit_code == 0, traversal.stdout
+    assert "🔖 Topic Index" in traversal.stdout
+
     triage = _run(vault, "inbox", "triage", "--json")
     assert triage.exit_code == 0, triage.stdout
     assert json.loads(triage.stdout)[0]["target_folder"] == "02 Archive"
