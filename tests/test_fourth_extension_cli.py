@@ -129,6 +129,20 @@ def test_doctor_context_cache_contract_and_review(vault: Path) -> None:
     cache_doctor = _run(vault, "cache", "doctor", "--json")
     assert cache_doctor.exit_code == 0, cache_doctor.stdout
 
+    inspected = _run(vault, "cache", "inspect", "--note", "Alpha", "--json")
+    assert inspected.exit_code == 0, inspected.stdout
+    assert json.loads(inspected.stdout)["sha256"]
+
+    beta_path = vault / "00 Inbox" / "Beta.md"
+    beta_path.write_text(beta_path.read_text(encoding="utf-8") + "\nChanged.\n", encoding="utf-8")
+    cache_status = _run(vault, "cache", "status", "--json")
+    assert cache_status.exit_code == 0, cache_status.stdout
+    assert json.loads(cache_status.stdout)["stale"][0]["reason"] == "hash_changed"
+
+    cache_clean = _run(vault, "cache", "clean", "--stale", "--json")
+    assert cache_clean.exit_code == 0, cache_clean.stdout
+    assert json.loads(cache_clean.stdout)["removed"] == 1
+
     contract = _run(vault, "contract", "validate", ".ipa/cache/manifest.json", "--json")
     assert contract.exit_code == 0, contract.stdout
 
