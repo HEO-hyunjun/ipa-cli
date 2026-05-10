@@ -16,6 +16,12 @@ import {
   contractValidateOutput,
   doctor,
   formatVault,
+  harnessDoctor,
+  harnessGuardCheck,
+  harnessGuardStatus,
+  harnessInstall,
+  harnessStatus,
+  harnessUninstall,
   inboxAdd,
   inboxTriage,
   linkApply,
@@ -33,10 +39,18 @@ import {
   searchVault,
   setDefaultProfile,
   traversal,
+  tuneAnalyze,
   tuneEval,
+  tuneLabel,
   tuneList,
   tuneLog,
+  tuneReplay,
   tuneRun,
+  tuneTestsetAdd,
+  tuneTestsetDraft,
+  tuneTestsetList,
+  tuneTestsetShow,
+  tuneTestsetValidate,
   tuneUse,
   validatePlugin,
   validateVault,
@@ -128,6 +142,7 @@ function takesValue(flag) {
     "--summary",
     "--explain",
     "--force",
+    "--miss",
     "--help",
     "-h"
   ].includes(flag);
@@ -176,6 +191,12 @@ function render(payload) {
   if (payload.results && Object.hasOwn(payload, "query")) return renderSearchResults(payload);
   if (payload.pack && Object.hasOwn(payload, "misses")) return renderTuneEval(payload);
   if (payload.optimizer && payload.best) return renderTuneRun(payload);
+  if (payload.thresholds && payload.target_scores) return renderTuneAnalyze(payload);
+  if (Object.hasOwn(payload, "replayed")) return renderTuneReplay(payload);
+  if (payload.testsets) return renderTableReport("Tune testsets", ["Active", "File"], payload.testsets.map((item) => [payload.active === item ? "yes" : "", item]));
+  if (Object.hasOwn(payload, "allowed")) return renderKeyValues("Harness guard", payload);
+  if (payload.installed && payload.guard) return renderHarnessStatus(payload);
+  if (payload.target && Object.hasOwn(payload, "installed") && (payload.files || payload.removed)) return renderHarnessChange(payload);
   if (payload.issues) return renderIssues(payload);
   if (payload.plugins) return renderPlugins(payload);
   if (payload.paths || payload.tree || payload.roots || payload.siblings) return renderTraversal(payload);
@@ -230,6 +251,48 @@ function renderTuneRun(payload) {
     `Best trial: ${best.trial ?? "-"}   Loss: ${best.loss ?? "-"}`,
     `Result file: ${payload.result_file ?? "-"}`
   ].join("\n");
+}
+
+function renderTuneAnalyze(payload) {
+  const lines = [
+    "Tune analysis",
+    `Pack: ${payload.pack}   Suggested threshold: ${payload.suggested_threshold ?? "-"}   Best threshold: ${payload.best_threshold ?? "-"}`
+  ];
+  if (payload.thresholds?.length) {
+    lines.push("", table(["Threshold", "Hits", "Misses", "Avg rank", "Loss"], payload.thresholds.map((row) => [
+      row.threshold,
+      row.hits,
+      row.misses,
+      row.avg_rank ?? "-",
+      row.loss
+    ])));
+  }
+  if (payload.target_scores?.length) {
+    lines.push("", table(["Query", "Target", "Rank", "Score"], payload.target_scores.map((row) => [
+      row.query,
+      row.target,
+      row.rank ?? "-",
+      row.score ?? "-"
+    ])));
+  }
+  return lines.join("\n");
+}
+
+function renderTuneReplay(payload) {
+  const lines = [
+    "Tune replay",
+    `Source: ${payload.source}   Replayed: ${payload.replayed}   Changed: ${payload.changed}`
+  ];
+  if (payload.rows?.length) {
+    lines.push("", table(["Trial", "Previous", "Current", "Hits", "Misses"], payload.rows.map((row) => [
+      row.trial,
+      row.previous_loss ?? "-",
+      row.loss,
+      row.hits,
+      row.misses
+    ])));
+  }
+  return lines.join("\n");
 }
 
 function renderIssues(payload) {
@@ -333,6 +396,42 @@ function renderDoctor(payload) {
     formatRows(Object.entries(payload.checks).map(([key, value]) => [key, String(value)]))
   ];
   if (payload.issues?.length) lines.push("", renderIssues(payload));
+  return lines.join("\n");
+}
+
+function renderHarnessStatus(payload) {
+  const lines = [
+    "Harness status",
+    "",
+    formatRows([
+      ["installed", payload.installed.length ? payload.installed.join(", ") : "-"],
+      ["manifest", payload.manifest ?? "-"],
+      ["guard policy", payload.guard?.policy ?? "-"],
+      ["inbox", payload.guard?.inbox_dir ?? "-"],
+      ["archive", payload.guard?.archive_dir ?? "-"]
+    ])
+  ];
+  const globalRows = Object.entries(payload.global ?? {}).map(([target, state]) => [
+    target,
+    state.skill ? "yes" : "no",
+    state.guard_hook ? "yes" : "no",
+    state.prompt_hook ? "yes" : "no",
+    state.markdown_nudge_hook ? "yes" : "no"
+  ]);
+  if (globalRows.length) lines.push("", table(["target", "skill", "guard", "prompt", "md nudge"], globalRows));
+  return lines.join("\n");
+}
+
+function renderHarnessChange(payload) {
+  const lines = [
+    payload.installed ? `Harness install: ${payload.target}` : `Harness uninstall: ${payload.target}`,
+    "",
+    `Status: ${payload.installed ? "installed" : "removed"}`
+  ];
+  if (payload.files?.length) lines.push("", "Vault-local files:", ...payload.files.map((file) => `  ${file}`));
+  if (payload.global_files?.length) lines.push("", "Global files:", ...payload.global_files.map((file) => `  ${file}`));
+  if (payload.removed?.length) lines.push("", "Removed vault-local files:", ...payload.removed.map((file) => `  ${file}`));
+  if (payload.global_removed?.length) lines.push("", "Removed global files:", ...payload.global_removed.map((file) => `  ${file}`));
   return lines.join("\n");
 }
 
@@ -451,7 +550,7 @@ async function main(argv = process.argv.slice(2)) {
     case "inbox":
       return inbox(global, args, json);
     case "harness":
-      return harness(args, json);
+      return harness(global, args, json);
     case "cache":
       return cache(global, args, json);
     case "link":
@@ -538,13 +637,21 @@ async function refactor(global, args, json) {
   return withVault(global, async (vault) => print(await refactorVault(vault, cmd, positional(rest), { apply: has(rest, "--apply") }), json));
 }
 
-async function harness(args, json) {
+async function harness(global, args, json) {
   const sub = args[0];
-  if (sub === "guard" && args[1] === "check") return print({ allowed: true, reason: "js harness guard smoke" }, json);
-  if (["status", "install", "uninstall", "doctor"].includes(sub) || sub === "guard") {
-    return print({ status: "ok", command: args.join(" "), installed: false }, json);
-  }
-  throw new Error("usage: ipa harness status|install|uninstall|doctor|guard");
+  return withVault(global, async (vault, resolved) => {
+    const options = { profile: resolved.profile };
+    if (sub === "status") return print(await harnessStatus(vault, options), json);
+    if (sub === "install") return print(await harnessInstall(vault, args[1] ?? "codex", options), json);
+    if (sub === "uninstall") return print(await harnessUninstall(vault, args[1] ?? "codex", options), json);
+    if (sub === "doctor") return print(await harnessDoctor(vault, options), json);
+    if (sub === "guard" && args[1] === "status") return print(await harnessGuardStatus(vault), json);
+    if (sub === "guard" && args[1] === "check") {
+      const [path] = positional(args.slice(2));
+      return print(await harnessGuardCheck(vault, path, { action: getOpt(args, "--action") }), json);
+    }
+    throw new Error("usage: ipa harness status|install|uninstall|doctor|guard");
+  });
 }
 
 async function cache(global, args, json) {
@@ -615,11 +722,37 @@ async function tune(global, args, json) {
     if (args[0] === "eval") return print(await tuneEval(vault), json);
     if (args[0] === "list") return print(await tuneList(vault), json);
     if (args[0] === "use") return print(await tuneUse(vault, args[1]), json);
-    if (args[0] === "analyze") return print({ status: "ok", message: "threshold analysis is available after labelled logs" }, json);
-    if (args[0] === "replay") return print({ status: "ok", replayed: 0 }, json);
-    if (args[0] === "label") return print({ status: "ok", labelled: true }, json);
+    if (args[0] === "analyze") {
+      const thresholds = (collect(args, "--threshold") ?? []).map(Number);
+      return print(await tuneAnalyze(vault, {
+        thresholds: thresholds.length ? thresholds : undefined,
+        cap: getOpt(args, "--cap") ? Number(getOpt(args, "--cap")) : undefined,
+        packName: getOpt(args, "--pack")
+      }), json);
+    }
+    if (args[0] === "replay") return print(await tuneReplay(vault, {
+      file: args[1]?.startsWith("--") ? null : args[1],
+      packName: getOpt(args, "--pack")
+    }), json);
+    if (args[0] === "label") return print(await tuneLabel(vault, {
+      query: getOpt(args, "--query"),
+      target: getOpt(args, "--target"),
+      hit: has(args, "--miss") ? false : true
+    }), json);
     if (args[0] === "log") return print(await tuneLog(vault), json);
-    if (args[0] === "testset") return print({ status: "ok", command: args.slice(1).join(" ") }, json);
+    if (args[0] === "testset") {
+      const sub = args[1] ?? "list";
+      if (sub === "list") return print(await tuneTestsetList(vault), json);
+      if (sub === "show") return print(await tuneTestsetShow(vault, args[2] ?? null), json);
+      if (sub === "validate") return print(await tuneTestsetValidate(vault, args[2] ?? null), json);
+      if (sub === "draft") return print(await tuneTestsetDraft(vault, { file: getOpt(args, "--file") }), json);
+      if (sub === "add") return print(await tuneTestsetAdd(vault, {
+        file: getOpt(args, "--file"),
+        query: getOpt(args, "--query"),
+        target: getOpt(args, "--target")
+      }), json);
+      throw new Error("usage: ipa tune testset list|show|validate|draft|add");
+    }
     if (args[0] === "pack") {
       if (args[1] === "eval") return print(await tuneEval(vault, args[2] ?? "ipa-cli-core"), json);
       if (args[1] === "list") return print({ packs: ["ipa-cli-core"] }, json);

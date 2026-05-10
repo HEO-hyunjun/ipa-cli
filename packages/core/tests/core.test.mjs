@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { cp, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -22,8 +23,21 @@ import {
   searchVault,
   scoreNote,
   traversal,
+  harnessDoctor,
+  harnessGuardCheck,
+  harnessInstall,
+  harnessStatus,
+  harnessUninstall,
+  tuneAnalyze,
   tuneEval,
+  tuneLabel,
+  tuneReplay,
   tuneRun,
+  tuneTestsetAdd,
+  tuneTestsetDraft,
+  tuneTestsetList,
+  tuneTestsetShow,
+  tuneTestsetValidate,
   tuneUse,
   validateVault,
   viewNote
@@ -288,6 +302,37 @@ test("tune eval uses the vault-local configured testset by default", async () =>
   assert.equal(result.misses, 0);
 });
 
+test("tune analyze, replay and testset commands are functional", async () => {
+  const vault = await fixtureVault();
+  const list = await tuneTestsetList(vault);
+  assert.deepEqual(list.testsets, [".ipa/tune/testsets/ipa-cli-core.json"]);
+  assert.equal(list.active, ".ipa/tune/testsets/ipa-cli-core.json");
+
+  const shown = await tuneTestsetShow(vault);
+  assert.equal(shown.cases, 3);
+  assert.equal(shown.queries, 3);
+  assert.equal((await tuneTestsetValidate(vault)).status, "ok");
+
+  const analysis = await tuneAnalyze(vault, { thresholds: [0, 0.3] });
+  assert.equal(analysis.pack, ".ipa/tune/testsets/ipa-cli-core.json");
+  assert.equal(analysis.thresholds.length, 2);
+  assert.ok(analysis.target_scores.every((row) => row.rank !== null));
+
+  const runResult = await tuneRun(vault, { trials: 2 });
+  assert.equal(runResult.history.length, 2);
+  const replay = await tuneReplay(vault);
+  assert.equal(replay.replayed, 2);
+  assert.equal(replay.rows[0].misses, 0);
+
+  const added = await tuneTestsetAdd(vault, { query: "Beta alias", target: "Beta" });
+  assert.equal(added.cases, 4);
+  assert.equal((await tuneTestsetShow(vault)).queries, 4);
+
+  assert.equal((await tuneLabel(vault, { query: "Alpha", target: "Alpha" })).count, 1);
+  assert.equal((await tuneLabel(vault)).labels[0].target, "Alpha");
+  assert.equal((await tuneTestsetDraft(vault)).cases, 0);
+});
+
 test("tune defaults require a vault-local testset instead of a sample convention pack", async () => {
   const vault = await fixtureVault();
   await writeFile(
@@ -321,6 +366,60 @@ test("no-op refactor does not rewrite every note", async () => {
   const result = await refactorVault(vault, "tag-remove", ["missing_tag"], { apply: true });
   assert.deepEqual(result.changed, []);
   assert.equal(await readFile(alphaPath, "utf8"), before);
+});
+
+test("harness install, doctor and guard enforce inbox-only new markdown writes", async () => {
+  const vault = await fixtureVault();
+  const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
+  const options = { homeDir: home, profile: "ipa-test" };
+  assert.deepEqual((await harnessStatus(vault, options)).installed, []);
+  const install = await harnessInstall(vault, "codex", options);
+  assert.equal(install.installed, true);
+  assert.ok(install.global_files.some((file) => file.endsWith(".codex/skills/ipa/SKILL.md")));
+  assert.deepEqual((await harnessStatus(vault, options)).installed, ["codex"]);
+  assert.equal((await harnessDoctor(vault, options)).status, "ok");
+  assert.match(await readFile(join(home, ".codex", "skills", "ipa", "SKILL.md"), "utf8"), /ipa --profile ipa-test search/);
+  assert.match(await readFile(join(home, ".codex", "hooks", "ipa-inbox-guard.mjs"), "utf8"), /shared IPA inbox creation guard/);
+  assert.match(await readFile(join(home, ".codex", "hooks", "ipa-md-write-nudge.mjs"), "utf8"), /lint\/validate and format-plan/);
+  assert.match(await readFile(join(vault, "AGENTS.md"), "utf8"), /IPA CLI Harness/);
+  const hooks = await readFile(join(home, ".codex", "hooks.json"), "utf8");
+  assert.match(hooks, /ipa-inbox-guard\.mjs/);
+  assert.match(hooks, /ipa-user-prompt-nudge\.mjs/);
+  assert.match(hooks, /ipa-md-write-nudge\.mjs/);
+  const guardScript = join(home, ".codex", "hooks", "ipa-inbox-guard.mjs");
+  const blocked = spawnSync(process.execPath, [guardScript], {
+    input: JSON.stringify({ tool_name: "Write", tool_input: { file_path: join(vault, "02 Archive", "New.md") } }),
+    encoding: "utf8"
+  });
+  assert.equal(blocked.status, 2);
+  assert.match(blocked.stderr, /IPA guard blocked/);
+  const allowed = spawnSync(process.execPath, [guardScript], {
+    input: JSON.stringify({ tool_name: "Write", tool_input: { file_path: join(vault, "00 Inbox", "New.md") } }),
+    encoding: "utf8"
+  });
+  assert.equal(allowed.status, 0);
+  const nudge = spawnSync(process.execPath, [join(home, ".codex", "hooks", "ipa-md-write-nudge.mjs")], {
+    input: JSON.stringify({ tool_name: "Edit", tool_input: { file_path: join(vault, "00 Inbox", "Alpha.md") } }),
+    encoding: "utf8"
+  });
+  assert.equal(nudge.status, 0);
+  assert.match(nudge.stdout, /formatter plan/);
+
+  const claudeInstall = await harnessInstall(vault, "claude", options);
+  assert.equal(claudeInstall.installed, true);
+  assert.match(await readFile(join(home, ".claude", "skills", "ipa", "SKILL.md"), "utf8"), /IPA CLI Skill/);
+  assert.match(await readFile(join(vault, "CLAUDE.md"), "utf8"), /IPA CLI Harness/);
+
+  assert.equal((await harnessGuardCheck(vault, "00 Inbox/New.md")).allowed, true);
+  const denied = await harnessGuardCheck(vault, "02 Archive/New.md");
+  assert.equal(denied.allowed, false);
+  assert.match(denied.reason, /inbox/);
+  assert.equal((await harnessGuardCheck(vault, "02 Archive/Topic.md", { action: "edit" })).allowed, true);
+
+  const uninstall = await harnessUninstall(vault, "codex", options);
+  assert.equal(uninstall.installed, false);
+  await harnessUninstall(vault, "claude", options);
+  assert.deepEqual((await harnessStatus(vault, options)).installed, []);
 });
 
 test("vault-local JS plugins run in search, validation and formatter paths", async () => {

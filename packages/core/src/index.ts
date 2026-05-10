@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import {
   mkdir,
   readFile,
@@ -1685,6 +1685,248 @@ export async function tuneEval(vaultPath, packName = null, params = {}) {
   return { pack: pack.name, total: rows.length, hits, misses: rows.length - hits, avg_rank: avgRank, rows };
 }
 
+function tuneLoss(evaluation) {
+  return evaluation.misses * 100 + (evaluation.avg_rank ?? 99);
+}
+
+export async function tuneAnalyze(vaultPath, options = {}) {
+  const packName = options.packName ?? null;
+  const pack = packName ? builtinQueryPack(packName) : await configuredQueryPack(vaultPath);
+  if (!pack) throw new Error("tune testset not configured: set test.file in .ipa/config.yaml");
+  const thresholds = (options.thresholds ?? [0, 0.1, 0.2, 0.3, 0.4, 0.5])
+    .map(Number)
+    .filter((value, index, values) => Number.isFinite(value) && values.indexOf(value) === index)
+    .sort((a, b) => a - b);
+  const thresholdRows = [];
+  for (const threshold of thresholds) {
+    const evaluation = await tuneEval(vaultPath, packName, { threshold, cap: options.cap });
+    thresholdRows.push({
+      threshold,
+      hits: evaluation.hits,
+      misses: evaluation.misses,
+      avg_rank: evaluation.avg_rank,
+      loss: tuneLoss(evaluation)
+    });
+  }
+  const targetScores = [];
+  for (const item of pack.queries) {
+    const result = await searchVault(vaultPath, item.query, { threshold: 0, maxResults: options.maxResults ?? 50, showAll: true });
+    const index = result.results.findIndex((hit) => sameNoteName(hit.note, item.target));
+    const hit = index >= 0 ? result.results[index] : null;
+    targetScores.push({
+      query: item.query,
+      target: item.target,
+      rank: hit ? index + 1 : null,
+      score: hit?.score ?? null
+    });
+  }
+  const scoredHits = targetScores.map((item) => item.score).filter((value) => value !== null);
+  const suggestedThreshold = scoredHits.length ? Number(Math.max(0, Math.min(...scoredHits) - 0.0001).toFixed(4)) : null;
+  const best = [...thresholdRows].sort((a, b) => a.loss - b.loss || a.threshold - b.threshold)[0] ?? null;
+  return {
+    pack: pack.name,
+    thresholds: thresholdRows,
+    target_scores: targetScores,
+    suggested_threshold: suggestedThreshold,
+    best_threshold: best?.threshold ?? null
+  };
+}
+
+export async function tuneReplay(vaultPath, options = {}) {
+  const source = options.file ?? ".ipa/tune/history.jsonl";
+  const path = tuneSourcePath(vaultPath, source);
+  if (!existsSync(path)) throw new Error(`tune replay source not found: ${source}`);
+  const trials = await readTuneTrials(path);
+  const rows = [];
+  for (const trial of trials) {
+    const evaluation = await tuneEval(vaultPath, options.packName ?? null, trial.params ?? {});
+    const loss = tuneLoss(evaluation);
+    rows.push({
+      trial: trial.trial ?? rows.length,
+      previous_loss: trial.loss ?? null,
+      loss,
+      changed: trial.loss !== undefined ? Number(trial.loss) !== Number(loss) : null,
+      hits: evaluation.hits,
+      misses: evaluation.misses,
+      avg_rank: evaluation.avg_rank
+    });
+  }
+  return {
+    source: toPosix(relative(vaultPath, path)),
+    replayed: rows.length,
+    changed: rows.filter((row) => row.changed).length,
+    rows
+  };
+}
+
+function tuneSourcePath(vaultPath, source) {
+  if (String(source).startsWith("/") || String(source).startsWith(".ipa/")) return resolve(vaultPath, source);
+  if (String(source).endsWith(".json") || String(source).endsWith(".jsonl")) {
+    const direct = resolve(vaultPath, source);
+    if (existsSync(direct)) return direct;
+  }
+  return tuneResultPath(vaultPath, source);
+}
+
+async function readTuneTrials(path) {
+  const text = await readFile(path, "utf8");
+  if (path.endsWith(".jsonl")) {
+    return text.split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  }
+  const payload = JSON.parse(text);
+  if (Array.isArray(payload)) return payload;
+  if (Array.isArray(payload.history)) return payload.history;
+  if (payload.best) return [payload.best];
+  return [payload];
+}
+
+function configuredTestsetPath(vaultPath, requested = null) {
+  if (requested) {
+    if (String(requested).startsWith("/") || String(requested).startsWith(".ipa/")) return resolve(vaultPath, requested);
+    return resolve(vaultPath, ".ipa", "tune", "testsets", requested);
+  }
+  return null;
+}
+
+async function activeTestsetPath(vaultPath, requested = null) {
+  const explicit = configuredTestsetPath(vaultPath, requested);
+  if (explicit) return explicit;
+  const { config } = await readVaultConfig(vaultPath);
+  if (config.test?.file) return resolve(vaultPath, config.test.file);
+  return resolve(vaultPath, ".ipa", "tune", "testsets", "testset.json");
+}
+
+function normalizeTestsetPayload(payload) {
+  const cases = payload.cases ?? payload.queries ?? [];
+  return Array.isArray(cases) ? cases : [];
+}
+
+export async function tuneTestsetList(vaultPath) {
+  const dir = join(vaultPath, ".ipa", "tune", "testsets");
+  const files = existsSync(dir) ? (await readdir(dir)).filter((name) => name.endsWith(".json")).sort() : [];
+  const { config } = await readVaultConfig(vaultPath);
+  return {
+    active: config.test?.file ?? null,
+    testsets: files.map((file) => `.ipa/tune/testsets/${file}`)
+  };
+}
+
+export async function tuneTestsetShow(vaultPath, file = null) {
+  const path = await activeTestsetPath(vaultPath, file);
+  if (!existsSync(path)) throw new Error(`testset not found: ${toPosix(relative(vaultPath, path))}`);
+  const payload = JSON.parse(await readFile(path, "utf8"));
+  const cases = normalizeTestsetPayload(payload);
+  const rows = [];
+  for (const item of cases) {
+    const queries = Array.isArray(item.queries) ? item.queries : [item.query].filter(Boolean);
+    rows.push({
+      target: item.target_filename ?? item.target ?? item.note ?? item.expected ?? null,
+      queries
+    });
+  }
+  return {
+    file: toPosix(relative(vaultPath, path)),
+    cases: rows.length,
+    queries: rows.reduce((sum, item) => sum + item.queries.length, 0),
+    rows
+  };
+}
+
+export async function tuneTestsetValidate(vaultPath, file = null) {
+  const path = await activeTestsetPath(vaultPath, file);
+  const issues = [];
+  if (!existsSync(path)) {
+    return { file: toPosix(relative(vaultPath, path)), status: "error", issues: [{ severity: "error", code: "testset.missing", message: "testset file does not exist" }] };
+  }
+  let payload;
+  try {
+    payload = JSON.parse(await readFile(path, "utf8"));
+  } catch (error) {
+    return { file: toPosix(relative(vaultPath, path)), status: "error", issues: [{ severity: "error", code: "testset.json", message: error.message }] };
+  }
+  const cases = normalizeTestsetPayload(payload);
+  const notes = await loadNotes(vaultPath, (await readVaultConfig(vaultPath)).mapping);
+  cases.forEach((item, index) => {
+    const queries = Array.isArray(item.queries) ? item.queries : [item.query].filter(Boolean);
+    const target = item.target_filename ?? item.target ?? item.note ?? item.expected;
+    if (!queries.length) issues.push({ severity: "error", code: "testset.query", case: index, message: "case must include query or queries" });
+    if (!target) issues.push({ severity: "error", code: "testset.target", case: index, message: "case must include target_filename, target, note, or expected" });
+    else if (!findNote(notes, target)) issues.push({ severity: "warn", code: "testset.target_missing", case: index, target, message: `target note not found: ${target}` });
+  });
+  return {
+    file: toPosix(relative(vaultPath, path)),
+    status: issues.some((item) => item.severity === "error") ? "error" : "ok",
+    cases: cases.length,
+    issues
+  };
+}
+
+export async function tuneTestsetAdd(vaultPath, options = {}) {
+  if (!options.query) throw new Error("tune testset add requires --query");
+  if (!options.target) throw new Error("tune testset add requires --target");
+  const path = await activeTestsetPath(vaultPath, options.file ?? null);
+  await mkdir(dirname(path), { recursive: true });
+  const payload = existsSync(path) ? JSON.parse(await readFile(path, "utf8")) : { cases: [] };
+  payload.cases = normalizeTestsetPayload(payload);
+  payload.cases.push({ queries: [options.query], target_filename: options.target });
+  await writeFile(path, JSON.stringify(payload, null, 2) + "\n", "utf8");
+  const { config } = await readVaultConfig(vaultPath);
+  if (!config.test?.file) {
+    const configPath = join(vaultPath, ".ipa", "config.yaml");
+    config.test = config.test || {};
+    config.test.file = toPosix(relative(vaultPath, path));
+    await mkdir(dirname(configPath), { recursive: true });
+    await writeFile(configPath, dumpYaml(config) + "\n", "utf8");
+  }
+  return {
+    file: toPosix(relative(vaultPath, path)),
+    added: { query: options.query, target: options.target },
+    cases: payload.cases.length
+  };
+}
+
+export async function tuneTestsetDraft(vaultPath, options = {}) {
+  const log = await tuneLog(vaultPath);
+  const cases = [];
+  for (const event of log.events) {
+    const query = event.query ?? event.q ?? event.user_utterance;
+    const target = event.target ?? event.note ?? event.selected ?? event.clicked;
+    if (query && target) cases.push({ queries: [String(query)], target_filename: String(target) });
+  }
+  const payload = { cases };
+  let file = null;
+  if (options.file) {
+    const path = await activeTestsetPath(vaultPath, options.file);
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, JSON.stringify(payload, null, 2) + "\n", "utf8");
+    file = toPosix(relative(vaultPath, path));
+  }
+  return {
+    events: log.events.length,
+    cases: cases.length,
+    file,
+    rows: cases
+  };
+}
+
+export async function tuneLabel(vaultPath, options = {}) {
+  const path = join(vaultPath, ".ipa", "tune", "logs", "labels.jsonl");
+  await mkdir(dirname(path), { recursive: true });
+  if (options.query && options.target) {
+    const row = {
+      created_at: nowIso(),
+      query: options.query,
+      target: options.target,
+      hit: options.hit ?? true
+    };
+    await writeFile(path, `${existsSync(path) ? await readFile(path, "utf8") : ""}${JSON.stringify(row)}\n`, "utf8");
+  }
+  const labels = existsSync(path)
+    ? (await readFile(path, "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line))
+    : [];
+  return { labels, count: labels.length };
+}
+
 function seeded(seed) {
   let state = seed >>> 0;
   return () => {
@@ -1823,6 +2065,641 @@ export async function tuneLog(vaultPath) {
   if (!existsSync(path)) return { events: [] };
   const events = (await readFile(path, "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
   return { events };
+}
+
+function harnessRoot(vaultPath) {
+  return join(vaultPath, ".ipa", "harness");
+}
+
+const HARNESS_MARKER = "IPA_HARNESS_MANAGED";
+const HARNESS_MANAGED_BLOCK = "ipa-harness";
+
+function normalizeHarnessTarget(target = "codex") {
+  const value = String(target || "codex").trim().toLowerCase();
+  if (!/^[a-z0-9_-]+$/.test(value)) throw new Error(`invalid harness target: ${target}`);
+  return value;
+}
+
+function harnessHomeBase(options = {}) {
+  return resolve(options.homeDir ?? process.env.IPA_HARNESS_HOME ?? homedir());
+}
+
+function harnessTargetSpec(target = "codex", options = {}) {
+  const name = normalizeHarnessTarget(target);
+  if (!["codex", "claude"].includes(name)) {
+    throw new Error(`unsupported harness target: ${name}. Expected codex or claude`);
+  }
+  const home = join(harnessHomeBase(options), name === "claude" ? ".claude" : ".codex");
+  return {
+    name,
+    home,
+    skillFile: join(home, "skills", "ipa", "SKILL.md"),
+    hooksDir: join(home, "hooks"),
+    hooksConfig: name === "claude" ? join(home, "settings.json") : join(home, "hooks.json"),
+    localPrompt: name === "claude" ? "CLAUDE.md" : "AGENTS.md"
+  };
+}
+
+function profileRegistryDisplay() {
+  return process.env.XDG_CONFIG_HOME ? "$XDG_CONFIG_HOME/ipa/profile.yaml" : "~/.config/ipa/profile.yaml";
+}
+
+function commandPrefix(vaultPath, options = {}, local = false) {
+  if (options.profile) return `ipa --profile ${options.profile}`;
+  return local ? "ipa --vault ." : `ipa --vault ${shellQuote(vaultPath)}`;
+}
+
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, "'\\''")}'`;
+}
+
+async function readJsonObject(path) {
+  if (!existsSync(path)) return {};
+  try {
+    return JSON.parse(await readFile(path, "utf8"));
+  } catch (error) {
+    throw new Error(`failed to parse ${path}: ${error.message}`);
+  }
+}
+
+async function writeJsonObject(path, value) {
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, JSON.stringify(value, null, 2) + "\n", "utf8");
+}
+
+function hookCommand(path) {
+  return `node ${shellQuote(path)}`;
+}
+
+function hookHasCommand(config, event, command) {
+  return (config.hooks?.[event] ?? []).some((group) =>
+    (group.hooks ?? []).some((hook) => hook.command === command)
+  );
+}
+
+function addHookCommand(config, event, matcher, command, statusMessage, timeout = null) {
+  config.hooks = config.hooks || {};
+  config.hooks[event] = Array.isArray(config.hooks[event]) ? config.hooks[event] : [];
+  if (hookHasCommand(config, event, command)) return;
+  const hook = { type: "command", command };
+  if (timeout !== null) hook.timeout = timeout;
+  if (statusMessage) hook.statusMessage = statusMessage;
+  const group = { hooks: [hook] };
+  if (matcher) group.matcher = matcher;
+  config.hooks[event].push(group);
+}
+
+function removeHookCommand(config, command) {
+  if (!config.hooks) return;
+  for (const event of Object.keys(config.hooks)) {
+    config.hooks[event] = (config.hooks[event] ?? [])
+      .map((group) => ({ ...group, hooks: (group.hooks ?? []).filter((hook) => hook.command !== command) }))
+      .filter((group) => group.hooks.length);
+    if (!config.hooks[event].length) delete config.hooks[event];
+  }
+}
+
+async function writeManagedFile(path, content, files) {
+  await mkdir(dirname(path), { recursive: true });
+  if (existsSync(path)) {
+    const previous = await readFile(path, "utf8");
+    if (previous === content) {
+      files.push(path);
+      return;
+    }
+    if (!previous.includes(HARNESS_MARKER)) {
+      const stamp = nowIso().replace(/[:.]/g, "-");
+      await writeFile(`${path}.bak-${stamp}`, previous, "utf8");
+    }
+  }
+  await writeFile(path, content, "utf8");
+  files.push(path);
+}
+
+async function removeManagedFile(path, removed) {
+  if (!existsSync(path)) return;
+  const text = await readFile(path, "utf8");
+  if (!text.includes(HARNESS_MARKER)) return;
+  await rm(path, { force: true });
+  removed.push(path);
+}
+
+async function upsertManagedBlock(path, body) {
+  const begin = `<!-- ${HARNESS_MARKER}_BEGIN:${HARNESS_MANAGED_BLOCK} -->`;
+  const end = `<!-- ${HARNESS_MARKER}_END:${HARNESS_MANAGED_BLOCK} -->`;
+  const block = `${begin}\n${body.trim()}\n${end}`;
+  const previous = existsSync(path) ? await readFile(path, "utf8") : "";
+  const pattern = new RegExp(`${begin.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[\\s\\S]*?${end.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`);
+  const next = pattern.test(previous)
+    ? previous.replace(pattern, block)
+    : [previous.trimEnd(), block].filter(Boolean).join("\n\n") + "\n";
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, next, "utf8");
+}
+
+async function removeManagedBlock(path) {
+  if (!existsSync(path)) return false;
+  const begin = `<!-- ${HARNESS_MARKER}_BEGIN:${HARNESS_MANAGED_BLOCK} -->`;
+  const end = `<!-- ${HARNESS_MARKER}_END:${HARNESS_MANAGED_BLOCK} -->`;
+  const previous = await readFile(path, "utf8");
+  const pattern = new RegExp(`\\n?${begin.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[\\s\\S]*?${end.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\n?`);
+  if (!pattern.test(previous)) return false;
+  await writeFile(path, previous.replace(pattern, "\n").replace(/\n{3,}/g, "\n\n").trimEnd() + "\n", "utf8");
+  return true;
+}
+
+function harnessSkillContent(vaultPath, spec, options = {}) {
+  const prefix = commandPrefix(vaultPath, options);
+  return `<!-- ${HARNESS_MARKER} -->
+---
+name: ipa
+description: Use the IPA CLI to search, view, validate, format, and safely write IPA vault notes.
+---
+
+# IPA CLI Skill
+
+Use this skill when a task mentions IPA, a vault note, inbox capture, note search, note validation, or note formatting.
+
+## Active Vault
+
+- Target: ${spec.name}
+- Profile: ${options.profile ?? "direct vault"}
+- Vault: ${vaultPath}
+- Profile registry: ${profileRegistryDisplay()}
+- Vault config: .ipa/config.yaml
+
+## Read First
+
+\`\`\`bash
+${prefix} search "keyword"
+${prefix} view "Note Title" --full
+${prefix} traversal --up "Note Title"
+\`\`\`
+
+Search before answering IPA/vault questions. If search returns a relevant note, inspect it with \`view --full\` before relying on memory.
+
+## Safe Writes
+
+New Markdown notes belong in the configured inbox. Prefer:
+
+\`\`\`bash
+${prefix} inbox add ./draft.md --title "Title" --ref "Index Note" --tag "topic"
+\`\`\`
+
+After editing vault Markdown, run validation and formatting checks:
+
+\`\`\`bash
+${prefix} validator
+${prefix} formatter plan
+\`\`\`
+`;
+}
+
+function localPromptContent(vaultPath, spec, mapping, options = {}) {
+  const prefix = commandPrefix(vaultPath, options, true);
+  return `## IPA CLI Harness
+
+This vault has an IPA CLI harness installed for ${spec.name}.
+
+- Profile: ${options.profile ?? "direct vault"}
+- Profile registry: ${profileRegistryDisplay()}
+- Vault config: .ipa/config.yaml
+- Inbox folder: ${mapping.inbox_dir}
+- Project folder: ${mapping.project_dir}
+- Archive folder: ${mapping.archive_dir}
+
+Use the IPA CLI for vault-aware operations:
+
+\`\`\`bash
+${prefix} search "keyword"
+${prefix} view "Note Title" --full
+${prefix} validator
+${prefix} formatter plan
+\`\`\`
+
+Create new Markdown notes under the configured inbox, or import drafts with \`${prefix} inbox add <file>\`. Existing Markdown notes may be edited in place. After editing vault Markdown, run lint/validation and formatter planning before finishing.
+`;
+}
+
+function inboxGuardScript(vaultPath, inboxDir) {
+  return `#!/usr/bin/env node
+// ${HARNESS_MARKER}: shared IPA inbox creation guard.
+import { existsSync, readFileSync } from "node:fs";
+import { relative, resolve, sep } from "node:path";
+import { spawnSync } from "node:child_process";
+
+const vaultPath = ${JSON.stringify(vaultPath)};
+const fallbackInbox = ${JSON.stringify(inboxDir)};
+
+function readInput() {
+  try {
+    return JSON.parse(awaitStdin());
+  } catch {
+    return {};
+  }
+}
+
+function awaitStdin() {
+  try {
+    return readFileSync(0, "utf8");
+  } catch {
+    return "";
+  }
+}
+
+function firstString(values) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return null;
+}
+
+function toVaultRelative(filePath, cwd) {
+  const absolute = resolve(cwd || process.cwd(), filePath);
+  const rel = relative(vaultPath, absolute);
+  if (rel === "" || rel.startsWith("..") || rel.startsWith("/")) return null;
+  return { absolute, rel: rel.split(sep).join("/") };
+}
+
+function fallbackVerdict(rel, action) {
+  const inbox = fallbackInbox.replace(/^\\/+/, "");
+  return action !== "create" || rel === inbox || rel.startsWith(inbox + "/");
+}
+
+const input = readInput();
+const toolInput = input.tool_input ?? input.toolInput ?? input.input ?? {};
+const filePath = firstString([toolInput.file_path, toolInput.path, input.file_path, input.path]);
+if (!filePath) process.exit(0);
+
+const target = toVaultRelative(filePath, input.cwd);
+if (!target || !target.rel.toLowerCase().endsWith(".md")) process.exit(0);
+
+const action = existsSync(target.absolute) ? "edit" : "create";
+let allowed = fallbackVerdict(target.rel, action);
+let reason = allowed ? "allowed by fallback policy" : "new markdown files must be created under the configured inbox folder";
+
+const result = spawnSync("ipa", ["--vault", vaultPath, "harness", "guard", "check", target.rel, "--action", action, "--json"], {
+  encoding: "utf8",
+  timeout: 4000
+});
+if (result.status === 0 && result.stdout) {
+  try {
+    const parsed = JSON.parse(result.stdout);
+    allowed = parsed.allowed !== false;
+    reason = parsed.reason || reason;
+  } catch {
+    // Keep fallback verdict.
+  }
+}
+
+if (!allowed) {
+  const message = \`IPA guard blocked \${target.rel}: \${reason}. Use ipa inbox add or create the file under \${fallbackInbox}.\`;
+  process.stderr.write(message + "\\n");
+  process.stdout.write(JSON.stringify({ decision: "block", reason: message }) + "\\n");
+  process.exit(2);
+}
+`;
+}
+
+function userPromptNudgeScript(vaultPath, options = {}) {
+  return `#!/usr/bin/env node
+// ${HARNESS_MARKER}: IPA UserPromptSubmit context nudge.
+import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+
+const vaultPath = ${JSON.stringify(vaultPath)};
+const profile = ${JSON.stringify(options.profile ?? null)};
+const prefix = profile ? \`ipa --profile \${profile}\` : \`ipa --vault ${shellQuote(vaultPath)}\`;
+
+function inputJson() {
+  try {
+    return JSON.parse(readFileSync(0, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+const input = inputJson();
+const prompt = String(input.prompt ?? input.user_prompt ?? "").trim();
+const lines = [
+  "[IPA CLI]",
+  \`Vault profile: \${profile || "direct vault"}\`,
+  "Before answering IPA/vault questions, search the vault and view relevant notes.",
+  \`Search: \${prefix} search "keyword"\`,
+  \`View:   \${prefix} view "Note Title" --full\`
+];
+
+if (prompt.length >= 8) {
+  const result = spawnSync("ipa", ["--vault", vaultPath, "search", prompt.slice(0, 120), "--json", "--max", "5"], {
+    encoding: "utf8",
+    timeout: 4000
+  });
+  if (result.status === 0 && result.stdout) {
+    try {
+      const parsed = JSON.parse(result.stdout);
+      const hits = (parsed.results || []).slice(0, 5).map((item) => \`- \${item.note} (\${Number(item.score || 0).toFixed(2)})\`);
+      if (hits.length) lines.push("", "Possible related notes:", ...hits);
+    } catch {
+      // Ignore malformed search output.
+    }
+  }
+}
+
+process.stdout.write(JSON.stringify({
+  hookSpecificOutput: {
+    hookEventName: "UserPromptSubmit",
+    additionalContext: lines.join("\\n")
+  }
+}) + "\\n");
+`;
+}
+
+function markdownWriteNudgeScript(vaultPath, options = {}) {
+  return `#!/usr/bin/env node
+// ${HARNESS_MARKER}: prompt nudge after IPA vault Markdown edits.
+import { readFileSync } from "node:fs";
+import { relative, resolve, sep } from "node:path";
+
+const vaultPath = ${JSON.stringify(vaultPath)};
+const profile = ${JSON.stringify(options.profile ?? null)};
+const prefix = profile ? \`ipa --profile \${profile}\` : \`ipa --vault ${shellQuote(vaultPath)}\`;
+
+function inputJson() {
+  try {
+    return JSON.parse(readFileSync(0, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+function firstString(values) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return null;
+}
+
+const input = inputJson();
+const toolInput = input.tool_input ?? input.toolInput ?? input.input ?? {};
+const filePath = firstString([toolInput.file_path, toolInput.path, input.file_path, input.path]);
+if (!filePath) process.exit(0);
+
+const absolute = resolve(input.cwd || process.cwd(), filePath);
+const rel = relative(vaultPath, absolute);
+if (rel === "" || rel.startsWith("..") || rel.startsWith("/") || !rel.toLowerCase().endsWith(".md")) process.exit(0);
+
+const note = rel.split(sep).join("/");
+const message = [
+  \`[IPA CLI] Vault Markdown changed: \${note}\`,
+  "Before finishing, lint/validate and format-plan the vault change:",
+  \`  \${prefix} validator\`,
+  \`  \${prefix} formatter plan\`
+].join("\\n");
+
+process.stdout.write(JSON.stringify({
+  hookSpecificOutput: {
+    additionalContext: message
+  }
+}) + "\\n");
+`;
+}
+
+async function installGlobalHarness(vaultPath, spec, mapping, options = {}) {
+  const files = [];
+  const guardPath = join(spec.hooksDir, "ipa-inbox-guard.mjs");
+  const promptPath = join(spec.hooksDir, "ipa-user-prompt-nudge.mjs");
+  const writeNudgePath = join(spec.hooksDir, "ipa-md-write-nudge.mjs");
+  await writeManagedFile(spec.skillFile, harnessSkillContent(vaultPath, spec, options), files);
+  await writeManagedFile(guardPath, inboxGuardScript(vaultPath, mapping.inbox_dir), files);
+  await writeManagedFile(promptPath, userPromptNudgeScript(vaultPath, options), files);
+  await writeManagedFile(writeNudgePath, markdownWriteNudgeScript(vaultPath, options), files);
+
+  const config = await readJsonObject(spec.hooksConfig);
+  addHookCommand(config, "PreToolUse", "Write|Edit|MultiEdit", hookCommand(guardPath), "Checking IPA inbox write policy...", 5);
+  addHookCommand(config, "PostToolUse", "Write|Edit|MultiEdit", hookCommand(writeNudgePath), "Reminding IPA lint/format checks...", 5);
+  addHookCommand(config, "UserPromptSubmit", null, hookCommand(promptPath), null, 5);
+  await writeJsonObject(spec.hooksConfig, config);
+  files.push(spec.hooksConfig);
+  return files;
+}
+
+async function uninstallGlobalHarness(spec) {
+  const removed = [];
+  const scripts = [
+    join(spec.hooksDir, "ipa-inbox-guard.mjs"),
+    join(spec.hooksDir, "ipa-user-prompt-nudge.mjs"),
+    join(spec.hooksDir, "ipa-md-write-nudge.mjs")
+  ];
+  for (const path of [spec.skillFile, ...scripts]) await removeManagedFile(path, removed);
+  if (existsSync(spec.hooksConfig)) {
+    const config = await readJsonObject(spec.hooksConfig);
+    for (const path of scripts) removeHookCommand(config, hookCommand(path));
+    await writeJsonObject(spec.hooksConfig, config);
+    removed.push(spec.hooksConfig);
+  }
+  return removed;
+}
+
+function hasManagedFile(path) {
+  if (!existsSync(path)) return false;
+  try {
+    return existsSync(path) && readFileSyncText(path).includes(HARNESS_MARKER);
+  } catch {
+    return false;
+  }
+}
+
+function readFileSyncText(path) {
+  return existsSync(path) ? readFileSync(path, "utf8") : "";
+}
+
+async function readHarnessIndex(vaultPath) {
+  const path = join(harnessRoot(vaultPath), "manifest.json");
+  if (!existsSync(path)) return { version: 1, targets: {} };
+  return JSON.parse(await readFile(path, "utf8"));
+}
+
+async function writeHarnessIndex(vaultPath, index) {
+  const path = join(harnessRoot(vaultPath), "manifest.json");
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, JSON.stringify(index, null, 2) + "\n", "utf8");
+}
+
+export async function harnessStatus(vaultPath, options = {}) {
+  const index = await readHarnessIndex(vaultPath);
+  const global = {};
+  for (const target of Object.keys(index.targets ?? {})) {
+    const spec = harnessTargetSpec(target, options);
+    global[target] = {
+      skill: hasManagedFile(spec.skillFile),
+      guard_hook: hasManagedFile(join(spec.hooksDir, "ipa-inbox-guard.mjs")),
+      prompt_hook: hasManagedFile(join(spec.hooksDir, "ipa-user-prompt-nudge.mjs")),
+      markdown_nudge_hook: hasManagedFile(join(spec.hooksDir, "ipa-md-write-nudge.mjs")),
+      hooks_config: existsSync(spec.hooksConfig)
+    };
+  }
+  return {
+    status: "ok",
+    installed: Object.keys(index.targets ?? {}),
+    manifest: existsSync(join(harnessRoot(vaultPath), "manifest.json")) ? ".ipa/harness/manifest.json" : null,
+    global,
+    guard: await harnessGuardStatus(vaultPath)
+  };
+}
+
+export async function harnessInstall(vaultPath, target = "codex", options = {}) {
+  const spec = harnessTargetSpec(target, options);
+  const name = spec.name;
+  const { mapping } = await readVaultConfig(vaultPath);
+  const root = harnessRoot(vaultPath);
+  const dir = join(root, name);
+  const manifest = {
+    version: 1,
+    target: name,
+    installed_at: nowIso(),
+    scope: ["global", "vault-local"],
+    local_prompt: spec.localPrompt,
+    global: {
+      home: `~/.${name}`,
+      skill: `~/.${name}/skills/ipa/SKILL.md`,
+      hooks_config: name === "claude" ? "~/.claude/settings.json" : "~/.codex/hooks.json"
+    },
+    hooks: {
+      guard: {
+        command: "ipa harness guard check <vault-relative-path>",
+        policy: "new markdown files must be created under the configured inbox folder"
+      },
+      prompt_submit: {
+        policy: "nudge the agent to search/view IPA notes before answering vault questions"
+      },
+      markdown_write_nudge: {
+        policy: "nudge the agent to run validator and formatter plan after vault Markdown edits"
+      }
+    }
+  };
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n", "utf8");
+  await writeFile(
+    join(dir, "guard.mjs"),
+    [
+      "#!/usr/bin/env node",
+      "import { spawnSync } from 'node:child_process';",
+      "const target = process.argv[2] ?? '';",
+      "const result = spawnSync('ipa', ['harness', 'guard', 'check', target, '--json'], { stdio: 'inherit' });",
+      "process.exit(result.status ?? 1);",
+      ""
+    ].join("\n"),
+    "utf8"
+  );
+  await upsertManagedBlock(join(vaultPath, spec.localPrompt), localPromptContent(vaultPath, spec, mapping, options));
+  const globalFiles = await installGlobalHarness(vaultPath, spec, mapping, options);
+  const index = await readHarnessIndex(vaultPath);
+  index.targets = index.targets || {};
+  index.targets[name] = {
+    path: `.ipa/harness/${name}/manifest.json`,
+    installed_at: manifest.installed_at,
+    local_prompt: spec.localPrompt
+  };
+  await writeHarnessIndex(vaultPath, index);
+  return {
+    status: "ok",
+    target: name,
+    installed: true,
+    files: [`.ipa/harness/${name}/manifest.json`, `.ipa/harness/${name}/guard.mjs`, ".ipa/harness/manifest.json", spec.localPrompt],
+    global_files: globalFiles
+  };
+}
+
+export async function harnessUninstall(vaultPath, target = "codex", options = {}) {
+  const spec = harnessTargetSpec(target, options);
+  const name = spec.name;
+  await rm(join(harnessRoot(vaultPath), name), { recursive: true, force: true });
+  await removeManagedBlock(join(vaultPath, spec.localPrompt));
+  const globalRemoved = await uninstallGlobalHarness(spec);
+  const index = await readHarnessIndex(vaultPath);
+  if (index.targets) delete index.targets[name];
+  await writeHarnessIndex(vaultPath, index);
+  return { status: "ok", target: name, installed: false, removed: [`.ipa/harness/${name}`, spec.localPrompt], global_removed: globalRemoved };
+}
+
+export async function harnessDoctor(vaultPath, options = {}) {
+  const index = await readHarnessIndex(vaultPath);
+  const issues = [];
+  for (const [target, entry] of Object.entries(index.targets ?? {})) {
+    const spec = harnessTargetSpec(target, options);
+    if (!existsSync(resolve(vaultPath, entry.path))) {
+      issues.push({ severity: "error", code: "harness.manifest_missing", target, message: `missing ${entry.path}` });
+    }
+    if (!existsSync(join(harnessRoot(vaultPath), target, "guard.mjs"))) {
+      issues.push({ severity: "warn", code: "harness.guard_missing", target, message: "guard script is missing" });
+    }
+    if (!hasManagedFile(spec.skillFile)) {
+      issues.push({ severity: "warn", code: "harness.global_skill_missing", target, message: `missing managed IPA skill at ~/.${target}/skills/ipa/SKILL.md` });
+    }
+    for (const [code, file] of [
+      ["harness.global_guard_hook_missing", join(spec.hooksDir, "ipa-inbox-guard.mjs")],
+      ["harness.global_prompt_hook_missing", join(spec.hooksDir, "ipa-user-prompt-nudge.mjs")],
+      ["harness.global_markdown_nudge_missing", join(spec.hooksDir, "ipa-md-write-nudge.mjs")]
+    ]) {
+      if (!hasManagedFile(file)) issues.push({ severity: "warn", code, target, message: `missing managed hook ${basename(file)}` });
+    }
+    if (!existsSync(join(vaultPath, entry.local_prompt ?? spec.localPrompt))) {
+      issues.push({ severity: "warn", code: "harness.local_prompt_missing", target, message: `missing ${entry.local_prompt ?? spec.localPrompt}` });
+    }
+  }
+  return {
+    status: issues.some((item) => item.severity === "error") ? "error" : "ok",
+    installed: Object.keys(index.targets ?? {}),
+    issues
+  };
+}
+
+export async function harnessGuardStatus(vaultPath) {
+  const { mapping } = await readVaultConfig(vaultPath);
+  return {
+    policy: "new_markdown_requires_inbox",
+    inbox_dir: mapping.inbox_dir,
+    project_dir: mapping.project_dir,
+    archive_dir: mapping.archive_dir
+  };
+}
+
+function isInsideVault(vaultPath, absolutePath) {
+  const rel = relative(vaultPath, absolutePath);
+  return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !rel.startsWith("/"));
+}
+
+function pathInFolder(relPath, folder) {
+  const rel = toPosix(relPath).replace(/^\/+/, "");
+  const dir = toPosix(folder).replace(/^\/+/, "");
+  return rel === dir || rel.startsWith(`${dir}/`);
+}
+
+export async function harnessGuardCheck(vaultPath, relPath, options = {}) {
+  if (!relPath) throw new Error("harness guard check requires a vault-relative path");
+  const { mapping } = await readVaultConfig(vaultPath);
+  const normalized = toPosix(relPath).replace(/^\/+/, "");
+  const absolute = resolve(vaultPath, normalized);
+  if (!isInsideVault(vaultPath, absolute)) {
+    return { allowed: false, reason: "path escapes vault", path: normalized };
+  }
+  const action = options.action ?? (existsSync(absolute) ? "edit" : "create");
+  if (extname(normalized).toLowerCase() !== ".md") {
+    return { allowed: true, reason: "non-markdown file", path: normalized, action };
+  }
+  if (action !== "create") {
+    return { allowed: true, reason: "existing markdown edit", path: normalized, action };
+  }
+  if (pathInFolder(normalized, mapping.inbox_dir)) {
+    return { allowed: true, reason: "new markdown is under inbox", path: normalized, action, inbox_dir: mapping.inbox_dir };
+  }
+  return {
+    allowed: false,
+    reason: "new markdown files must be created under the configured inbox folder",
+    path: normalized,
+    action,
+    inbox_dir: mapping.inbox_dir
+  };
 }
 
 export async function resolveSettings(options = {}) {

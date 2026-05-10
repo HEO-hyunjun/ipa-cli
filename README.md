@@ -245,6 +245,9 @@ Useful subcommands:
 | `ipa tune eval [--testset NAME]` | Baseline loss/metrics with the *current* active params |
 | `ipa tune` (run, with optional `--apply`) | Run tuning and save the best result JSON |
 | `ipa tune analyze` | Threshold distribution diagnostics |
+| `ipa tune replay [history.jsonl|result.json]` | Recompute trial losses against the current vault/testset |
+| `ipa tune testset list/show/validate/draft/add` | Inspect, validate, draft, or extend vault-local testsets |
+| `ipa tune label [--query Q --target NOTE]` | Record or list labelled query outcomes |
 | `ipa tune list` | History (newest first), ★ active marker |
 | `ipa tune use <filename>` | Flip the pointer; rollback to a past result |
 
@@ -254,6 +257,31 @@ the existing `ipa tune --trials N` command shape. By default, tune reads the
 vault-local testset declared at `.ipa/config.yaml` `test.file`; the bundled
 `ipa-cli-core` pack is a sample fixture pack and is only used when explicitly
 requested.
+
+## Harness
+
+`ipa harness` manages both user-global AI harness files and vault-local
+metadata under `.ipa/harness/`. `install <target>` supports `codex` and
+`claude`.
+
+For the selected target, install writes:
+
+- user-global IPA CLI skill: `~/.codex/skills/ipa/SKILL.md` or
+  `~/.claude/skills/ipa/SKILL.md`
+- user-global inbox creation guard hook
+- user-global `UserPromptSubmit` IPA search/view nudge hook
+- user-global post-write Markdown lint/format nudge hook
+- vault-local manifest and guard helper under `.ipa/harness/<target>/`
+- vault-local system prompt block in `AGENTS.md` for Codex or `CLAUDE.md`
+  for Claude
+
+The built-in guard policy is intentionally small: new Markdown files must be
+created under the configured inbox folder, while existing Markdown edits and
+non-Markdown files are allowed. This supports editor/agent hooks without
+hard-coding one user's vault naming convention.
+
+The post-write nudge hook does not format automatically. It reminds the agent
+to run `ipa validator` and `ipa formatter plan` after vault Markdown edits.
 
 ## Vault skill compatibility
 

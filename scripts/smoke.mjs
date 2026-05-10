@@ -44,7 +44,7 @@ await writeFile(
 await writeFile(join(work, "new-note.md"), "# New Note\n\nBody.\n", "utf8");
 
 const cli = join(root, "packages", "cli", "dist", "main.js");
-const env = { ...process.env, XDG_CONFIG_HOME: xdg };
+const env = { ...process.env, XDG_CONFIG_HOME: xdg, IPA_HARNESS_HOME: work };
 const commands = [
   ["--profile", "ipa-test", "search", "Alpha", "--json"],
   ["--profile", "ipa-test", "view", "Alpha", "--full"],
