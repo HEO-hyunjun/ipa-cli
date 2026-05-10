@@ -146,6 +146,8 @@ def test_harness_guard_blocks_archive_new_note(vault: Path, tmp_path: Path, monk
     payload = json.loads(status.stdout)
     assert payload["skill_installed"] is True
     assert payload["hook_installed"] is True
+    assert "export IPA_SEARCH_LOG=1" in payload["env_exports"]
+    assert payload["permission_snippet"]["allow"]
 
     hook_path = tmp_path / "codex-home" / "hooks" / "ipa-context-writer.py"
     context_dir = tmp_path / "search-context"
@@ -167,7 +169,9 @@ def test_harness_guard_blocks_archive_new_note(vault: Path, tmp_path: Path, monk
 
     claude_install = _run(vault, "harness", "install", "claude", "--json")
     assert claude_install.exit_code == 0, claude_install.stdout
-    assert json.loads(claude_install.stdout)["skill_installed"] is True
+    claude_payload = json.loads(claude_install.stdout)
+    assert claude_payload["skill_installed"] is True
+    assert claude_payload["permission_snippet"]["home"] == "CLAUDE_HOME"
 
     guard = _run(vault, "harness", "guard", "install", "archive-write", "--json")
     assert guard.exit_code == 0, guard.stdout

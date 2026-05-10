@@ -44,6 +44,7 @@ def harness_status(kind: str, *, vault_path: Path, env: Mapping[str, str] | None
     skill_path = home / "skills" / "ipa" / "SKILL.md"
     hook_path = home / "hooks" / "ipa-context-writer.py"
     guard_path = guard_policy_path(vault_path)
+    context_dir = "~/.cache/ipa/search-context"
     return {
         "kind": kind,
         "home": str(home),
@@ -65,6 +66,13 @@ def harness_status(kind: str, *, vault_path: Path, env: Mapping[str, str] | None
                 "IPA_SEARCH_CONTEXT_DIR",
             )
         },
+        "env_exports": [
+            "export IPA_SEARCH_LOG=1",
+            f"export IPA_SEARCH_ACTOR={kind}",
+            "export IPA_SEARCH_CONTEXT_AUTO=1",
+            f"export IPA_SEARCH_CONTEXT_DIR={context_dir}",
+        ],
+        "permission_snippet": _permission_snippet(kind, hook_path),
     }
 
 
@@ -232,3 +240,22 @@ text = json.dumps(context, ensure_ascii=False, indent=2)
 (target / actor / "current.json").write_text(text, encoding="utf-8")
 (target / "current.json").write_text(text, encoding="utf-8")
 """
+
+
+def _permission_snippet(kind: str, hook_path: Path) -> dict:
+    hook = str(hook_path)
+    if kind == "codex":
+        return {
+            "home": "CODEX_HOME",
+            "allow": [
+                "uv run ipa",
+                hook,
+            ],
+        }
+    return {
+        "home": "CLAUDE_HOME",
+        "allow": [
+            "Bash(uv run ipa:*)",
+            f"Bash(python3 {hook}:*)",
+        ],
+    }
