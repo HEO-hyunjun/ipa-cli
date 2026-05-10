@@ -178,12 +178,11 @@ function render(payload) {
   if (payload.optimizer && payload.best) return renderTuneRun(payload);
   if (payload.issues) return renderIssues(payload);
   if (payload.plugins) return renderPlugins(payload);
-  if (payload.paths) return renderPaths(payload);
-  if (payload.tree) return `Traversal tree\n\n${renderTree(payload.tree)}`;
+  if (payload.paths || payload.tree || payload.roots || payload.siblings) return renderTraversal(payload);
   if (payload.notes && payload.sources) return renderContext(payload);
-  if (payload.channels) return renderRegistry("Search channels", payload.channels, "name", "description");
-  if (payload.rules) return renderRegistry("Convention rules", payload.rules, "code", "severity");
-  if (payload.refactors) return renderList("Refactors", payload.refactors);
+  if (payload.channels) return renderChannels(payload.channels);
+  if (payload.rules) return renderRules(payload.rules);
+  if (payload.refactors) return renderRefactors(payload.refactors);
   if (payload.profile !== undefined && payload.vault_path) return renderKeyValues("Active config", payload);
   if (payload.status && payload.checks) return renderDoctor(payload);
   if (payload.suggestions) return renderTableReport("Link suggestions", ["Note", "Target", "Reason"], payload.suggestions.map((item) => [item.note, item.target, item.reason]));
@@ -192,19 +191,20 @@ function render(payload) {
 }
 
 function renderSearchResults(payload) {
-  const header = [
-    "Search results",
-    `Query: ${payload.query || "(empty)"}   Count: ${payload.count}   Threshold: ${payload.threshold}   Max: ${payload.max_results}`
-  ];
-  if (!payload.results.length) return `${header.join("\n")}\n\nNo results.`;
-  const rows = payload.results.map((hit, index) => [
-    String(index + 1),
-    hit.note,
-    hit.type ?? "?",
-    hit.score,
-    hit.path
-  ]);
-  return `${header.join("\n")}\n\n${table(["Rank", "Note", "Type", "Score", "Path"], rows)}`;
+  const lines = [`Search results for '${payload.query}': ${payload.count} notes (threshold ${payload.threshold})`];
+  if (!payload.results.length) return `${lines.join("\n")}\nNo results.`;
+  for (const hit of payload.results) {
+    const refs = hit.refs?.length ? `  ref→ ${hit.refs.join(", ")}` : "";
+    lines.push(`  [ ${Number(hit.score).toFixed(1)}] [${String(hit.type ?? "?").padEnd(5)}] ${hit.note}${refs}`);
+  }
+  if (payload.ref_distribution?.length) {
+    lines.push("", "=== 결과 노트들의 소속 인덱스/ref 분포 (2건 이상) ===");
+    for (const item of payload.ref_distribution) {
+      lines.push(`${String(item.count).padStart(4)}건  ${item.ref}`);
+    }
+    lines.push("→ 2건+ 인덱스는 --view + traversal --down 권장");
+  }
+  return lines.join("\n");
 }
 
 function renderTuneEval(payload) {
@@ -260,9 +260,26 @@ function renderPlugins(payload) {
   return renderTableReport("Plugins", ["Kind", "Path"], payload.plugins.map((item) => [item.kind, item.path]));
 }
 
-function renderPaths(payload) {
-  if (!payload.paths.length) return "Traversal paths\n\nNo paths.";
-  return renderTableReport("Traversal paths", ["#", "Path"], payload.paths.map((path, index) => [String(index + 1), path.join(" -> ")]));
+function renderTraversal(payload) {
+  if (payload.paths) {
+    if (!payload.paths.length) return `No upward paths found for '${payload.note ?? ""}'`;
+    return [
+      `Upward paths from '${payload.note ?? payload.paths[0]?.[0] ?? ""}':`,
+      ...payload.paths.map((path, index) => `  ${index + 1}. ${path.join(" → ")}`)
+    ].join("\n");
+  }
+  if (payload.tree) {
+    return [`Tree from '${payload.note ?? payload.tree.note}':`, ...renderLegacyTree(payload.tree)].join("\n");
+  }
+  if (payload.siblings) {
+    if (!payload.siblings.length) return `No siblings found for '${payload.note ?? ""}'`;
+    return [`Siblings of '${payload.note ?? ""}':`, ...payload.siblings.map((note) => `  - ${note}`)].join("\n");
+  }
+  if (payload.roots) {
+    if (!payload.roots.length) return `No root found for '${payload.note ?? ""}'`;
+    return [`Root(s) for '${payload.note ?? ""}':`, ...payload.roots.map((note) => `  - ${note}`)].join("\n");
+  }
+  return JSON.stringify(payload, null, 2);
 }
 
 function renderContext(payload) {
@@ -275,13 +292,37 @@ function renderContext(payload) {
   ].join("\n");
 }
 
-function renderRegistry(title, items, nameKey, descriptionKey) {
-  const rows = items.map((item) => [item[nameKey], item[descriptionKey] ?? "-"]);
-  return renderTableReport(title, ["Name", "Description"], rows);
+function renderChannels(items) {
+  const rows = items.map((item) => [
+    item.name,
+    Number(item.defaultWeight ?? 0).toFixed(4),
+    Number(item.defaultWeight ?? 0).toFixed(4),
+    item.description ?? "-"
+  ]);
+  return renderTableReport(`search channels`, ["name", "weight", "active", "description"], rows);
 }
 
-function renderList(title, items) {
-  return [`${title} (${items.length})`, ...items.map((item) => `  ${item}`)].join("\n");
+function renderRules(items) {
+  const rows = items.map((item) => [
+    item.code,
+    item.category ?? "-",
+    item.severity ?? "-",
+    item.scope ?? "-"
+  ]);
+  return renderTableReport("validator rules", ["code", "category", "severity", "scope"], rows);
+}
+
+function renderRefactors(items) {
+  const descriptions = {
+    "ref-replace": "ref 교체 (대상 노트의 ref 배열에서 OLD -> NEW)",
+    "tag-rename": "태그 이름 변경 (전체 vault)",
+    "tag-remove": "태그 제거",
+    "tag-add": "특정 노트에 태그 추가",
+    "wikilink-replace": "본문 wikilink 치환",
+    "ref-add": "특정 노트에 ref 추가",
+    "ref-remove": "특정 노트에서 ref 제거"
+  };
+  return renderTableReport("refactor commands", ["name", "description"], items.map((item) => [item, descriptions[item] ?? "-"]));
 }
 
 function renderDoctor(payload) {
@@ -320,8 +361,11 @@ function formatRows(rows) {
   return rows.map(([left, right]) => `  ${left.padEnd(width)}  ${right}`).join("\n");
 }
 
-function renderTree(node, depth = 0) {
-  return `${"  ".repeat(depth)}- ${node.note}\n${(node.children ?? []).map((child) => renderTree(child, depth + 1)).join("")}`.trimEnd();
+function renderLegacyTree(node, depth = 0) {
+  const prefix = depth === 0 ? "" : `${"  ".repeat(depth)}${node.type === "note" ? "📄 " : ""}`;
+  const lines = [`${prefix}${node.note}`];
+  for (const child of node.children ?? []) lines.push(...renderLegacyTree(child, depth + 1));
+  return lines;
 }
 
 async function withVault(global, fn) {
@@ -343,11 +387,11 @@ async function main(argv = process.argv.slice(2)) {
   switch (command) {
     case "search": {
       const query = positional(args).join(" ");
-      const threshold = Number(getOpt(args, "--threshold", 0.05));
-      const maxResults = Number(getOpt(args, "--max", 10));
+      const thresholdArg = getOpt(args, "--threshold", null);
+      const maxArg = getOpt(args, "--max", null);
       return withVault(global, async (vault) => print(await searchVault(vault, query, {
-        threshold,
-        maxResults,
+        threshold: thresholdArg === null ? undefined : Number(thresholdArg),
+        maxResults: maxArg === null ? undefined : Number(maxArg),
         showAll: has(args, "--all")
       }), json));
     }

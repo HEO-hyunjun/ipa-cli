@@ -26,23 +26,31 @@ export const DEFAULT_MAPPING = {
 };
 
 export const CHANNELS = [
-  { name: "filename", defaultWeight: 0.26, description: "Filename and alias exact/partial match" },
-  { name: "fuzzy", defaultWeight: 0.18, description: "Ordered character fuzzy match" },
-  { name: "sequence", defaultWeight: 0.12, description: "Token sequence match" },
-  { name: "keyword", defaultWeight: 0.16, description: "Frontmatter and body keyword match" },
-  { name: "body", defaultWeight: 0.18, description: "Body term coverage" },
-  { name: "related", defaultWeight: 0.07, description: "Shared refs/tags with direct query hits" },
-  { name: "project", defaultWeight: 0.03, description: "Project folder/ref boost" },
-  { name: "child-body", defaultWeight: 0.04, description: "Index/root child body match" }
+  { name: "fuzzy", defaultWeight: 0.268, description: "Graded fuzzy match on note id and aliases" },
+  { name: "keyword", defaultWeight: 0.055, description: "Token AND match against note id, aliases, refs, tags, and body" },
+  { name: "filename", defaultWeight: 0.2, description: "Exact, case-insensitive, substring, and no-space match on note id and aliases" },
+  { name: "sequence_match", defaultWeight: 0.078, description: "All query tokens appear in normalized note id or aliases" },
+  { name: "filename_partial", defaultWeight: 0.15, description: "Partial token match on normalized note id or aliases" },
+  { name: "body_match", defaultWeight: 0.363, description: "Body term coverage over note id, aliases, and body" },
+  { name: "child_body_match", defaultWeight: 0.169, description: "Index/root inherits child body match from notes that ref it" },
+  { name: "related", defaultWeight: 0.032, description: "Graph-neighbor expansion from filename-matched seeds" },
+  { name: "project", defaultWeight: 0.033, description: "Project folder/ref boost" }
 ];
 
 export const RULES = [
-  { code: "ipa.frontmatter.required", severity: "error" },
-  { code: "ipa.frontmatter.type", severity: "error" },
-  { code: "ipa.frontmatter.ref_required", severity: "warn" },
-  { code: "ipa.tag.snake_case", severity: "warn" },
-  { code: "K001", severity: "warn" },
-  { code: "K002", severity: "warn" }
+  { code: "ipa.frontmatter.required_field", category: "frontmatter", severity: "warn", scope: "note" },
+  { code: "ipa.frontmatter.date_format", category: "frontmatter", severity: "warn", scope: "note" },
+  { code: "ipa.frontmatter.invalid_type", category: "frontmatter", severity: "error", scope: "note" },
+  { code: "ipa.frontmatter.missing_ref", category: "frontmatter", severity: "warn", scope: "note" },
+  { code: "ipa.title.root_prefix_missing", category: "title", severity: "warn", scope: "note" },
+  { code: "ipa.title.root_suffix_missing", category: "title", severity: "warn", scope: "note" },
+  { code: "ipa.title.index_prefix_missing", category: "title", severity: "warn", scope: "note" },
+  { code: "ipa.location.type_mismatch", category: "location", severity: "warn", scope: "note" },
+  { code: "ipa.link.ref_target_missing", category: "link", severity: "warn", scope: "vault" },
+  { code: "ipa.link.wikilink_target_missing", category: "link", severity: "warn", scope: "vault" },
+  { code: "ipa.root_folder.duplicate", category: "root_folder", severity: "warn", scope: "vault" },
+  { code: "ipa.root_folder.missing", category: "root_folder", severity: "warn", scope: "vault" },
+  { code: "ipa.heading.no_h1", category: "heading", severity: "info", scope: "note" }
 ];
 
 export const REFACTORS = [
@@ -380,8 +388,14 @@ export function scoreNote(note, query, notes, weights = {}) {
 
   const bodyTokens = tokenize(`${note.id} ${note.aliases.join(" ")} ${note.body}`);
   const coverage = tokens.length ? tokens.filter((token) => bodyTokens.includes(token)).length / tokens.length : 0;
-  channelScores.sequence = coverage;
-  if (coverage) reasons.sequence = { coverage };
+  channelScores.sequence_match = tokens.length && tokens.every((token) => names.some((name) => name.toLowerCase().includes(token))) ? 1 : 0;
+  if (channelScores.sequence_match) reasons.sequence_match = { coverage: 1 };
+
+  const partialMatches = tokens.length
+    ? tokens.filter((token) => names.some((name) => name.toLowerCase().includes(token))).length / tokens.length
+    : 0;
+  channelScores.filename_partial = partialMatches > 0 && partialMatches < 1 ? partialMatches : 0;
+  if (channelScores.filename_partial) reasons.filename_partial = { coverage: channelScores.filename_partial };
 
   const keywordText = `${note.refs.join(" ")} ${note.tags.join(" ")} ${note.aliases.join(" ")} ${note.body}`.toLowerCase();
   const keyword = tokens.length ? tokens.filter((token) => keywordText.includes(token)).length / tokens.length : 0;
@@ -390,8 +404,8 @@ export function scoreNote(note, query, notes, weights = {}) {
 
   const bodyLower = note.body.toLowerCase();
   const body = tokens.length ? tokens.filter((token) => bodyLower.includes(token)).length / tokens.length : 0;
-  channelScores.body = body;
-  if (body) reasons.body = { coverage: body };
+  channelScores.body_match = Math.max(body, coverage);
+  if (channelScores.body_match) reasons.body_match = { coverage: channelScores.body_match };
 
   const directHits = notes.filter((candidate) => candidate.id.toLowerCase().includes(lower));
   const shared = directHits.some((candidate) =>
@@ -402,7 +416,14 @@ export function scoreNote(note, query, notes, weights = {}) {
   if (shared) reasons.related = { shared: true };
 
   channelScores.project = note.folder.includes(DEFAULT_MAPPING.project_dir) ? 0.35 : 0;
-  channelScores["child-body"] = note.type === "index" || note.type === "root" ? body * 0.5 : 0;
+  const childBody = note.type === "index" || note.type === "root"
+    ? Math.max(0, ...notes.filter((candidate) => candidate.refs.includes(note.id)).map((candidate) => {
+        const candidateBody = candidate.body.toLowerCase();
+        return tokens.length ? tokens.filter((token) => candidateBody.includes(token)).length / tokens.length : 0;
+      }))
+    : 0;
+  channelScores.child_body_match = childBody;
+  if (childBody) reasons.child_body_match = { coverage: childBody };
 
   let score = 0;
   for (const channel of CHANNELS) {
@@ -438,7 +459,7 @@ export async function searchVault(vaultPath, query, options = {}) {
   const { mapping } = await readVaultConfig(vaultPath);
   const notes = await loadNotes(vaultPath, mapping);
   const active = await activeSearchParams(vaultPath);
-  const threshold = options.showAll ? 0 : options.threshold ?? active.threshold ?? 0.05;
+  const threshold = options.showAll ? 0 : options.threshold ?? active.threshold ?? 0.3;
   const cap = options.maxResults ?? options.cap ?? active.cap ?? 10;
   const weights = options.weights ?? active.weights ?? {};
   const hitsByNote = new Map();
@@ -448,6 +469,7 @@ export async function searchVault(vaultPath, query, options = {}) {
         note: note.id,
         path: note.relPath,
         type: note.type || "?",
+        refs: note.refs,
         score: Number(scored.score.toFixed(6)),
         reasons: scored.reasons
     });
@@ -459,6 +481,7 @@ export async function searchVault(vaultPath, query, options = {}) {
       note: note.id,
       path: note.relPath,
       type: note.type || "?",
+      refs: note.refs,
       score: 0,
       reasons: {}
     };
@@ -470,7 +493,15 @@ export async function searchVault(vaultPath, query, options = {}) {
     .filter((hit) => options.showAll || hit.score >= threshold)
     .sort((a, b) => b.score - a.score || a.note.localeCompare(b.note))
     .slice(0, cap);
-  return { query, threshold, max_results: cap, count: hits.length, results: hits };
+  const refCounts = {};
+  for (const hit of hits) {
+    for (const ref of hit.refs ?? []) refCounts[ref] = (refCounts[ref] ?? 0) + 1;
+  }
+  const ref_distribution = Object.entries(refCounts)
+    .filter(([, count]) => count >= 2)
+    .sort((a, b) => b[1] - a[1])
+    .map(([ref, count]) => ({ ref, count }));
+  return { query, threshold, max_results: cap, count: hits.length, results: hits, ref_distribution };
 }
 
 async function runSearchPlugins(vaultPath, query, notes, mapping) {
@@ -510,23 +541,245 @@ export async function viewNote(vaultPath, noteName, options = {}) {
   const notes = await loadNotes(vaultPath, mapping);
   const note = findNote(notes, noteName);
   if (!note) throw new Error(`note not found: ${noteName}`);
-  if (options.full) return note.raw;
   if (options.section) {
-    return extractSection(note.body, options.section) ?? "";
+    return renderSectionNote(note, options.section);
   }
-  const lines = [
-    `=== ${note.id} [${note.type || "?"}] ===`,
-    `path: ${note.relPath}`,
-    `refs: ${note.refs.join(", ") || "-"}`,
-    `tags: ${note.tags.join(", ") || "-"}`,
-    "",
-    note.body.split("\n").find((line) => line.trim()) ?? ""
-  ];
-  if (note.headings.length) {
-    lines.push("", "headings:");
-    for (const heading of note.headings) lines.push(`${"#".repeat(heading.level)} ${heading.title}`);
+  if (options.full) return renderFullNote(note, notes, vaultPath);
+  return renderOverviewNote(note, notes, vaultPath);
+}
+
+function renderOverviewNote(note, notes, vaultPath) {
+  const lines = [...renderContextHeader(note, notes, vaultPath), ...renderFrontmatter(note), ""];
+  const sections = bodySections(note.body);
+  if (sections.length) {
+    lines.push("## Structure");
+    for (const section of sections) {
+      const indent = "  ".repeat(Math.max(0, section.level - 1));
+      if (section.kind === "header") lines.push(`${indent}[H${section.level}] ${section.title}`);
+      else lines.push(`${indent}[!${section.calloutType}${section.collapsed ? "-" : ""}] ${section.title}`);
+    }
+  } else if (note.body.trim()) {
+    lines.push("(structure unavailable - body exists)");
+  } else {
+    lines.push("(empty body)");
   }
+  lines.push(...renderActionFooter(note, notes, true));
   return lines.join("\n");
+}
+
+function renderFullNote(note, notes, vaultPath) {
+  const lines = [
+    ...renderContextHeader(note, notes, vaultPath),
+    ...renderFrontmatter(note),
+    "",
+    ...renderFullBody(note.body)
+  ];
+  lines.push(...renderActionFooter(note, notes));
+  return lines.join("\n");
+}
+
+function renderSectionNote(note, title) {
+  const sections = bodySections(note.body);
+  const query = String(title ?? "").toLowerCase();
+  const matches = sections.filter((section) => section.title === title);
+  const selected = matches.length
+    ? matches
+    : sections.filter((section) => section.title.toLowerCase() === query || section.title.toLowerCase().includes(query));
+  if (!selected.length) {
+    const available = sections.map((section) => section.kind === "header"
+      ? `  [H${section.level}] ${section.title}`
+      : `  [!${section.calloutType}] ${section.title}`).join("\n") || "  (no sections)";
+    return `Section not found: '${title}'\n\nAvailable sections:\n${available}`;
+  }
+  return selected.map((section) => section.rendered).join("\n\n");
+}
+
+function renderContextHeader(note, notes, vaultPath) {
+  const folder = formatFolderLabel(note, vaultPath);
+  const folderLabel = folder ? `  📁 ${folder}` : "";
+  const lines = [`=== ${note.id} [${note.type || "?"}]${folderLabel} ===`];
+  const paths = upwardPaths(note, notes).map((path) => path.slice(1)).filter((path) => path.length);
+  if (paths.length) {
+    for (const path of paths) lines.push(`↑ ref: ${path.join(" → ")}`);
+  } else if (note.type === "root") {
+    lines.push("↑ ref: (root — 최상위)");
+  } else if (note.type === "index") {
+    lines.push("↑ ref: (독립 index — root 없음)");
+  }
+  if (note.aliases.length) lines.push(`aliases: ${note.aliases.join(", ")}`);
+  lines.push(`Path: ${note.path}`);
+  return lines;
+}
+
+function formatFolderLabel(note, vaultPath) {
+  const envVault = process.env.IPA_VAULT_PATH ? resolve(process.env.IPA_VAULT_PATH) : null;
+  if (!envVault || resolve(vaultPath) !== envVault) return "";
+  const rel = toPosix(relative(envVault, note.path));
+  return rel && !rel.startsWith("..") ? rel.split("/")[0] : "";
+}
+
+function renderFrontmatter(note) {
+  if (!Object.keys(note.frontmatter).length) return [];
+  return ["---", ...Object.entries(note.frontmatter).map(([key, value]) => `${key}: ${formatFrontmatterValue(value)}`), "---"];
+}
+
+function formatFrontmatterValue(value) {
+  if (Array.isArray(value)) return `[${value.map((item) => JSON.stringify(item)).join(", ")}]`;
+  if (value && typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
+function renderFullBody(body) {
+  const text = String(body ?? "").replace(/^\n+/, "");
+  if (!text.trim()) return ["(empty body)"];
+  const lines = text.split("\n");
+  const out = [];
+  let inCodeBlock = false;
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (isCodeFence(line)) {
+      inCodeBlock = !inCodeBlock;
+      out.push(line);
+      continue;
+    }
+    if (!inCodeBlock && isCollapsedCallout(line)) {
+      let count = 0;
+      let j = i + 1;
+      while (j < lines.length && lines[j].startsWith(">")) {
+        count += 1;
+        j += 1;
+      }
+      out.push(line, `> (...collapsed, ${count} lines)`);
+      i = j - 1;
+      continue;
+    }
+    out.push(line);
+  }
+  return out;
+}
+
+function bodySections(body) {
+  const lines = String(body ?? "").replace(/^\n+/, "").split("\n");
+  const sections = [];
+  let inCodeBlock = false;
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (isCodeFence(line)) {
+      inCodeBlock = !inCodeBlock;
+      continue;
+    }
+    if (inCodeBlock) continue;
+    const header = line.match(/^(#{1,6})\s+(.+)$/);
+    const callout = line.match(/^>\s*\[!(\w+)\]([+-]?)\s*(.*)$/);
+    if (!header && !callout) continue;
+    const level = header ? header[1].length : 1;
+    const title = header ? header[2].trim() : (callout[3].trim() || callout[1]);
+    let end = lines.length;
+    for (let j = i + 1; j < lines.length; j += 1) {
+      const nextHeader = lines[j].match(/^(#{1,6})\s+(.+)$/);
+      const nextCallout = lines[j].match(/^>\s*\[!(\w+)\]([+-]?)\s*(.*)$/);
+      if (nextHeader && nextHeader[1].length <= level) {
+        end = j;
+        break;
+      }
+      if (!header && nextCallout) {
+        end = j;
+        break;
+      }
+    }
+    sections.push({
+      kind: header ? "header" : "callout",
+      level,
+      title,
+      calloutType: callout?.[1] ?? "",
+      collapsed: callout?.[2] === "-",
+      rendered: renderFullBody(lines.slice(i, end).join("\n")).join("\n")
+    });
+  }
+  return sections;
+}
+
+function isCodeFence(line) {
+  const trimmed = line.trimStart();
+  return trimmed.startsWith("```") || trimmed.startsWith("~~~");
+}
+
+function isCollapsedCallout(line) {
+  const match = line.match(/^>\s*\[!(\w+)\]([+-]?)\s*(.*)$/);
+  return Boolean(match && match[2] === "-");
+}
+
+function renderActionFooter(note, notes, isOverview = false) {
+  const outlinks = new Set(note.links).size;
+  const backlinks = countBacklinks(note, notes);
+  const peerNotes = siblings(note, notes);
+  const lines = ["", "────────────────"];
+
+  if (note.type === "index" || note.type === "root") {
+    lines.push(`연결: ↘ 하위 ${countChildren(note, notes)}  ↗ outlinks ${outlinks}  ↩ backlinks ${backlinks}  ⇄ 형제 ${peerNotes.length}`);
+  } else {
+    lines.push(`연결: ↗ outlinks ${outlinks}  ↩ backlinks ${backlinks}  ⇄ siblings ${peerNotes.length}`);
+  }
+
+  lines.push(...formatTagDistribution(note, notes));
+  lines.push(...renderActionHints(note, isOverview));
+  return lines;
+}
+
+function countBacklinks(note, notes) {
+  return notes.filter((candidate) => candidate.id !== note.id && [...candidate.refs, ...candidate.links].includes(note.id)).length;
+}
+
+function countChildren(note, notes) {
+  return notes.filter((candidate) => candidate.refs.includes(note.id)).length;
+}
+
+function formatTagDistribution(note, notes) {
+  if (!note.tags.length) return [];
+  const sorted = note.tags
+    .map((tag) => ({
+      tag,
+      peers: notes.filter((candidate) => candidate.id !== note.id && candidate.tags.includes(tag))
+    }))
+    .sort((a, b) => b.peers.length - a.peers.length)
+    .slice(0, 3);
+  const width = Math.max(...sorted.map((item) => item.tag.length));
+  const lines = ["🏷 tags:"];
+  for (const item of sorted) {
+    const refs = {};
+    for (const peer of item.peers) {
+      for (const ref of peer.refs) refs[ref] = (refs[ref] ?? 0) + 1;
+    }
+    const refText = Object.entries(refs)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([ref, count]) => `${ref} (${count})`)
+      .join(", ");
+    let warn = "";
+    if (item.peers.length === 0) warn = "  ⚠ 고립(이 tag는 이 노트만)";
+    else if (item.peers.length === 1) warn = "  ⚠ 동행 1건(시그널 약함)";
+    else if (Object.keys(refs).length <= 1) warn = "  ⚠ 미가로지름(같은 인덱스에만 분포)";
+    lines.push(`  ${item.tag.padEnd(width)}  (${String(item.peers.length).padStart(3)})${refText ? `  → ${refText}` : ""}${warn}`);
+  }
+  return lines;
+}
+
+function renderActionHints(note, isOverview) {
+  const commands = note.type === "index" || note.type === "root"
+    ? [
+        [`--down "${note.id}"`, "하위 트리"],
+        [`--siblings "${note.id}"`, "같은 부모 아래 형제"],
+        [`--backlinks "${note.id}"`, "본문에서 이 노트를 거명한 노트"]
+      ]
+    : [
+        [`--up "${note.id}"`, "상위 인덱스 → root 경로"],
+        [`--related "${note.id}"`, "그래프 이웃 노트"],
+        [`--backlinks "${note.id}"`, "누가 이 노트를 가리키는가"]
+      ];
+  if (note.tags[0]) commands.push([`--tag "${note.tags[0]}"`, "같은 관점(tag) 동행 노트"]);
+  if (isOverview) commands.push([`--view "${note.id}" --full`, "이 노트의 본문 전체 보기"]);
+  const width = Math.max(...commands.map(([command]) => command.length));
+  return ["다음:", ...commands.map(([command, hint]) => `  ${command.padEnd(width)}  # ${hint}`)];
 }
 
 export function extractSection(body, title) {
@@ -566,11 +819,10 @@ export async function traversal(vaultPath, mode, noteName) {
   const notes = await loadNotes(vaultPath, mapping);
   const note = findNote(notes, noteName);
   if (!note) throw new Error(`note not found: ${noteName}`);
-  const graph = buildGraph(notes);
-  if (mode === "up") return { paths: upwardPaths(note, notes) };
-  if (mode === "down") return { tree: downwardTree(note.id, graph, notes) };
-  if (mode === "siblings") return { siblings: siblings(note, notes).map((item) => item.id) };
-  if (mode === "root") return { roots: upwardPaths(note, notes).map((path) => path[path.length - 1]).filter(Boolean) };
+  if (mode === "up") return { mode, note: note.id, paths: upwardPaths(note, notes) };
+  if (mode === "down") return { mode, note: note.id, tree: downwardTree(note.id, notes) };
+  if (mode === "siblings") return { mode, note: note.id, siblings: siblings(note, notes).map((item) => item.id) };
+  if (mode === "root") return { mode, note: note.id, roots: upwardPaths(note, notes).map((path) => path[path.length - 1]).filter(Boolean) };
   throw new Error(`unknown traversal mode: ${mode}`);
 }
 
@@ -587,13 +839,16 @@ function upwardPaths(note, notes, seen = new Set()) {
   return paths;
 }
 
-function downwardTree(noteId, graph, notes, seen = new Set()) {
-  if (seen.has(noteId)) return { note: noteId, children: [] };
+function downwardTree(noteId, notes, seen = new Set()) {
+  const note = findNote(notes, noteId);
+  if (seen.has(noteId)) return { note: noteId, type: note?.type ?? "", children: [] };
   seen.add(noteId);
-  const children = (graph.backlinks[noteId] ?? [])
+  const children = notes
+    .filter((candidate) => candidate.refs.includes(noteId))
+    .map((candidate) => candidate.id)
     .sort()
-    .map((child) => downwardTree(child, graph, notes, new Set(seen)));
-  return { note: noteId, children };
+    .map((child) => downwardTree(child, notes, new Set(seen)));
+  return { note: noteId, type: note?.type ?? "", children };
 }
 
 function siblings(note, notes) {
