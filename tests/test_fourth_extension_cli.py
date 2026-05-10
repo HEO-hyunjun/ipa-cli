@@ -278,11 +278,18 @@ def test_link_rename_move_and_inbox_triage(vault: Path) -> None:
 
 
 def test_plugin_dry_run_surfaces_search_lint_and_formatter(vault: Path) -> None:
+    _note(
+        vault / "00 Inbox" / "Some Note.md",
+        "note",
+        ["[[🔖 Topic Index]]"],
+        ["note"],
+        "Some note body.\n",
+    )
     plugin_root = vault / ".ipa" / "plugins"
     (plugin_root / "search").mkdir(parents=True)
     (plugin_root / "lint").mkdir()
     (plugin_root / "formatter").mkdir()
-    (plugin_root / "search" / "sample.py").write_text(
+    (plugin_root / "search" / "my-channel.py").write_text(
         """
 from typing import ClassVar
 from ipa_cli.api.base_channels import BaseSearchChannel
@@ -298,7 +305,7 @@ channels = [SampleChannel()]
 """,
         encoding="utf-8",
     )
-    (plugin_root / "lint" / "sample.py").write_text(
+    (plugin_root / "lint" / "test_rule.py").write_text(
         """
 from typing import ClassVar
 from ipa_cli.api.base_rules import BaseConventionRule, Issue, Severity
@@ -313,7 +320,7 @@ rules = [SampleRule()]
 """,
         encoding="utf-8",
     )
-    (plugin_root / "formatter" / "sample.py").write_text(
+    (plugin_root / "formatter" / "fix-frontmatter.py").write_text(
         """
 from typing import ClassVar
 from ipa_cli.api.base_rules import BaseConventionRule, Issue, Patch, Severity, Span
@@ -340,22 +347,22 @@ rules = [SampleFormatter()]
         "plugin",
         "dry-run",
         "search",
-        ".ipa/plugins/search/sample.py",
+        ".ipa/plugins/search/my-channel.py",
         "--query",
-        "Alpha",
+        "Some",
         "--json",
     )
     assert search.exit_code == 0, search.stdout
-    assert json.loads(search.stdout)["results"][0]["note"] == "Alpha"
+    assert json.loads(search.stdout)["results"][0]["note"] == "Some Note"
 
     lint = _run(
         vault,
         "plugin",
         "dry-run",
         "lint",
-        ".ipa/plugins/lint/sample.py",
+        ".ipa/plugins/lint/test_rule.py",
         "--note",
-        "Alpha",
+        "Some Note",
         "--json",
     )
     assert lint.exit_code == 0, lint.stdout
@@ -366,9 +373,9 @@ rules = [SampleFormatter()]
         "plugin",
         "dry-run",
         "formatter",
-        ".ipa/plugins/formatter/sample.py",
+        ".ipa/plugins/formatter/fix-frontmatter.py",
         "--note",
-        "Alpha",
+        "Some Note",
         "--json",
     )
     assert formatter.exit_code == 0, formatter.stdout
