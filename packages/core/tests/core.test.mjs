@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { cp, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -100,8 +100,18 @@ test("profile and vault overrides resolve in the documented priority order", asy
   process.env.IPA_VAULT_PATH = other;
   process.env.IPA_PROFILE = "other";
   try {
+    const project = await mkdtemp(join(tmpdir(), "ipa-local-profile-"));
+    await writeFile(join(project, ".ipa-profile"), "ipa-test\n", "utf8");
+    const projectWithConfig = await mkdtemp(join(tmpdir(), "ipa-local-config-"));
+    await writeFile(join(projectWithConfig, ".ipa-config"), `vault_path: ${vault}\n`, "utf8");
+    const projectWithOtherConfig = await mkdtemp(join(tmpdir(), "ipa-local-config-"));
+    await writeFile(join(projectWithOtherConfig, ".ipa-config"), `vault_path: ${other}\n`, "utf8");
     assert.equal((await resolveSettings({ profile: "ipa-test" })).vaultPath, vault);
+    assert.equal((await resolveSettings({ profile: "ipa-test", cwd: projectWithOtherConfig })).vaultPath, vault);
     assert.equal((await resolveSettings({ vault })).vaultPath, vault);
+    assert.equal((await resolveSettings({ vault: "~/ipa" })).vaultPath, join(homedir(), "ipa"));
+    assert.equal((await resolveSettings({ cwd: project })).vaultPath, vault);
+    assert.equal((await resolveSettings({ cwd: projectWithConfig })).vaultPath, vault);
     assert.equal((await resolveSettings({})).vaultPath, other);
     await assert.rejects(() => resolveSettings({ profile: "missing-profile" }), /unknown profile: missing-profile/);
     process.env.IPA_PROFILE = "missing-profile";
@@ -169,6 +179,22 @@ test("note-name search and lookup ignore emoji markers but preserve display name
   assert.equal((await validateVault(vault)).status, "ok");
   const down = await traversal(vault, "down", "🔖 Topic Index");
   assert.ok(down.tree.children.some((child) => child.note === "No Emoji Ref"));
+});
+
+test("indentless YAML sequences parse as lists instead of object refs", async () => {
+  const vault = await fixtureVault();
+  await writeFile(
+    join(vault, "00 Inbox", "Indentless Ref.md"),
+    `---\ndate_created: 2026-05-10T00:00:00.000Z\ndate_modified: 2026-05-10T00:00:00.000Z\ntype: note\nref:\n- '[[🔖 Topic Index]]'\ntags:\n- yaml\n---\n# Indentless Ref\n`,
+    "utf8"
+  );
+
+  const notes = await loadNotes(vault, (await readVaultConfig(vault)).mapping);
+  const note = notes.find((item) => item.id === "Indentless Ref");
+  assert.deepEqual(note.refs, ["🔖 Topic Index"]);
+  assert.deepEqual(note.tags, ["yaml"]);
+  const search = await searchVault(vault, "Indentless Ref", { threshold: 0, maxResults: 1 });
+  assert.deepEqual(search.results[0].refs, ["🔖 Topic Index"]);
 });
 
 test("note lookup and graph matching normalize macOS decomposed filenames", async () => {
@@ -378,9 +404,13 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   assert.ok(install.global_files.some((file) => file.endsWith(".codex/skills/ipa/SKILL.md")));
   assert.deepEqual((await harnessStatus(vault, options)).installed, ["codex"]);
   assert.equal((await harnessDoctor(vault, options)).status, "ok");
-  assert.match(await readFile(join(home, ".codex", "skills", "ipa", "SKILL.md"), "utf8"), /ipa --profile ipa-test search/);
+  const skill = await readFile(join(home, ".codex", "skills", "ipa", "SKILL.md"), "utf8");
+  assert.ok(skill.startsWith("---\nname: ipa\n"), "skill YAML frontmatter must be first");
+  assert.match(skill, /ipa search/);
+  assert.doesNotMatch(skill, /ipa --profile ipa-test search/);
+  assert.match(skill, /formatter plan --note "Note A" "Note B"/);
   assert.match(await readFile(join(home, ".codex", "hooks", "ipa-inbox-guard.mjs"), "utf8"), /shared IPA inbox creation guard/);
-  assert.match(await readFile(join(home, ".codex", "hooks", "ipa-md-write-nudge.mjs"), "utf8"), /lint\/validate and format-plan/);
+  assert.match(await readFile(join(home, ".codex", "hooks", "ipa-md-write-nudge.mjs"), "utf8"), /note-scoped format plan/);
   assert.match(await readFile(join(vault, "AGENTS.md"), "utf8"), /IPA CLI Harness/);
   const hooks = await readFile(join(home, ".codex", "hooks.json"), "utf8");
   assert.match(hooks, /ipa-inbox-guard\.mjs/);
@@ -403,7 +433,7 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
     encoding: "utf8"
   });
   assert.equal(nudge.status, 0);
-  assert.match(nudge.stdout, /formatter plan/);
+  assert.match(nudge.stdout, /formatter plan --note \\"Alpha\\"/);
 
   const claudeInstall = await harnessInstall(vault, "claude", options);
   assert.equal(claudeInstall.installed, true);
@@ -459,6 +489,14 @@ test("vault-local JS plugins run in search, validation and formatter paths", asy
   assert.ok(validation.issues.some((item) => item.code === "sample.alpha" && item.plugin === ".ipa/plugins/lint/sample.js"));
   const format = await formatVault(vault);
   assert.ok(format.patches.some((item) => item.note === "Alpha" && item.plugin === ".ipa/plugins/formatter/sample.js"));
+  const scopedMiss = await formatVault(vault, false, { note: "Beta" });
+  assert.equal(scopedMiss.patches.length, 0);
+  const scopedHit = await formatVault(vault, false, { note: "Alpha" });
+  assert.equal(scopedHit.patches.length, 1);
+  const scopedList = await formatVault(vault, false, { notes: ["Alpha", "Beta"] });
+  assert.equal(scopedList.patches.length, 1);
+  await assert.rejects(() => formatVault(vault, false, { note: "Missing" }), /note not found: Missing/);
+  await assert.rejects(() => formatVault(vault, false, { notes: ["Alpha", "Missing"] }), /note not found: Missing/);
   const applied = await formatVault(vault, true);
   assert.deepEqual(applied.applied, [{ note: "Alpha", path: "00 Inbox/Alpha.md", patches: 1 }]);
   assert.match(await readFile(join(vault, "00 Inbox", "Alpha.md"), "utf8"), /Alpha formatted Beta/);

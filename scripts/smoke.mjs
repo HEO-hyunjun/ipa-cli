@@ -71,6 +71,8 @@ const commands = [
   ["--profile", "ipa-test", "engine", "search", "Alpha", "--json"],
   ["--profile", "ipa-test", "convention", "check", "--json"],
   ["--profile", "ipa-test", "formatter", "plan", "--json"],
+  ["--profile", "ipa-test", "formatter", "plan", "--note", "Alpha", "--json"],
+  ["--profile", "ipa-test", "formatter", "plan", "--note", "Alpha", "Beta", "--json"],
   ["--profile", "ipa-test", "formatter", "apply", "--json"],
   ["--profile", "ipa-test", "inbox", "triage", "--json"],
   ["--profile", "ipa-test", "cache", "rebuild", "--json"],

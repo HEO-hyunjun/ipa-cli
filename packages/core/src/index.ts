@@ -9,7 +9,7 @@ import {
   stat,
   writeFile
 } from "node:fs/promises";
-import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { homedir } from "node:os";
 
@@ -161,7 +161,13 @@ function parseYamlBlock(lines, start, indent) {
       container[key] = parseScalar(rest);
       i += 1;
     } else {
-      const parsed = parseYamlBlock(lines, i + 1, indent + 2);
+      let childIndent = indent + 2;
+      for (let j = i + 1; j < lines.length; j += 1) {
+        if (!lines[j].trim() || lines[j].trim().startsWith("#")) continue;
+        if (countIndent(lines[j]) === indent && lines[j].trim().startsWith("- ")) childIndent = indent;
+        break;
+      }
+      const parsed = parseYamlBlock(lines, i + 1, childIndent);
       container[key] = parsed.value;
       i = parsed.next;
     }
@@ -222,7 +228,9 @@ export function writeFrontmatter(frontmatter, body) {
 
 function asList(value) {
   if (value === undefined || value === null || value === "") return [];
-  return Array.isArray(value) ? value.map(String) : [String(value)];
+  if (Array.isArray(value)) return value.flatMap(asList);
+  if (typeof value === "object") return Object.values(value).flatMap(asList);
+  return [String(value)];
 }
 
 export function stripWiki(value) {
@@ -859,17 +867,17 @@ function formatTagDistribution(note, notes) {
 function renderActionHints(note, isOverview) {
   const commands = note.type === "index" || note.type === "root"
     ? [
-        [`--down "${note.id}"`, "하위 트리"],
-        [`--siblings "${note.id}"`, "같은 부모 아래 형제"],
-        [`--backlinks "${note.id}"`, "본문에서 이 노트를 거명한 노트"]
+        [`ipa traversal --down "${note.id}"`, "하위 트리"],
+        [`ipa traversal --siblings "${note.id}"`, "같은 부모 아래 형제"],
+        [`ipa context "${note.id}" --by-note`, "이 노트 중심 context"]
       ]
     : [
-        [`--up "${note.id}"`, "상위 인덱스 → root 경로"],
-        [`--related "${note.id}"`, "그래프 이웃 노트"],
-        [`--backlinks "${note.id}"`, "누가 이 노트를 가리키는가"]
+        [`ipa traversal --up "${note.id}"`, "상위 인덱스 → root 경로"],
+        [`ipa traversal --siblings "${note.id}"`, "같은 부모 아래 형제"],
+        [`ipa context "${note.id}" --by-note`, "이 노트 중심 context"]
       ];
-  if (note.tags[0]) commands.push([`--tag "${note.tags[0]}"`, "같은 관점(tag) 동행 노트"]);
-  if (isOverview) commands.push([`--view "${note.id}" --full`, "이 노트의 본문 전체 보기"]);
+  if (note.tags[0]) commands.push([`ipa search "${note.tags[0]}"`, "태그/본문 검색"]);
+  if (isOverview) commands.push([`ipa view "${note.id}" --full`, "이 노트의 본문 전체 보기"]);
   const width = Math.max(...commands.map(([command]) => command.length));
   return ["다음:", ...commands.map(([command, hint]) => `  ${command.padEnd(width)}  # ${hint}`)];
 }
@@ -1066,23 +1074,45 @@ function normalizePluginIssues(pluginIssues, pluginPath, note) {
     }));
 }
 
-export async function formatVault(vaultPath, apply = false) {
+export async function formatVault(vaultPath, apply = false, options = {}) {
   const { mapping } = await readVaultConfig(vaultPath);
-  const notes = await loadNotes(vaultPath, mapping);
+  const allNotes = await loadNotes(vaultPath, mapping);
+  const requested = asList(options.notes ?? options.note);
+  const targets = [];
+  for (const noteName of requested) {
+    const note = findNote(allNotes, noteName);
+    if (!note) throw new Error(`note not found: ${noteName}`);
+    if (!targets.some((item) => item.id === note.id)) targets.push(note);
+  }
+  const targetIds = new Set(targets.map((note) => note.id));
+  const notes = targets.length ? targets : allNotes;
   const validation = await validateVault(vaultPath);
+  const issues = targetIds.size
+    ? validation.issues.filter((item) => targetIds.has(item.note) || notes.some((note) => note.relPath === item.path))
+    : validation.issues;
   const patches = [];
   for (const plugin of await loadPluginModules(vaultPath, "formatter")) {
     for (const note of notes) {
-      const output = await plugin.module.format(note, { notes, mapping, vaultPath, apply });
+      const output = await plugin.module.format(note, {
+        notes: allNotes,
+        mapping,
+        vaultPath,
+        apply,
+        target: targetIds.size ? note.id : null,
+        options: {
+          note: targets.length === 1 ? targets[0].id : null,
+          notes: targets.map((item) => item.id)
+        }
+      });
       patches.push(...normalizeFormatterPatches(output, plugin.path, note));
     }
   }
   const applied = apply ? await applyFormatterPatches(notes, patches) : undefined;
   return {
-    summary: { issues: validation.issues.length, patches: patches.length },
+    summary: { issues: issues.length, patches: patches.length },
     patches,
     applied,
-    issues: validation.issues
+    issues
   };
 }
 
@@ -1628,7 +1658,21 @@ export async function pluginDryRun(vaultPath, kind, pluginRelPath, options = {})
   const note = findNote(notes, options.note);
   if (!note) throw new Error(`note not found: ${options.note}`);
   if (kind === "lint") return { kind, plugin: pluginRelPath, note: note.id, issues: await mod.lint(note, { notes, mapping }) };
-  if (kind === "formatter") return { kind, plugin: pluginRelPath, note: note.id, patches: await mod.format(note, { notes, mapping }) };
+  if (kind === "formatter") {
+    return {
+      kind,
+      plugin: pluginRelPath,
+      note: note.id,
+      patches: await mod.format(note, {
+        notes,
+        mapping,
+        vaultPath,
+        apply: false,
+        target: note.id,
+        options: { note: note.id }
+      })
+    };
+  }
   throw new Error(`unknown plugin dry-run kind: ${kind}`);
 }
 
@@ -2105,8 +2149,7 @@ function profileRegistryDisplay() {
 }
 
 function commandPrefix(vaultPath, options = {}, local = false) {
-  if (options.profile) return `ipa --profile ${options.profile}`;
-  return local ? "ipa --vault ." : `ipa --vault ${shellQuote(vaultPath)}`;
+  return "ipa";
 }
 
 function shellQuote(value) {
@@ -2210,11 +2253,12 @@ async function removeManagedBlock(path) {
 
 function harnessSkillContent(vaultPath, spec, options = {}) {
   const prefix = commandPrefix(vaultPath, options);
-  return `<!-- ${HARNESS_MARKER} -->
----
+  return `---
 name: ipa
 description: Use the IPA CLI to search, view, validate, format, and safely write IPA vault notes.
 ---
+
+<!-- ${HARNESS_MARKER} -->
 
 # IPA CLI Skill
 
@@ -2223,7 +2267,6 @@ Use this skill when a task mentions IPA, a vault note, inbox capture, note searc
 ## Active Vault
 
 - Target: ${spec.name}
-- Profile: ${options.profile ?? "direct vault"}
 - Vault: ${vaultPath}
 - Profile registry: ${profileRegistryDisplay()}
 - Vault config: .ipa/config.yaml
@@ -2250,8 +2293,12 @@ After editing vault Markdown, run validation and formatting checks:
 
 \`\`\`bash
 ${prefix} validator
-${prefix} formatter plan
+${prefix} formatter plan --note "Edited Note"
+${prefix} formatter apply --note "Edited Note"
 \`\`\`
+
+For multiple edited notes, pass the note titles after one \`--note\`, for example:
+\`${prefix} formatter plan --note "Note A" "Note B"\`.
 `;
 }
 
@@ -2261,7 +2308,6 @@ function localPromptContent(vaultPath, spec, mapping, options = {}) {
 
 This vault has an IPA CLI harness installed for ${spec.name}.
 
-- Profile: ${options.profile ?? "direct vault"}
 - Profile registry: ${profileRegistryDisplay()}
 - Vault config: .ipa/config.yaml
 - Inbox folder: ${mapping.inbox_dir}
@@ -2274,10 +2320,10 @@ Use the IPA CLI for vault-aware operations:
 ${prefix} search "keyword"
 ${prefix} view "Note Title" --full
 ${prefix} validator
-${prefix} formatter plan
+${prefix} formatter plan --note "Edited Note"
 \`\`\`
 
-Create new Markdown notes under the configured inbox, or import drafts with \`${prefix} inbox add <file>\`. Existing Markdown notes may be edited in place. After editing vault Markdown, run lint/validation and formatter planning before finishing.
+Create new Markdown notes under the configured inbox, or import drafts with \`${prefix} inbox add <file>\`. Existing Markdown notes may be edited in place. After editing vault Markdown, run lint/validation and note-scoped formatter planning before finishing. Formatter commands accept multiple notes as \`${prefix} formatter plan --note "Note A" "Note B"\`.
 `;
 }
 
@@ -2368,8 +2414,7 @@ import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
 const vaultPath = ${JSON.stringify(vaultPath)};
-const profile = ${JSON.stringify(options.profile ?? null)};
-const prefix = profile ? \`ipa --profile \${profile}\` : \`ipa --vault ${shellQuote(vaultPath)}\`;
+const prefix = "ipa";
 
 function inputJson() {
   try {
@@ -2383,7 +2428,7 @@ const input = inputJson();
 const prompt = String(input.prompt ?? input.user_prompt ?? "").trim();
 const lines = [
   "[IPA CLI]",
-  \`Vault profile: \${profile || "direct vault"}\`,
+  "Use plain ipa commands; project-local .ipa-profile/.ipa-config can select the vault.",
   "Before answering IPA/vault questions, search the vault and view relevant notes.",
   \`Search: \${prefix} search "keyword"\`,
   \`View:   \${prefix} view "Note Title" --full\`
@@ -2421,8 +2466,7 @@ import { readFileSync } from "node:fs";
 import { relative, resolve, sep } from "node:path";
 
 const vaultPath = ${JSON.stringify(vaultPath)};
-const profile = ${JSON.stringify(options.profile ?? null)};
-const prefix = profile ? \`ipa --profile \${profile}\` : \`ipa --vault ${shellQuote(vaultPath)}\`;
+const prefix = "ipa";
 
 function inputJson() {
   try {
@@ -2449,11 +2493,14 @@ const rel = relative(vaultPath, absolute);
 if (rel === "" || rel.startsWith("..") || rel.startsWith("/") || !rel.toLowerCase().endsWith(".md")) process.exit(0);
 
 const note = rel.split(sep).join("/");
+const noteTitle = note.split("/").pop().replace(/\\.md$/i, "");
+const noteArg = JSON.stringify(noteTitle);
 const message = [
   \`[IPA CLI] Vault Markdown changed: \${note}\`,
-  "Before finishing, lint/validate and format-plan the vault change:",
+  "Before finishing, lint/validate and run a note-scoped format plan:",
   \`  \${prefix} validator\`,
-  \`  \${prefix} formatter plan\`
+  \`  \${prefix} formatter plan --note \${noteArg}\`,
+  "For multiple edited notes, use one --note followed by the note titles."
 ].join("\\n");
 
 process.stdout.write(JSON.stringify({
@@ -2573,7 +2620,7 @@ export async function harnessInstall(vaultPath, target = "codex", options = {}) 
         policy: "nudge the agent to search/view IPA notes before answering vault questions"
       },
       markdown_write_nudge: {
-        policy: "nudge the agent to run validator and formatter plan after vault Markdown edits"
+        policy: "nudge the agent to run validator and note-scoped formatter plan after vault Markdown edits"
       }
     }
   };
@@ -2703,19 +2750,70 @@ export async function harnessGuardCheck(vaultPath, relPath, options = {}) {
 }
 
 export async function resolveSettings(options = {}) {
-  const profileName = options.profile ?? process.env.IPA_PROFILE;
   const registry = await readProfileRegistry();
+  const localSelection = await readLocalSelection(options.cwd ?? process.cwd());
+  if (options.profile && !registry.profiles?.[options.profile]) {
+    throw new Error(`unknown profile: ${options.profile}`);
+  }
+  if (options.vault) return { profile: options.profile ?? null, vaultPath: expandUserPath(options.vault), source: "cli" };
+  if (options.profile) {
+    return { profile: options.profile, vaultPath: expandUserPath(registry.profiles[options.profile].vault_path), source: "profile" };
+  }
+  const profileName = options.profile ?? localSelection.profile ?? process.env.IPA_PROFILE;
   if (profileName && !registry.profiles?.[profileName]) {
     throw new Error(`unknown profile: ${profileName}`);
   }
-  if (options.vault) return { profile: profileName ?? null, vaultPath: resolve(options.vault), source: "cli" };
+  if (localSelection.vault) return { profile: profileName ?? null, vaultPath: expandUserPath(localSelection.vault), source: localSelection.source };
   if (profileName && registry.profiles?.[profileName]) {
-    return { profile: profileName, vaultPath: resolve(registry.profiles[profileName].vault_path), source: "profile" };
+    return { profile: profileName, vaultPath: expandUserPath(registry.profiles[profileName].vault_path), source: profileName === localSelection.profile ? localSelection.source : "profile" };
   }
-  if (process.env.IPA_VAULT_PATH) return { profile: profileName ?? null, vaultPath: resolve(process.env.IPA_VAULT_PATH), source: "env" };
+  if (process.env.IPA_VAULT_PATH) return { profile: profileName ?? null, vaultPath: expandUserPath(process.env.IPA_VAULT_PATH), source: "env" };
   const selected = Object.entries(registry.profiles ?? {}).find(([, item]) => item.default === true)?.[0];
-  if (selected) return { profile: selected, vaultPath: resolve(registry.profiles[selected].vault_path), source: "default-profile" };
+  if (selected) return { profile: selected, vaultPath: expandUserPath(registry.profiles[selected].vault_path), source: "default-profile" };
   throw new Error("vault not resolved. Use --vault, --profile, IPA_PROFILE, or IPA_VAULT_PATH");
+}
+
+async function readLocalSelection(startDir) {
+  const configPath = findUp(startDir, ".ipa-config");
+  if (configPath) {
+    const raw = (await readFile(configPath, "utf8")).trim();
+    const config = parseYaml(raw);
+    const profile = config.profile ? String(config.profile).trim() : null;
+    const vault = config.vault_path ?? config.vault ?? null;
+    const resolvedVault = vault ? resolveLocalPath(dirname(configPath), vault) : null;
+    if (profile || resolvedVault) return { profile, vault: resolvedVault, source: ".ipa-config" };
+    if (raw && !raw.includes(":")) return { profile: raw.split(/\r?\n/)[0].trim(), vault: null, source: ".ipa-config" };
+  }
+  const profilePath = findUp(startDir, ".ipa-profile");
+  if (profilePath) {
+    const profile = (await readFile(profilePath, "utf8")).split(/\r?\n/).map((line) => line.trim()).find(Boolean);
+    if (profile) return { profile, vault: null, source: ".ipa-profile" };
+  }
+  return { profile: null, vault: null, source: null };
+}
+
+function resolveLocalPath(baseDir, value) {
+  const text = String(value ?? "").trim();
+  if (!text || text === "~" || text.startsWith("~/") || isAbsolute(text)) return text;
+  return resolve(baseDir, text);
+}
+
+function findUp(startDir, filename) {
+  let dir = resolve(startDir);
+  while (true) {
+    const candidate = join(dir, filename);
+    if (existsSync(candidate)) return candidate;
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
+function expandUserPath(value) {
+  const text = String(value ?? "");
+  if (text === "~") return homedir();
+  if (text.startsWith("~/")) return join(homedir(), text.slice(2));
+  return resolve(text);
 }
 
 export function profileRegistryPath() {

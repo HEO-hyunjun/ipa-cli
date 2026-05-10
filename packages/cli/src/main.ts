@@ -223,7 +223,7 @@ function renderSearchResults(payload) {
     for (const item of payload.ref_distribution) {
       lines.push(`${String(item.count).padStart(4)}건  ${item.ref}`);
     }
-    lines.push("→ 2건+ 인덱스는 --view + traversal --down 권장");
+    lines.push("→ 2건+ 인덱스는 `ipa view \"노트명\"` 또는 `ipa traversal --down \"인덱스명\"` 권장");
   }
   return lines.join("\n");
 }
@@ -522,7 +522,7 @@ async function main(argv = process.argv.slice(2)) {
         });
         if (getOpt(args, "--format") === "markdown") {
           print(payload.notes.map((note) => `## ${note.id}\n${note.body}`).join("\n\n"));
-        } else print(payload, true);
+        } else print(payload, json || getOpt(args, "--format") === "json");
       });
     }
     case "rename": {
@@ -605,13 +605,14 @@ async function convention(global, args, json) {
 }
 
 async function formatter(global, args, json) {
+  const options = { notes: collectOptionValues(args, "--note") };
   if (args[0] === "plan") {
-    return withVault(global, async (vault) => print(await formatVault(vault, false), json));
+    return withVault(global, async (vault) => print(await formatVault(vault, false, options), json));
   }
   if (args[0] === "apply") {
-    return withVault(global, async (vault) => print(await formatVault(vault, true), json));
+    return withVault(global, async (vault) => print(await formatVault(vault, true, options), json));
   }
-  throw new Error("usage: ipa formatter plan|apply");
+  throw new Error("usage: ipa formatter plan|apply [--note <note...>]");
 }
 
 async function addInbox(global, args, json) {
@@ -766,6 +767,18 @@ function collect(args, flag) {
   const values = [];
   for (let i = 0; i < args.length; i += 1) {
     if (args[i] === flag) values.push(args[i + 1]);
+  }
+  return values.length ? values : undefined;
+}
+
+function collectOptionValues(args, flag) {
+  const values = [];
+  for (let i = 0; i < args.length; i += 1) {
+    if (args[i] !== flag) continue;
+    for (let j = i + 1; j < args.length && !args[j].startsWith("--"); j += 1) {
+      values.push(args[j]);
+      i = j;
+    }
   }
   return values.length ? values : undefined;
 }

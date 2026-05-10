@@ -65,6 +65,10 @@ test("CLI help and key smoke commands run through ipa-test profile", async () =>
   assert.match(root, /Root\(s\) for 'Alpha':/);
   const context = JSON.parse(run(env, ["--profile", "ipa-test", "context", "Alpha", "--by-note", "--format", "json"]));
   assert.equal(context.notes[0].id, "Alpha");
+  const humanContext = run(env, ["--profile", "ipa-test", "context", "Alpha", "--by-note"]);
+  assert.match(humanContext, /Context/);
+  assert.match(humanContext, /Alpha\s+note\s+00 Inbox\/Alpha\.md/);
+  assert.doesNotMatch(humanContext, /"edges"/);
   const doctor = JSON.parse(run(env, ["--profile", "ipa-test", "doctor", "--json"]));
   assert.equal(doctor.status, "ok");
   const tune = run(env, ["--profile", "ipa-test", "tune", "pack", "eval", "ipa-cli-core"]);
@@ -88,14 +92,18 @@ test("legacy surface fixture is covered by JS fixtures", async () => {
   assert.match(overview, /## Structure/);
   assert.match(overview, /\[H2\] Section X/);
   assert.match(overview, /연결: ↗ outlinks 1  ↩ backlinks 3  ⇄ siblings 3/);
-  assert.match(overview, /--view "Note A" --full/);
+  assert.match(overview, /ipa view "Note A" --full/);
+  assert.doesNotMatch(overview, /--related/);
+  assert.doesNotMatch(overview, /--backlinks/);
 
   const full = run(env, [...profile, "view", "Note A", "--full"]);
   assert.match(full, /↑ ref: 🔖 Sample Index → 🏷️ Sample Root/);
   assert.match(full, /date_created: 2026\/01\/04 \(Sun\) 00:00:00/);
   assert.match(full, /Content under section Y referencing \[\[Note B\]\]/);
   assert.match(full, /🏷 tags:/);
-  assert.match(full, /--backlinks "Note A"/);
+  assert.match(full, /ipa traversal --up "Note A"/);
+  assert.match(full, /ipa context "Note A" --by-note/);
+  assert.doesNotMatch(full, /--backlinks "Note A"/);
 
   const section = run(env, [...profile, "view", "Note A", "--section", "Section X", "--full"]);
   assert.match(section, /## Section X/);

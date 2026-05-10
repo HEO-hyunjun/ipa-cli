@@ -21,27 +21,49 @@ Surface:
 
 ## Install
 
+IPA CLI is currently installed from this local JS/TS workspace. The package is
+not published to npm yet.
+
 ```sh
 pnpm install           # workspace install
-pnpm test              # JS runtime tests
 pnpm run build         # build packages/*/dist
-node packages/cli/dist/main.js --help
+
+mkdir -p ~/.local/bin
+ln -sf "$PWD/packages/cli/dist/main.js" ~/.local/bin/ipa
+chmod +x packages/cli/dist/main.js
 ```
 
-The CLI entrypoint is `ipa` via `@ipa/cli` (`packages/cli/dist/main.js` after
-build).
+Make sure `~/.local/bin` is on your shell `PATH`:
+
+```sh
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+```
+
+Verify the command:
+
+```sh
+which ipa
+ipa --help
+```
+
+The CLI entrypoint is `ipa` via `@ipa/cli`
+(`packages/cli/dist/main.js` after build).
 
 ## Quickstart
 
 ```sh
-# Register a default profile.
+# Register a default profile. `~` is expanded, but absolute paths are easiest
+# to audit across machines.
 mkdir -p ~/.config/ipa
 cat > ~/.config/ipa/profile.yaml <<'YAML'
 profiles:
-  sample:
-    vault_path: ~/sync/IPA
+  default:
+    vault_path: /Users/mac/Documents/workspace/sync/IPA
     default: true
 YAML
+
+ipa profile current
 
 # Search.
 ipa engine search "ipa cli" --explain --max 5
@@ -55,12 +77,26 @@ ipa convention check --summary
 # Plan and apply formatter fixes.
 ipa formatter plan
 ipa formatter apply
+ipa formatter apply --note "Alpha"
+ipa formatter apply --note "Alpha" "Beta"
 
 # Tune with the built-in tpe-lite optimizer, save best JSON, then optionally activate it.
 ipa tune --trials 200
 ipa tune list
 ipa tune use 2026-05-04T09-12-44.json
 ```
+
+Optional AI harness install:
+
+```sh
+ipa harness install codex
+ipa harness install claude
+ipa harness doctor
+```
+
+Harness install adds user-global IPA skills/hooks for Codex or Claude, plus
+vault-local `AGENTS.md` / `CLAUDE.md` guidance blocks and `.ipa/harness/*`
+metadata.
 
 ## Vault-local plugins
 
@@ -98,8 +134,23 @@ profiles:
 ```
 
 `default: true` is the fallback when a command has neither `--vault` nor
-`--profile` and no `.ipa-profile` / `IPA_PROFILE` selection. If there is
-no selected profile and no default, the command fails.
+`--profile` and no project-local `.ipa-profile` / `.ipa-config` or
+`IPA_PROFILE` selection. If there is no selected profile and no default, the
+command fails.
+
+For project-local selection, put one of these files in the working directory
+or a parent directory:
+
+```sh
+printf "sample\n" > .ipa-profile
+```
+
+```yaml
+# .ipa-config
+profile: sample
+# or
+vault_path: /Users/me/sync/IPA
+```
 
 Vault-local portable config lives at `{vault}/.ipa/config.yaml`:
 
@@ -281,7 +332,8 @@ non-Markdown files are allowed. This supports editor/agent hooks without
 hard-coding one user's vault naming convention.
 
 The post-write nudge hook does not format automatically. It reminds the agent
-to run `ipa validator` and `ipa formatter plan` after vault Markdown edits.
+to run `ipa validator` and a note-scoped
+`ipa formatter plan --note "Edited Note"` after vault Markdown edits.
 
 ## Vault skill compatibility
 

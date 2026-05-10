@@ -17,8 +17,13 @@ YAML
 ```
 
 You can still override selection for one project with
-`printf "sample\n" > .ipa-profile`, or use it ad-hoc per command:
-`ipa --profile sample <command>`.
+`printf "sample\n" > .ipa-profile`, or use `.ipa-config`:
+
+```yaml
+profile: sample
+```
+
+Use `ipa --profile sample <command>` only when you need an ad-hoc override.
 
 ## What it adds
 
