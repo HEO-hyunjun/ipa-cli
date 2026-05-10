@@ -2,8 +2,7 @@
 
 Search, validate, format, and tune your [IPA](https://github.com/) Obsidian
 vault from the terminal. The active runtime is the JS/TS workspace under
-`packages/`; the previous Python implementation remains as an inactive
-reference until the follow-up removal pass.
+`packages/`.
 
 Surface:
 
@@ -171,49 +170,40 @@ copy the directory and read [`examples/sample_profile/README.md`](examples/sampl
 
 ### Convention rule
 
-```python
-# {vault}/.ipa/plugins/lint/no_emoji_in_filename_rule.py
-from ipa_cli.api import BaseConventionRule, Issue, Severity
-
-class NoEmojiInFilenameRule(BaseConventionRule):
-    code = "sample.no_emoji_in_filename"
-    severity = Severity.INFO
-    default_scope = "note"
-
-    def check(self, ctx, note):
-        if note.id and note.id[0] in {"🔖", "🏷"}:
-            return []
-        return [Issue(code=self.code, severity=self.severity,
-                      note_id=note.id, message="filename starts with an emoji")]
-
-rules = [NoEmojiInFilenameRule()]
+```js
+// {vault}/.ipa/plugins/lint/no-emoji-in-filename.js
+export async function lint(note) {
+  if (note.type === "index" || note.type === "root") return [];
+  if (!/^[🔖🏷]/u.test(note.id)) return [];
+  return [{
+    code: "sample.no_emoji_in_filename",
+    severity: "info",
+    note: note.id,
+    message: "filename starts with an emoji; reserve emoji prefixes for index/root notes"
+  }];
+}
 ```
 
 ### Search channel
 
-```python
-# {vault}/.ipa/plugins/search/heading_match_channel.py
-from ipa_cli.api import BaseSearchChannel
-
-class HeadingMatchChannel(BaseSearchChannel):
-    name = "heading_match"
-    description = "Boost notes whose H1/H2 contains the query"
-    default_weight = 0.10
-
-    def search(self, ctx, query):
-        q = query.raw.lower()
-        return {
-            n.id: 1.0 for n in ctx.notes
-            if any(q in h.text.lower() for h in n.headings if h.level <= 2)
-        }
-
-channels = [HeadingMatchChannel()]
+```js
+// {vault}/.ipa/plugins/search/heading-match.js
+export async function search(query, notes) {
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+  return notes
+    .filter((note) => note.body.toLowerCase().includes(`# ${q}`) || note.body.toLowerCase().includes(`## ${q}`))
+    .map((note) => ({
+      note: note.id,
+      score: 1,
+      reason: { matched: "heading" }
+    }));
+}
 ```
 
-`Note.headings` is the parse level 3 lazy property added in P5 — it parses
-markdown via `markdown-it-py` on first access, then `SearchEngine` writes
-the AST back to `.ipa/cache/search/parsed_index.pkl` so subsequent runs
-skip the parser.
+Search plugins return scored note hits. Lint plugins return issue objects.
+Formatter plugins return patch-like objects consumed by `ipa formatter plan`
+and `ipa formatter apply`.
 
 ## Tune workflow
 
@@ -249,33 +239,26 @@ the existing `ipa tune --trials N` command shape.
 ## Vault skill compatibility
 
 The vault skill at `~/ipa/.claude/skills/_shared/scripts/` ships its own
-copies of `vault_search.py` / `vault_validator.py` / etc. and runs them
-directly — **it does not invoke `ipa`**. The two codebases evolved from
-the same scripts but are now independent copies.
+standalone vault scripts and runs them directly — **it does not invoke
+`ipa`**. The CLI is now maintained as a JS/TS package workspace.
 
-The legacy `ipa search` / `view` / `traversal` / `validator` / `refactor`
-commands now route through dedicated `runtime/*` entrypoints instead of
-the old synthetic-argv adapter. All command internals now run on the
-2차 parse/runtime service layer; the old in-package parity oracle has
-been removed.
+The legacy-compatible `ipa search` / `view` / `traversal` / `validator` /
+`refactor` command surfaces now route through `@ipa/core` services. The
+old in-package parity oracle has been removed.
 
 | Command            | Routing                              | Internal logic                                                         |
 |--------------------|--------------------------------------|------------------------------------------------------------------------|
-| `list-channels`    | `main.py` → `default_channels()`     | New service (no `_legacy` calls).                                      |
-| `list-rules`       | `main.py` → `default_convention()`   | New service.                                                           |
-| `list-refactors`   | `main.py` → `BUILTIN_REFACTORS`      | New service.                                                           |
-| `view`             | `runtime/view.py`                    | New service: `parse.vault_loader.load_notes` + `Note` rendering.       |
-| `traversal`        | `runtime/traversal.py`               | New service: `parse.vault_loader.load_notes` + `Note.refs/wikilinks`.  |
-| `validator`        | `runtime/legacy_validator_view.py`   | New service: `validator_engine` + `formatter_engine` with 1차 code projection. |
-| `search`           | `runtime/search.py`                  | New service: `SearchEngine` + multi-query summation.                   |
-| `refactor`         | `runtime/refactor.py`                | New service: parse-layer scan/filter plus frontmatter/body mutation.   |
+| `list-channels`    | `packages/cli` → `@ipa/core.CHANNELS` | Registry inspection for the 9 builtin search channels.                 |
+| `list-rules`       | `packages/cli` → `@ipa/core.RULES`    | Registry inspection for the 13 builtin validator rules.                |
+| `list-refactors`   | `packages/cli` → `@ipa/core.REFACTORS`| Registry inspection for the 7 refactor recipes.                        |
+| `view`             | `@ipa/core.viewNote`                 | Note rendering with context header, frontmatter, body/structure, footer. |
+| `traversal`        | `@ipa/core.traversal`                | Ref-based up/down/siblings/root traversal.                             |
+| `validator`        | `@ipa/core.validateVault`            | Validator engine plus formatter-aware issue reporting.                 |
+| `search`           | `@ipa/core.searchVault`              | Weighted builtin and vault-local JS plugin search.                     |
+| `refactor`         | `@ipa/core.refactorVault`            | Parse-layer scan/filter plus frontmatter/body mutation.                |
 
-The 1차↔2차 rule-code map is in
-[`docs/legacy-validator-rule-map.md`](docs/legacy-validator-rule-map.md);
-the refactor subcommand migration matrix is in
-[`docs/legacy-refactor-subcommands.md`](docs/legacy-refactor-subcommands.md).
-The original in-package oracle has been retired; compatibility is now
-guarded by golden snapshots and migrated-runtime regression tests.
+Compatibility is guarded by JS fixtures under
+`packages/test-vaults/fixtures/` and the CLI/core regression tests.
 
 ## Layout
 
@@ -285,8 +268,6 @@ packages/
   cli/               # ipa command entrypoint and renderers
   builtin-rules/     # builtin registry metadata
   test-vaults/       # canonical JS runtime fixtures
-legacy/
-  python-reference/  # inactive reference implementation and characterization tests
 ```
 
 ## Testing
@@ -297,8 +278,6 @@ pnpm run test:contracts
 pnpm run test:cli
 pnpm run smoke
 ```
-
-The JS test suite does not invoke the inactive reference implementation.
 
 ## License
 

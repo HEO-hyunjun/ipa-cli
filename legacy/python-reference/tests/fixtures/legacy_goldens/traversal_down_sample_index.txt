@@ -1,7 +1,0 @@
-Tree from '🔖 Sample Index':
-🔖 Sample Index
-  📄 Note A
-  📄 Note B
-  📄 Note C
-  🔖 Sub Index
-    📄 Note D

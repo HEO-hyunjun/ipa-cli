@@ -1,0 +1,23 @@
+mapping:
+  fields:
+    note_type: type
+    refs: ref
+    tags: tags
+    created_at: date_created
+    updated_at: date_modified
+    aliases: aliases
+  folders:
+    inbox: 00 Inbox
+    project: 01 Project
+    archive: 02 Archive
+convention:
+  enabled: true
+  builtin: true
+  plugins:
+    lint: true
+    formatter: true
+formatter:
+  enabled: true
+  builtin: true
+  plugins:
+    formatter: true

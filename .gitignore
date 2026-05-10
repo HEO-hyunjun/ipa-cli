@@ -16,7 +16,5 @@ node_modules/
 packages/*/dist/
 
 # Test fixture caches written by SearchEngine/BM25 channels.
-tests/fixtures/**/.cache/
-tests/fixtures/**/*.pkl
-legacy/python-reference/tests/fixtures/**/.cache/
-legacy/python-reference/tests/fixtures/**/*.pkl
+packages/test-vaults/fixtures/**/.cache/
+packages/test-vaults/fixtures/**/*.pkl

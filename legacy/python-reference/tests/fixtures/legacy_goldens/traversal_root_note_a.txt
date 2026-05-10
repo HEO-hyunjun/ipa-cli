@@ -1,2 +1,0 @@
-Root(s) for 'Note A':
-  - 🏷️ Sample Root

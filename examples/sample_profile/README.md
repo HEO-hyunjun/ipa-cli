@@ -1,70 +1,56 @@
 # sample_profile
 
-Copy this directory to your profile workspace to bootstrap a custom
-profile with one extra convention rule and one extra search channel.
+This directory is a vault-local JS plugin sample. Copy its `.ipa/` directory
+into a vault to enable one extra search channel and one extra lint rule.
 
 ## Install
 
 ```sh
-mkdir -p ~/.config/ipa/profiles
-cp -R examples/sample_profile ~/.config/ipa/profiles/sample
-```
-
-Then register the profile in `~/.config/ipa/profile.yaml`:
-
-```yaml
+cp -R examples/sample_profile/.ipa /Users/me/sync/IPA/.ipa
+mkdir -p ~/.config/ipa
+cat > ~/.config/ipa/profile.yaml <<'YAML'
 profiles:
   sample:
     vault_path: /Users/me/sync/IPA
     default: true
+YAML
 ```
 
 You can still override selection for one project with
 `printf "sample\n" > .ipa-profile`, or use it ad-hoc per command:
 `ipa --profile sample <command>`.
 
-The `profile.yaml` inside this sample directory is a legacy workspace
-fallback. The registry above is the preferred source for `vault_path`.
-
 ## What it adds
 
 | Surface | File | What it does |
 |---|---|---|
-| Convention rule | `rules/no_emoji_in_filename_rule.py` | Flags non-index/non-root notes whose filename starts with an emoji (severity `info`) |
-| Search channel | `channel_rules/heading_match_channel.py` | Boosts notes whose `H1`/`H2` heading contains the query (default weight `0.10`) |
+| Search channel | `.ipa/plugins/search/heading-match.js` | Boosts notes whose markdown headings contain the query |
+| Lint rule | `.ipa/plugins/lint/no-emoji-in-filename.js` | Flags non-index/non-root notes whose filename starts with an emoji |
 
-Both append to the builtin defaults — `convention.py` and `search.py`
-each call `*_builtin.rules` / `*default_channels()` to inherit, then
-add the profile-specific entries.
+Vault-local plugins append to builtin behavior by default. Use
+`.ipa/config.yaml` to disable builtin behavior, plugin behavior, or an
+individual plugin path.
 
 ## Smoke test
 
 ```sh
-# Convention check (will surface the new "sample.no_emoji_in_filename" code).
-ipa --profile sample convention check --scope vault --summary
-
-# Search with the heading boost active and inspect raw per-channel scores.
+ipa --profile sample plugin list
+ipa --profile sample plugin dry-run search .ipa/plugins/search/heading-match.js --query "your query"
+ipa --profile sample convention check --summary
 ipa --profile sample engine search "your query" --explain
 ```
 
-## Removing a builtin rule or channel
+## Disabling one plugin kind
 
-Drop the unwanted entry from the spread:
-
-```python
-# convention.py
-convention = Convention(
-    name="sample",
-    rules=[
-        rule for rule in _builtin.rules
-        if rule.code != "ipa.frontmatter.date_format"
-    ] + [
-        NoEmojiInFilenameRule(),
-    ],
-)
+```yaml
+plugins:
+  search: false
+  lint: true
+  formatter: true
 ```
 
-The list is explicit on purpose — what you see is what runs.
+The list is explicit on purpose: what is enabled in `.ipa/config.yaml` is
+what runs.
 
 ## Tune workspace
 
