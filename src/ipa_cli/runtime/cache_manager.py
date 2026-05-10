@@ -34,6 +34,7 @@ def rebuild_cache(vault_path: Path, mapping: Mapping) -> dict:
         "created_at": datetime.now(timezone.utc).isoformat(),
         "files": len(files),
         "graph_nodes": len(graph["edges"]),
+        "plugin_fingerprint": _plugin_fingerprint(vault),
     }
     (root / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2),
@@ -172,6 +173,7 @@ def _read_files_jsonl(path: Path) -> dict[str, dict]:
 
 def _stale_records(vault_path: Path, notes: list[Note]) -> list[dict]:
     root = cache_root(vault_path)
+    manifest = _read_json(root / "manifest.json")
     cached = _read_files_jsonl(root / "files.jsonl")
     stale: list[dict] = []
     current_paths = set()
@@ -186,4 +188,20 @@ def _stale_records(vault_path: Path, notes: list[Note]) -> list[dict]:
             stale.append({"path": rel, "reason": "hash_changed"})
     for rel in sorted(set(cached) - current_paths):
         stale.append({"path": rel, "reason": "deleted"})
+    if manifest and manifest.get("plugin_fingerprint") != _plugin_fingerprint(vault_path):
+        stale.append({"path": ".ipa/plugins", "reason": "plugin_fingerprint_changed"})
     return stale
+
+
+def _plugin_fingerprint(vault_path: Path) -> str:
+    root = vault_path / ".ipa" / "plugins"
+    digest = hashlib.sha256()
+    if not root.is_dir():
+        return digest.hexdigest()
+    for path in sorted(root.rglob("*.py")):
+        rel = path.relative_to(vault_path).as_posix()
+        digest.update(rel.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(sha256_file(path).encode("ascii"))
+        digest.update(b"\0")
+    return digest.hexdigest()

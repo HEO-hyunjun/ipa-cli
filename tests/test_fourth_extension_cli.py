@@ -122,6 +122,7 @@ def test_doctor_context_cache_contract_and_review(vault: Path) -> None:
     rebuilt = _run(vault, "cache", "rebuild", "--json")
     assert rebuilt.exit_code == 0, rebuilt.stdout
     assert (vault / ".ipa" / "cache" / "manifest.json").is_file()
+    assert json.loads(rebuilt.stdout)["manifest"]["plugin_fingerprint"]
     assert str(vault) not in (vault / ".ipa" / "cache" / "files.jsonl").read_text(
         encoding="utf-8"
     )
@@ -142,6 +143,18 @@ def test_doctor_context_cache_contract_and_review(vault: Path) -> None:
     cache_clean = _run(vault, "cache", "clean", "--stale", "--json")
     assert cache_clean.exit_code == 0, cache_clean.stdout
     assert json.loads(cache_clean.stdout)["removed"] == 1
+
+    plugin_file = vault / ".ipa" / "plugins" / "search" / "new_channel.py"
+    plugin_file.parent.mkdir(parents=True, exist_ok=True)
+    plugin_file.write_text("channels = []\n", encoding="utf-8")
+    plugin_cache_status = _run(vault, "cache", "status", "--json")
+    assert plugin_cache_status.exit_code == 0, plugin_cache_status.stdout
+    assert any(
+        item["reason"] == "plugin_fingerprint_changed"
+        for item in json.loads(plugin_cache_status.stdout)["stale"]
+    )
+    plugin_cache_clean = _run(vault, "cache", "clean", "--stale", "--json")
+    assert plugin_cache_clean.exit_code == 0, plugin_cache_clean.stdout
 
     contract = _run(vault, "contract", "validate", ".ipa/cache/manifest.json", "--json")
     assert contract.exit_code == 0, contract.stdout
