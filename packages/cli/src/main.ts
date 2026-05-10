@@ -94,14 +94,18 @@ const COMMAND_GROUPS = [
 ];
 
 const HELP = formatHelp();
+const COMMAND_HELP = {
+  tune: formatTuneHelp()
+};
 
 function parseGlobal(argv) {
-  const global = { profile: null, vault: null };
+  const global = { profile: null, vault: null, json: false };
   const rest = [];
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--profile") global.profile = argv[++i];
     else if (arg === "--vault") global.vault = argv[++i];
+    else if (arg === "--json") global.json = true;
     else rest.push(arg);
   }
   return { global, rest };
@@ -185,6 +189,53 @@ function formatHelp() {
   return `${lines.join("\n")}\n`;
 }
 
+function formatCommandHelp(command) {
+  return COMMAND_HELP[command] ?? `${HELP}\nNo detailed help is available for '${command}' yet.\n`;
+}
+
+function formatTuneHelp() {
+  return [
+    "Usage: ipa [OPTIONS] tune [SUBCOMMAND] [ARGS...]",
+    "",
+    "Evaluate search quality and run the tpe-lite optimizer against the active vault testset.",
+    "",
+    "Common commands:",
+    formatRows([
+      ["ipa tune eval", "Evaluate current active search params"],
+      ["ipa tune --trials 100", "Run 100 tpe-lite trials and save a result JSON"],
+      ["ipa tune --trials 100 --apply", "Run tuning and activate the new result"],
+      ["ipa tune list", "List saved tune result JSON files"],
+      ["ipa tune use FILE", "Activate an existing tune result"],
+      ["ipa tune analyze", "Inspect threshold candidates and target scores"],
+      ["ipa tune replay [FILE]", "Replay saved trial history against the current vault"],
+      ["ipa tune testset list", "List vault-local testsets"],
+      ["ipa tune testset show", "Show the active testset"],
+      ["ipa tune testset validate", "Validate testset targets"],
+      ["ipa tune pack eval ipa-cli-core", "Evaluate the built-in sample pack"]
+    ]),
+    "",
+    "Run options:",
+    formatRows([
+      ["--trials N, -n N", "Number of tpe-lite trials; default 20"],
+      ["--pack NAME", "Use a built-in query pack instead of the vault-local testset"],
+      ["--seed N", "Deterministic optimizer seed; default 42"],
+      ["--apply", "Activate the generated result by writing weights.file"],
+      ["--quiet", "Suppress progress output"],
+      ["--json", "Print machine-readable JSON; progress is suppressed"]
+    ]),
+    "",
+    "Vault setup:",
+    "  Configure the default testset in {vault}/.ipa/config.yaml:",
+    "",
+    "  test:",
+    "    file: .ipa/tune/testsets/testset.json",
+    "",
+    "Progress:",
+    "  Long runs print trial progress to stderr: completed/trials, percent, current loss, best loss, elapsed, and ETA.",
+    ""
+  ].join("\n");
+}
+
 function render(payload) {
   if (Array.isArray(payload)) return payload.map(render).join("\n");
   if (!payload || typeof payload !== "object") return String(payload ?? "");
@@ -245,12 +296,14 @@ function renderTuneEval(payload) {
 
 function renderTuneRun(payload) {
   const best = payload.best ?? {};
-  return [
+  const lines = [
     "Tune run",
-    `Optimizer: ${payload.optimizer}   Trials: ${payload.trials}`,
+    `Optimizer: ${payload.optimizer}   Trials: ${payload.trials}   Pack: ${payload.pack ?? "-"}`,
     `Best trial: ${best.trial ?? "-"}   Loss: ${best.loss ?? "-"}`,
-    `Result file: ${payload.result_file ?? "-"}`
-  ].join("\n");
+    `Elapsed: ${formatDuration(payload.elapsed_ms)}   Result file: ${payload.result_file ?? "-"}`
+  ];
+  if (payload.active) lines.push(`Active weights: ${payload.active}`);
+  return lines.join("\n");
 }
 
 function renderTuneAnalyze(payload) {
@@ -474,14 +527,22 @@ async function withVault(global, fn) {
 
 async function main(argv = process.argv.slice(2)) {
   const { global, rest } = parseGlobal(argv);
-  if (rest.length === 0 || has(rest, "--help") || has(rest, "-h")) {
+  if (rest.length === 0 || (rest.length === 1 && (rest[0] === "--help" || rest[0] === "-h"))) {
     console.log(HELP);
     return;
   }
 
   const [command, sub, ...tail] = rest;
+  if (command === "help") {
+    console.log(sub ? formatCommandHelp(sub) : HELP);
+    return;
+  }
   const args = [sub, ...tail].filter((item) => item !== undefined);
-  const json = has(args, "--json");
+  if (sub === "help" || has(args, "--help") || has(args, "-h")) {
+    console.log(formatCommandHelp(command));
+    return;
+  }
+  const json = global.json || has(args, "--json");
 
   switch (command) {
     case "search": {
@@ -759,8 +820,62 @@ async function tune(global, args, json) {
       if (args[1] === "list") return print({ packs: ["ipa-cli-core"] }, json);
       return print({ status: "ok", pack: args.slice(1).join(" ") }, json);
     }
-    return print(await tuneRun(vault, { trials: Number(getOpt(args, "--trials", getOpt(args, "-n", 20))) }), json);
+    const positionalArgs = positional(args);
+    const positionalTrial = Number.isFinite(Number(positionalArgs[0])) ? positionalArgs[0] : null;
+    const trials = Number(getOpt(args, "--trials", getOpt(args, "-n", positionalTrial ?? 20)));
+    const progress = json || has(args, "--quiet") ? null : createTuneProgressReporter();
+    if (progress) {
+      process.stderr.write(`Starting tune: trials=${trials}, optimizer=tpe-lite\n`);
+    }
+    return print(await tuneRun(vault, {
+      trials,
+      packName: getOpt(args, "--pack"),
+      seed: getOpt(args, "--seed"),
+      apply: has(args, "--apply"),
+      onProgress: progress
+    }), json);
   });
+}
+
+function createTuneProgressReporter() {
+  let lastLength = 0;
+  let lastWrite = 0;
+  return (event) => {
+    const now = Date.now();
+    const done = event.completed >= event.trials;
+    if (!done && now - lastWrite < 250) return;
+    lastWrite = now;
+    const percent = event.trials ? Math.round(event.completed / event.trials * 100) : 0;
+    const line = [
+      `tune ${event.completed}/${event.trials}`,
+      `${percent}%`,
+      `loss=${formatNumber(event.loss)}`,
+      `best=${formatNumber(event.best_loss)}@${event.best_trial}`,
+      `hits=${event.hits}`,
+      `misses=${event.misses}`,
+      `elapsed=${formatDuration(event.elapsed_ms)}`,
+      `eta=${formatDuration(event.eta_ms)}`
+    ].join("  ");
+    if (process.stderr.isTTY) {
+      process.stderr.write(`\r${line}${" ".repeat(Math.max(0, lastLength - line.length))}`);
+      if (done) process.stderr.write("\n");
+      lastLength = line.length;
+    } else {
+      process.stderr.write(`${line}\n`);
+    }
+  };
+}
+
+function formatNumber(value) {
+  return Number.isFinite(Number(value)) ? Number(value).toFixed(3) : "-";
+}
+
+function formatDuration(ms) {
+  if (!Number.isFinite(Number(ms)) || Number(ms) < 0) return "-";
+  const total = Math.round(Number(ms) / 1000);
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return minutes ? `${minutes}m${String(seconds).padStart(2, "0")}s` : `${seconds}s`;
 }
 
 function collect(args, flag) {

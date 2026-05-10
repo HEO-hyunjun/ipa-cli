@@ -38,6 +38,10 @@ test("CLI help and key smoke commands run through ipa-test profile", async () =>
   const help = run(env, ["--help"]);
   assert.match(help, /Usage: ipa/);
   assert.match(help, /Core commands:/);
+  const tuneHelp = run(env, ["tune", "--help"]);
+  assert.match(tuneHelp, /Usage: ipa \[OPTIONS\] tune/);
+  assert.match(tuneHelp, /ipa tune --trials 100/);
+  assert.match(tuneHelp, /Progress:/);
   const channels = run(env, ["--profile", "ipa-test", "list-channels"]);
   assert.match(channels, /search channels \(9\)/);
   assert.match(channels, /body_match\s+0\.3630/);

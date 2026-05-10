@@ -531,6 +531,114 @@ export function scoreNote(note, query, notes, weights = {}, mapping = DEFAULT_MA
   return { score, reasons, channelScores };
 }
 
+function prepareSearchNotes(notes, mapping = DEFAULT_MAPPING) {
+  const projectDir = mapping.project_dir ?? DEFAULT_MAPPING.project_dir;
+  const prepared = notes.map((note) => {
+    const names = [note.id, ...note.aliases];
+    const searchNames = names.map(searchableTitle).filter(Boolean);
+    const bodySearch = searchableTitle(note.body);
+    return {
+      note,
+      names,
+      searchNames,
+      searchNameLowers: searchNames.map((name) => name.toLowerCase()),
+      idKey: searchableKey(note.id),
+      bodyLower: bodySearch.toLowerCase(),
+      bodyTokenSet: new Set(tokenize(`${searchNames.join(" ")} ${bodySearch}`)),
+      keywordText: searchableTitle(`${note.refs.join(" ")} ${note.tags.join(" ")} ${note.aliases.join(" ")} ${note.body}`).toLowerCase(),
+      isProject: note.folder === projectDir || note.folder.startsWith(`${projectDir}/`),
+      childBodyLowers: []
+    };
+  });
+  for (const item of prepared) {
+    if (item.note.type !== "index" && item.note.type !== "root") continue;
+    item.childBodyLowers = prepared
+      .filter((candidate) => hasNoteName(candidate.note.refs, item.note.id))
+      .map((candidate) => candidate.bodyLower);
+  }
+  return prepared;
+}
+
+function prepareSearchQuery(query, preparedNotes) {
+  const raw = searchableTitle(query);
+  const lower = raw.toLowerCase();
+  return {
+    raw,
+    lower,
+    tokens: tokenize(raw),
+    directHits: lower ? preparedNotes.filter((candidate) => candidate.idKey.includes(lower)) : []
+  };
+}
+
+function scorePreparedNote(prepared, query, weights = {}) {
+  const { note } = prepared;
+  const reasons = {};
+  const channelScores = {};
+
+  const bestName = query.lower ? Math.max(0, ...prepared.searchNameLowers.map((name) => {
+    if (name === query.lower) return 1;
+    if (name.includes(query.lower)) return 0.78;
+    return 0;
+  })) : 0;
+  channelScores.filename = bestName;
+  if (bestName) reasons.filename = { matched: prepared.names.find((name) => searchableKey(name).includes(query.lower)) ?? note.id };
+
+  const fuzzy = query.lower ? Math.max(0, ...prepared.searchNames.map((name) => subsequenceScore(query.lower, name))) : 0;
+  channelScores.fuzzy = fuzzy;
+  if (fuzzy) reasons.fuzzy = { score: fuzzy };
+
+  const coverage = query.tokens.length
+    ? query.tokens.filter((token) => prepared.bodyTokenSet.has(token)).length / query.tokens.length
+    : 0;
+  channelScores.sequence_match = query.tokens.length && query.tokens.every((token) =>
+    prepared.searchNameLowers.some((name) => name.includes(token))
+  ) ? 1 : 0;
+  if (channelScores.sequence_match) reasons.sequence_match = { coverage: 1 };
+
+  const partialMatches = query.tokens.length
+    ? query.tokens.filter((token) => prepared.searchNameLowers.some((name) => name.includes(token))).length / query.tokens.length
+    : 0;
+  channelScores.filename_partial = partialMatches > 0 && partialMatches < 1 ? partialMatches : 0;
+  if (channelScores.filename_partial) reasons.filename_partial = { coverage: channelScores.filename_partial };
+
+  const keyword = query.tokens.length
+    ? query.tokens.filter((token) => prepared.keywordText.includes(token)).length / query.tokens.length
+    : 0;
+  channelScores.keyword = keyword;
+  if (keyword) reasons.keyword = { coverage: keyword };
+
+  const body = query.tokens.length
+    ? query.tokens.filter((token) => prepared.bodyLower.includes(token)).length / query.tokens.length
+    : 0;
+  channelScores.body_match = Math.max(body, coverage);
+  if (channelScores.body_match) reasons.body_match = { coverage: channelScores.body_match };
+
+  const shared = query.directHits.some((candidate) =>
+    candidate.note.id !== note.id &&
+    (shareNoteNames(candidate.note.refs, note.refs) || candidate.note.tags.some((tag) => note.tags.includes(tag)))
+  );
+  channelScores.related = shared ? 0.5 : 0;
+  if (shared) reasons.related = { shared: true };
+
+  channelScores.project = prepared.isProject ? 0.35 : 0;
+  const childBody = note.type === "index" || note.type === "root"
+    ? Math.max(0, ...prepared.childBodyLowers.map((candidateBody) =>
+        query.tokens.length
+          ? query.tokens.filter((token) => candidateBody.includes(token)).length / query.tokens.length
+          : 0
+      ))
+    : 0;
+  channelScores.child_body_match = childBody;
+  if (childBody) reasons.child_body_match = { coverage: childBody };
+
+  let score = 0;
+  for (const channel of CHANNELS) {
+    const weight = weights[channel.name] ?? channel.defaultWeight;
+    score += (channelScores[channel.name] ?? 0) * weight;
+  }
+  return { score, reasons, channelScores };
+}
+
 async function activeSearchParams(vaultPath) {
   const { config } = await readVaultConfig(vaultPath);
   const file = config.weights?.file;
@@ -554,15 +662,27 @@ function tuneResultPath(vaultPath, filename) {
 }
 
 export async function searchVault(vaultPath, query, options = {}) {
+  return searchWithContext(await prepareSearchContext(vaultPath), query, options);
+}
+
+async function prepareSearchContext(vaultPath) {
   const { mapping } = await readVaultConfig(vaultPath);
   const notes = await loadNotes(vaultPath, mapping);
   const active = await activeSearchParams(vaultPath);
+  const plugins = await loadPluginModules(vaultPath, "search");
+  return { vaultPath, mapping, notes, active, plugins, preparedNotes: prepareSearchNotes(notes, mapping) };
+}
+
+async function searchWithContext(context, query, options = {}) {
+  const { vaultPath, mapping, notes, active, plugins, preparedNotes } = context;
   const threshold = options.showAll ? 0 : options.threshold ?? active.threshold ?? 0.3;
   const cap = options.maxResults ?? options.cap ?? active.cap ?? 10;
   const weights = options.weights ?? active.weights ?? {};
+  const searchQuery = prepareSearchQuery(query, preparedNotes);
   const hitsByNote = new Map();
-  for (const note of notes) {
-    const scored = scoreNote(note, query, notes, weights, mapping);
+  for (const prepared of preparedNotes) {
+    const { note } = prepared;
+    const scored = scorePreparedNote(prepared, searchQuery, weights);
     hitsByNote.set(note.id, {
         note: note.id,
         path: note.relPath,
@@ -572,7 +692,7 @@ export async function searchVault(vaultPath, query, options = {}) {
         reasons: scored.reasons
     });
   }
-  for (const hit of await runSearchPlugins(vaultPath, query, notes, mapping)) {
+  for (const hit of await runSearchPlugins(vaultPath, query, notes, mapping, plugins)) {
     const note = findNote(notes, hit.note);
     if (!note) continue;
     const current = hitsByNote.get(note.id) ?? {
@@ -602,10 +722,10 @@ export async function searchVault(vaultPath, query, options = {}) {
   return { query, threshold, max_results: cap, count: hits.length, results: hits, ref_distribution };
 }
 
-async function runSearchPlugins(vaultPath, query, notes, mapping) {
-  const plugins = await loadPluginModules(vaultPath, "search");
+async function runSearchPlugins(vaultPath, query, notes, mapping, plugins = null) {
+  const modules = plugins ?? await loadPluginModules(vaultPath, "search");
   const hits = [];
-  for (const plugin of plugins) {
+  for (const plugin of modules) {
     const output = await plugin.module.search(query, notes, { notes, mapping, vaultPath });
     hits.push(...normalizeSearchPluginOutput(output, plugin.path));
   }
@@ -1706,13 +1826,17 @@ async function configuredQueryPack(vaultPath) {
   return { name: file, queries };
 }
 
-export async function tuneEval(vaultPath, packName = null, params = {}) {
+async function resolveTunePack(vaultPath, packName = null) {
   let pack = packName ? builtinQueryPack(packName) : await configuredQueryPack(vaultPath);
   if (!pack) {
     throw new Error(packName
       ? `query pack not found: ${packName}`
       : "tune testset not configured: set test.file in .ipa/config.yaml");
   }
+  return pack;
+}
+
+async function evaluateTunePack(searchContext, pack, params = {}) {
   const rows = [];
   for (const item of pack.queries) {
     const searchOptions = {
@@ -1720,7 +1844,7 @@ export async function tuneEval(vaultPath, packName = null, params = {}) {
       maxResults: params.cap
     };
     if (Object.hasOwn(params, "weights")) searchOptions.weights = params.weights;
-    const result = await searchVault(vaultPath, item.query, searchOptions);
+    const result = await searchWithContext(searchContext, item.query, searchOptions);
     const rank = result.results.findIndex((hit) => sameNoteName(hit.note, item.target)) + 1;
     rows.push({ query: item.query, target: item.target, rank: rank || null, hit: rank > 0 });
   }
@@ -1729,21 +1853,25 @@ export async function tuneEval(vaultPath, packName = null, params = {}) {
   return { pack: pack.name, total: rows.length, hits, misses: rows.length - hits, avg_rank: avgRank, rows };
 }
 
+export async function tuneEval(vaultPath, packName = null, params = {}) {
+  return evaluateTunePack(await prepareSearchContext(vaultPath), await resolveTunePack(vaultPath, packName), params);
+}
+
 function tuneLoss(evaluation) {
   return evaluation.misses * 100 + (evaluation.avg_rank ?? 99);
 }
 
 export async function tuneAnalyze(vaultPath, options = {}) {
   const packName = options.packName ?? null;
-  const pack = packName ? builtinQueryPack(packName) : await configuredQueryPack(vaultPath);
-  if (!pack) throw new Error("tune testset not configured: set test.file in .ipa/config.yaml");
+  const pack = await resolveTunePack(vaultPath, packName);
+  const searchContext = await prepareSearchContext(vaultPath);
   const thresholds = (options.thresholds ?? [0, 0.1, 0.2, 0.3, 0.4, 0.5])
     .map(Number)
     .filter((value, index, values) => Number.isFinite(value) && values.indexOf(value) === index)
     .sort((a, b) => a - b);
   const thresholdRows = [];
   for (const threshold of thresholds) {
-    const evaluation = await tuneEval(vaultPath, packName, { threshold, cap: options.cap });
+    const evaluation = await evaluateTunePack(searchContext, pack, { threshold, cap: options.cap });
     thresholdRows.push({
       threshold,
       hits: evaluation.hits,
@@ -1754,7 +1882,7 @@ export async function tuneAnalyze(vaultPath, options = {}) {
   }
   const targetScores = [];
   for (const item of pack.queries) {
-    const result = await searchVault(vaultPath, item.query, { threshold: 0, maxResults: options.maxResults ?? 50, showAll: true });
+    const result = await searchWithContext(searchContext, item.query, { threshold: 0, maxResults: options.maxResults ?? 50, showAll: true });
     const index = result.results.findIndex((hit) => sameNoteName(hit.note, item.target));
     const hit = index >= 0 ? result.results[index] : null;
     targetScores.push({
@@ -1781,9 +1909,11 @@ export async function tuneReplay(vaultPath, options = {}) {
   const path = tuneSourcePath(vaultPath, source);
   if (!existsSync(path)) throw new Error(`tune replay source not found: ${source}`);
   const trials = await readTuneTrials(path);
+  const pack = await resolveTunePack(vaultPath, options.packName ?? null);
+  const searchContext = await prepareSearchContext(vaultPath);
   const rows = [];
   for (const trial of trials) {
-    const evaluation = await tuneEval(vaultPath, options.packName ?? null, trial.params ?? {});
+    const evaluation = await evaluateTunePack(searchContext, pack, trial.params ?? {});
     const loss = tuneLoss(evaluation);
     rows.push({
       trial: trial.trial ?? rows.length,
@@ -1984,23 +2114,44 @@ export async function tuneRun(vaultPath, options = {}) {
   const rng = seeded(Number(options.seed ?? 42));
   const history = [];
   let best = null;
+  const startedAt = Date.now();
+  const pack = await resolveTunePack(vaultPath, options.packName ?? null);
+  const searchContext = await prepareSearchContext(vaultPath);
   const startupTrials = Math.max(1, Math.min(30, Math.floor(trials / 4) || 1));
   for (let i = 0; i < trials; i += 1) {
     const params = i < startupTrials ? randomTuneParams(rng) : sampleTpeLite(history, rng);
-    const evaluation = await tuneEval(vaultPath, options.packName ?? null, params);
+    const evaluation = await evaluateTunePack(searchContext, pack, params);
     const loss = evaluation.misses * 100 + (evaluation.avg_rank ?? 99);
     const trial = { trial: i, optimizer: "tpe-lite", params, loss, metrics: evaluation };
     history.push(trial);
     if (!best || loss < best.loss) best = trial;
+    const completed = i + 1;
+    const elapsedMs = Date.now() - startedAt;
+    const rate = elapsedMs > 0 ? completed / (elapsedMs / 1000) : 0;
+    options.onProgress?.({
+      completed,
+      trials,
+      trial: i,
+      loss,
+      best_loss: best.loss,
+      best_trial: best.trial,
+      hits: evaluation.hits,
+      misses: evaluation.misses,
+      elapsed_ms: elapsedMs,
+      eta_ms: rate > 0 ? Math.round((trials - completed) / rate * 1000) : null
+    });
   }
-  const result = { optimizer: "tpe-lite", trials, best, history };
+  const elapsedMs = Date.now() - startedAt;
+  const result = { optimizer: "tpe-lite", trials, pack: pack.name, best, history, elapsed_ms: elapsedMs };
   const dir = join(vaultPath, ".ipa", "tune", "results");
   await mkdir(dir, { recursive: true });
   const name = `${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
   await writeFile(join(dir, name), JSON.stringify(result, null, 2), "utf8");
   const historyPath = join(vaultPath, ".ipa", "tune", "history.jsonl");
   await writeFile(historyPath, history.map((trial) => JSON.stringify(trial)).join("\n") + "\n", "utf8");
-  return { ...result, result_file: `.ipa/tune/results/${name}` };
+  const resultFile = `.ipa/tune/results/${name}`;
+  const active = options.apply ? await tuneUse(vaultPath, resultFile) : null;
+  return { ...result, result_file: resultFile, active: active?.active ?? null };
 }
 
 function randomTuneParams(rng) {

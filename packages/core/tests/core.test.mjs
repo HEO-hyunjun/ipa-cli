@@ -298,8 +298,16 @@ test("validator, cache, review and tune contracts are available", async () => {
   const evalResult = await tuneEval(vault, "ipa-cli-core");
   assert.equal(evalResult.total, 3);
   assert.equal(evalResult.misses, 0);
+  const progress = [];
+  const progressResult = await tuneRun(vault, { trials: 3, onProgress: (event) => progress.push(event) });
+  assert.equal(progressResult.optimizer, "tpe-lite");
+  assert.equal(progress.length, 3);
+  assert.equal(progress[2].completed, 3);
+  assert.equal(progress[2].trials, 3);
   const runResult = await tuneRun(vault, { trials: 3 });
   assert.equal(runResult.optimizer, "tpe-lite");
+  assert.equal(runResult.pack, ".ipa/tune/testsets/ipa-cli-core.json");
+  assert.ok(runResult.elapsed_ms >= 0);
   const history = await readFile(join(vault, ".ipa", "tune", "history.jsonl"), "utf8");
   assert.equal(history.trim().split("\n").length, 3);
 });
