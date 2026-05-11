@@ -10,12 +10,21 @@ export const channels = [
 ];
 
 export const conventionRules = [
-  "ipa.frontmatter.required",
-  "ipa.frontmatter.type",
-  "ipa.frontmatter.ref_required",
+  "ipa.frontmatter.required_field",
+  "ipa.frontmatter.date_format",
+  "ipa.frontmatter.invalid_type",
+  "ipa.frontmatter.missing_ref",
+  "ipa.inbox.raw_capture",
   "ipa.tag.snake_case",
-  "K001",
-  "K002"
+  "ipa.title.root_prefix",
+  "ipa.title.root_suffix",
+  "ipa.title.index_prefix",
+  "ipa.location.type_mismatch",
+  "ipa.link.ref_target_missing",
+  "ipa.link.wikilink_target_missing",
+  "ipa.root_folder.duplicate",
+  "ipa.root_folder.missing",
+  "ipa.heading.no_h1"
 ];
 
 export const refactors = [

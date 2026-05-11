@@ -18,8 +18,7 @@ await writeFile(
   "utf8"
 );
 await mkdir(join(vault, ".ipa", "plugins", "search"), { recursive: true });
-await mkdir(join(vault, ".ipa", "plugins", "lint"), { recursive: true });
-await mkdir(join(vault, ".ipa", "plugins", "formatter"), { recursive: true });
+await mkdir(join(vault, ".ipa", "plugins", "rules"), { recursive: true });
 await writeFile(
   join(vault, ".ipa", "plugins", "search", "sample.js"),
   `export async function search(query, notes) {
@@ -28,17 +27,17 @@ await writeFile(
   "utf8"
 );
 await writeFile(
-  join(vault, ".ipa", "plugins", "lint", "sample.js"),
-  `export async function lint(note) {
-    return [{ code: "sample.issue", severity: "warn", note: note.id, message: "sample issue" }];
-  }\n`,
-  "utf8"
-);
-await writeFile(
-  join(vault, ".ipa", "plugins", "formatter", "sample.js"),
-  `export async function format(note) {
-    return [{ note: note.id, line: 1, replacement: "X" }];
-  }\n`,
+  join(vault, ".ipa", "plugins", "rules", "sample.js"),
+  `export const rules = [{
+    code: "sample.issue",
+    severity: "warn",
+    check(note) {
+      return [{ message: "sample issue", note: note.id }];
+    },
+    fix(note) {
+      return [{ note: note.id, line: 1, replacement: "X" }];
+    }
+  }];\n`,
   "utf8"
 );
 await writeFile(join(work, "new-note.md"), "# New Note\n\nBody.\n", "utf8");
@@ -96,8 +95,8 @@ const commands = [
   ["--profile", "ipa-test", "plugin", "doctor", "--json"],
   ["--profile", "ipa-test", "plugin", "validate", ".ipa/plugins/search/sample.js", "--json"],
   ["--profile", "ipa-test", "plugin", "dry-run", "search", ".ipa/plugins/search/sample.js", "--query", "Alpha", "--json"],
-  ["--profile", "ipa-test", "plugin", "dry-run", "lint", ".ipa/plugins/lint/sample.js", "--note", "Alpha", "--json"],
-  ["--profile", "ipa-test", "plugin", "dry-run", "formatter", ".ipa/plugins/formatter/sample.js", "--note", "Alpha", "--json"],
+  ["--profile", "ipa-test", "plugin", "validate", ".ipa/plugins/rules/sample.js", "--json"],
+  ["--profile", "ipa-test", "plugin", "dry-run", "rules", ".ipa/plugins/rules/sample.js", "--note", "Alpha", "--json"],
   ["--profile", "ipa-test", "harness", "status", "--json"],
   ["--profile", "ipa-test", "harness", "install", "codex", "--json"],
   ["--profile", "ipa-test", "harness", "uninstall", "codex", "--json"],

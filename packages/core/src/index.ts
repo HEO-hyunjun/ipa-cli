@@ -39,17 +39,21 @@ export const CHANNELS = [
 ];
 
 export const RULES = [
-  { code: "ipa.frontmatter.required_field", category: "frontmatter", severity: "warn", scope: "note" },
+  { code: "ipa.frontmatter.required_field", category: "frontmatter", severity: "warn", scope: "note", fixable: true },
   { code: "ipa.frontmatter.date_format", category: "frontmatter", severity: "warn", scope: "note" },
   { code: "ipa.frontmatter.invalid_type", category: "frontmatter", severity: "error", scope: "note" },
   { code: "ipa.frontmatter.missing_ref", category: "frontmatter", severity: "warn", scope: "note" },
   { code: "ipa.inbox.raw_capture", category: "inbox", severity: "warn", scope: "note" },
+  { code: "ipa.tag.snake_case", category: "tag", severity: "warn", scope: "note" },
+  { code: "ipa.title.root_prefix", category: "title", severity: "warn", scope: "note" },
+  { code: "ipa.title.root_suffix", category: "title", severity: "warn", scope: "note" },
+  { code: "ipa.title.index_prefix", category: "title", severity: "warn", scope: "note" },
   { code: "ipa.location.type_mismatch", category: "location", severity: "warn", scope: "note" },
   { code: "ipa.link.ref_target_missing", category: "link", severity: "warn", scope: "vault" },
   { code: "ipa.link.wikilink_target_missing", category: "link", severity: "warn", scope: "vault" },
   { code: "ipa.root_folder.duplicate", category: "root_folder", severity: "warn", scope: "vault" },
   { code: "ipa.root_folder.missing", category: "root_folder", severity: "warn", scope: "vault" },
-  { code: "ipa.heading.no_h1", category: "heading", severity: "info", scope: "note" }
+  { code: "ipa.heading.no_h1", category: "heading", severity: "info", scope: "note", fixable: true }
 ];
 
 export const REFACTORS = [
@@ -336,14 +340,553 @@ async function walkFiles(root, predicate, base = root) {
   return out;
 }
 
-function parseHeadings(body) {
-  return body
-    .split("\n")
-    .map((line, index) => {
-      const match = line.match(/^(#{1,6})\s+(.+)$/);
-      return match ? { level: match[1].length, title: match[2].trim(), line: index + 1 } : null;
-    })
-    .filter(Boolean);
+function parseHeadings(body, offsetLine = 1) {
+  const headings = [];
+  let inCodeBlock = false;
+  const lines = String(body ?? "").split("\n");
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (isCodeFence(line)) {
+      inCodeBlock = !inCodeBlock;
+      continue;
+    }
+    if (inCodeBlock) continue;
+    const match = line.match(/^(#{1,6})\s+(.+)$/);
+    if (match) headings.push({ kind: "heading", level: match[1].length, title: match[2].trim(), line: offsetLine + index });
+  }
+  return headings;
+}
+
+function bodyStartLine(text) {
+  const normalized = String(text ?? "").replace(/\r\n/g, "\n");
+  if (!normalized.startsWith("---\n")) return 1;
+  const end = normalized.indexOf("\n---", 4);
+  if (end === -1) return 1;
+  return normalized.slice(0, end + 4).split("\n").length + 1;
+}
+
+function isBlankLine(line) {
+  return String(line ?? "").trim() === "";
+}
+
+function parseCodeBlocks(body, offsetLine = 1, options = {}) {
+  const lines = String(body ?? "").split("\n");
+  const blocks = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    const open = lines[i].match(/^(\s*)(```|~~~)\s*([^`~]*)$/);
+    if (!open) continue;
+    const fence = open[2];
+    const info = open[3].trim();
+    const language = info.split(/\s+/).filter(Boolean)[0] ?? "";
+    const contentStart = i + 1;
+    let end = lines.length - 1;
+    for (let j = contentStart; j < lines.length; j += 1) {
+      if (lines[j].trimStart().startsWith(fence)) {
+        end = j;
+        break;
+      }
+    }
+    const block = {
+      kind: "code",
+      language,
+      info,
+      fence,
+      indent: open[1].length,
+      startLine: offsetLine + i,
+      endLine: offsetLine + end,
+      contentStartLine: offsetLine + contentStart,
+      contentEndLine: offsetLine + Math.max(contentStart, end) - 1,
+      raw: lines.slice(i, end + 1).join("\n"),
+      content: lines.slice(contentStart, end).join("\n")
+    };
+    if (!options.language || block.language === options.language) blocks.push(block);
+    i = end;
+  }
+  return blocks;
+}
+
+function parseListBlocks(body, offsetLine = 1) {
+  const lines = String(body ?? "").split("\n");
+  const blocks = [];
+  let inCodeBlock = false;
+  let current = null;
+  const close = (endIndex) => {
+    if (!current) return;
+    current.endLine = offsetLine + endIndex;
+    current.raw = lines.slice(current.startIndex, endIndex + 1).join("\n");
+    current.blankAfter = endIndex + 1 >= lines.length ? true : isBlankLine(lines[endIndex + 1]);
+    delete current.startIndex;
+    blocks.push(current);
+    current = null;
+  };
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (isCodeFence(line)) {
+      if (current) close(i - 1);
+      inCodeBlock = !inCodeBlock;
+      continue;
+    }
+    const match = !inCodeBlock ? line.match(/^(\s*)([-*+]|\d+\.)\s+(.*)$/) : null;
+    if (!match) {
+      if (current) close(i - 1);
+      continue;
+    }
+    if (!current) {
+      current = {
+        kind: "list",
+        startIndex: i,
+        startLine: offsetLine + i,
+        endLine: offsetLine + i,
+        blankBefore: i === 0 ? true : isBlankLine(lines[i - 1]),
+        blankAfter: true,
+        items: []
+      };
+    }
+    current.items.push({
+      line: offsetLine + i,
+      indent: match[1].length,
+      marker: match[2],
+      text: match[3]
+    });
+  }
+  if (current) close(lines.length - 1);
+  return blocks;
+}
+
+function parseCallouts(body, offsetLine = 1) {
+  const lines = String(body ?? "").split("\n");
+  const callouts = [];
+  let inCodeBlock = false;
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (isCodeFence(line)) {
+      inCodeBlock = !inCodeBlock;
+      continue;
+    }
+    if (inCodeBlock) continue;
+    const match = line.match(/^>\s*\[!(\w+)\]([+-]?)\s*(.*)$/);
+    if (!match) continue;
+    let end = i;
+    while (end + 1 < lines.length && lines[end + 1].startsWith(">")) end += 1;
+    const rawLines = lines.slice(i, end + 1);
+    const quoteLines = rawLines.map((item) => item.replace(/^>\s?/, ""));
+    callouts.push({
+      kind: "callout",
+      type: match[1].toLowerCase(),
+      title: match[3].trim(),
+      folded: match[2] === "+" || match[2] === "-",
+      collapsed: match[2] === "-",
+      startLine: offsetLine + i,
+      endLine: offsetLine + end,
+      raw: rawLines.join("\n"),
+      content: quoteLines.slice(1).join("\n"),
+      quoteLines
+    });
+    i = end;
+  }
+  return callouts;
+}
+
+function parseVaultLinks(body, offsetLine = 1) {
+  const links = [];
+  let inCodeBlock = false;
+  const lines = String(body ?? "").split("\n");
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (isCodeFence(line)) {
+      inCodeBlock = !inCodeBlock;
+      continue;
+    }
+    if (inCodeBlock) continue;
+    const re = /\[\[([^\]|#]+)(?:#([^\]|]+))?(?:\|([^\]]+))?\]\]/g;
+    let match;
+    while ((match = re.exec(line))) {
+      const embed = line[match.index - 1] === "!";
+      links.push({
+        kind: "vault",
+        raw: embed ? `!${match[0]}` : match[0],
+        target: normalizeTitle(match[1]),
+        heading: match[2] ? normalizeTitle(match[2]) : "",
+        alias: match[3] ? normalizeTitle(match[3]) : "",
+        embed,
+        line: offsetLine + index,
+        column: embed ? match.index : match.index + 1
+      });
+    }
+  }
+  return links;
+}
+
+function parseExternalLinks(body, offsetLine = 1) {
+  const links = [];
+  let inCodeBlock = false;
+  const lines = String(body ?? "").split("\n");
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (isCodeFence(line)) {
+      inCodeBlock = !inCodeBlock;
+      continue;
+    }
+    if (inCodeBlock) continue;
+    const re = /\bhttps?:\/\/[^\s<>)\]]+/g;
+    let match;
+    while ((match = re.exec(line))) {
+      links.push({
+        kind: "external",
+        url: match[0].replace(/[.,;:!?]+$/, ""),
+        raw: match[0],
+        line: offsetLine + index,
+        column: match.index + 1
+      });
+    }
+  }
+  return links;
+}
+
+function parseEmbeds(body, offsetLine = 1) {
+  return parseVaultLinks(body, offsetLine)
+    .filter((link) => link.embed)
+    .map((link) => ({ ...link, kind: "embed" }));
+}
+
+function parseInlineTags(body, offsetLine = 1) {
+  const tags = [];
+  let inCodeBlock = false;
+  const lines = String(body ?? "").split("\n");
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (isCodeFence(line)) {
+      inCodeBlock = !inCodeBlock;
+      continue;
+    }
+    if (inCodeBlock || /^#{1,6}\s+/.test(line)) continue;
+    const re = /(^|[\s([{])#([A-Za-z0-9_/-]+)/g;
+    let match;
+    while ((match = re.exec(line))) {
+      tags.push({
+        kind: "tag",
+        tag: match[2],
+        raw: `#${match[2]}`,
+        line: offsetLine + index,
+        column: match.index + match[1].length + 1
+      });
+    }
+  }
+  return tags;
+}
+
+function parseTaskItems(body, offsetLine = 1) {
+  return parseListBlocks(body, offsetLine).flatMap((block) =>
+    block.items
+      .map((item) => {
+        const match = item.text.match(/^\[([ xX-])\]\s*(.*)$/);
+        if (!match) return null;
+        return {
+          kind: "task",
+          line: item.line,
+          indent: item.indent,
+          marker: item.marker,
+          checked: match[1].toLowerCase() === "x",
+          status: match[1],
+          text: match[2]
+        };
+      })
+      .filter(Boolean)
+  );
+}
+
+function parseBlockquotes(body, offsetLine = 1) {
+  const lines = String(body ?? "").split("\n");
+  const blocks = [];
+  let inCodeBlock = false;
+  let start = null;
+  const close = (end) => {
+    if (start === null) return;
+    const rawLines = lines.slice(start, end + 1);
+    blocks.push({
+      kind: "blockquote",
+      startLine: offsetLine + start,
+      endLine: offsetLine + end,
+      raw: rawLines.join("\n"),
+      content: rawLines.map((line) => line.replace(/^>\s?/, "")).join("\n")
+    });
+    start = null;
+  };
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (isCodeFence(line)) {
+      close(index - 1);
+      inCodeBlock = !inCodeBlock;
+      continue;
+    }
+    if (!inCodeBlock && /^>\s*\[!\w+\]/.test(line)) {
+      close(index - 1);
+      while (index + 1 < lines.length && lines[index + 1].startsWith(">")) index += 1;
+      continue;
+    }
+    if (!inCodeBlock && line.startsWith(">") && !/^>\s*\[!\w+\]/.test(line)) {
+      if (start === null) start = index;
+    } else {
+      close(index - 1);
+    }
+  }
+  close(lines.length - 1);
+  return blocks;
+}
+
+function parseMathBlocks(body, offsetLine = 1) {
+  const lines = String(body ?? "").split("\n");
+  const blocks = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    if (lines[index].trim() !== "$$") continue;
+    let end = lines.length - 1;
+    for (let j = index + 1; j < lines.length; j += 1) {
+      if (lines[j].trim() === "$$") {
+        end = j;
+        break;
+      }
+    }
+    blocks.push({
+      kind: "math",
+      startLine: offsetLine + index,
+      endLine: offsetLine + end,
+      content: lines.slice(index + 1, end).join("\n"),
+      raw: lines.slice(index, end + 1).join("\n")
+    });
+    index = end;
+  }
+  return blocks;
+}
+
+function parseTables(body, offsetLine = 1) {
+  const lines = String(body ?? "").split("\n");
+  const tables = [];
+  let inCodeBlock = false;
+  for (let index = 0; index < lines.length - 1; index += 1) {
+    const line = lines[index];
+    if (isCodeFence(line)) {
+      inCodeBlock = !inCodeBlock;
+      continue;
+    }
+    if (inCodeBlock || !line.includes("|")) continue;
+    const separator = lines[index + 1];
+    if (!/^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(separator)) continue;
+    let end = index + 1;
+    while (end + 1 < lines.length && lines[end + 1].includes("|") && !isBlankLine(lines[end + 1])) end += 1;
+    const splitRow = (row) => row.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((cell) => cell.trim());
+    tables.push({
+      kind: "table",
+      startLine: offsetLine + index,
+      endLine: offsetLine + end,
+      raw: lines.slice(index, end + 1).join("\n"),
+      headers: splitRow(line),
+      rows: lines.slice(index + 2, end + 1).map(splitRow)
+    });
+    index = end;
+  }
+  return tables;
+}
+
+export class MarkdownDocument {
+  constructor(text = "") {
+    this.text = String(text ?? "").replace(/\r\n/g, "\n");
+    const parsed = readFrontmatter(this.text);
+    this.frontmatter = parsed.frontmatter;
+    this.body = parsed.body;
+    this.bodyStartLine = bodyStartLine(this.text);
+  }
+
+  get hasFrontmatter() {
+    return hasFrontmatterBlock(this.text);
+  }
+
+  headings() {
+    return parseHeadings(this.body, this.bodyStartLine);
+  }
+
+  h1Headings() {
+    return this.headings().filter((heading) => heading.level === 1);
+  }
+
+  hasH1() {
+    return this.h1Headings().length > 0;
+  }
+
+  wikilinks() {
+    return extractWikilinks(this.body);
+  }
+
+  frontmatterEntries() {
+    return Object.entries(this.frontmatter).map(([key, value]) => ({ key, value }));
+  }
+
+  frontmatterField(key) {
+    return this.frontmatter[key];
+  }
+
+  codeBlocks(options = {}) {
+    return parseCodeBlocks(this.body, this.bodyStartLine, options);
+  }
+
+  mermaidBlocks() {
+    return this.codeBlocks({ language: "mermaid" });
+  }
+
+  listBlocks() {
+    return parseListBlocks(this.body, this.bodyStartLine);
+  }
+
+  taskItems() {
+    return parseTaskItems(this.body, this.bodyStartLine);
+  }
+
+  callouts() {
+    return parseCallouts(this.body, this.bodyStartLine);
+  }
+
+  blockquotes() {
+    return parseBlockquotes(this.body, this.bodyStartLine);
+  }
+
+  mathBlocks() {
+    return parseMathBlocks(this.body, this.bodyStartLine);
+  }
+
+  tables() {
+    return parseTables(this.body, this.bodyStartLine);
+  }
+
+  vaultLinks() {
+    return parseVaultLinks(this.body, this.bodyStartLine);
+  }
+
+  embeds() {
+    return parseEmbeds(this.body, this.bodyStartLine);
+  }
+
+  externalLinks() {
+    return parseExternalLinks(this.body, this.bodyStartLine);
+  }
+
+  inlineTags() {
+    return parseInlineTags(this.body, this.bodyStartLine);
+  }
+
+  links() {
+    return [...this.vaultLinks(), ...this.externalLinks()].sort((a, b) => a.line - b.line || a.column - b.column);
+  }
+
+  blocks() {
+    return [
+      ...this.headings(),
+      ...this.codeBlocks(),
+      ...this.listBlocks(),
+      ...this.callouts(),
+      ...this.blockquotes(),
+      ...this.mathBlocks(),
+      ...this.tables()
+    ].sort((a, b) => (a.startLine ?? a.line) - (b.startLine ?? b.line));
+  }
+
+  sections() {
+    const headings = this.headings();
+    const bodyLines = this.body.split("\n");
+    return headings.map((heading) => {
+      const headingIndex = heading.line - this.bodyStartLine;
+      const next = headings.find((candidate) => candidate.line > heading.line && candidate.level <= heading.level);
+      const endIndex = next ? next.line - this.bodyStartLine - 1 : bodyLines.length - 1;
+      const contentStartIndex = headingIndex + 1;
+      const content = bodyLines.slice(contentStartIndex, endIndex + 1).join("\n");
+      const contentStartLine = heading.line + 1;
+      return {
+        kind: "section",
+        title: heading.title,
+        level: heading.level,
+        startLine: heading.line,
+        contentStartLine,
+        endLine: this.bodyStartLine + endIndex,
+        content,
+        blankAfterHeading: contentStartIndex >= bodyLines.length ? true : isBlankLine(bodyLines[contentStartIndex]),
+        headings: parseHeadings(content, contentStartLine),
+        codeBlocks: parseCodeBlocks(content, contentStartLine),
+        listBlocks: parseListBlocks(content, contentStartLine),
+        taskItems: parseTaskItems(content, contentStartLine),
+        callouts: parseCallouts(content, contentStartLine),
+        blockquotes: parseBlockquotes(content, contentStartLine),
+        vaultLinks: parseVaultLinks(content, contentStartLine),
+        externalLinks: parseExternalLinks(content, contentStartLine)
+      };
+    });
+  }
+
+  section(title) {
+    const normalized = normalizeTitle(title);
+    return this.sections().find((section) => sameNoteName(section.title, normalized)) ?? null;
+  }
+
+  withBody(body) {
+    return replaceBody(this.text, body);
+  }
+
+  withFrontmatterField(key, value) {
+    return insertFrontmatterField(this.text, key, value);
+  }
+
+  removeH1Matching(title) {
+    return removeDuplicateH1(this.text, title);
+  }
+}
+
+export class IpaNoteDocument extends MarkdownDocument {
+  constructor(note, mapping = DEFAULT_MAPPING) {
+    super(note.raw);
+    this.note = note;
+    this.mapping = mapping;
+  }
+
+  static fromNote(note, mapping = DEFAULT_MAPPING) {
+    return new IpaNoteDocument(note, mapping);
+  }
+
+  get id() {
+    return this.note.id;
+  }
+
+  get path() {
+    return this.note.path;
+  }
+
+  get relPath() {
+    return this.note.relPath;
+  }
+
+  get folder() {
+    return this.note.folder;
+  }
+
+  get type() {
+    return this.frontmatter[this.mapping.note_type] || "";
+  }
+
+  get refs() {
+    return asList(this.frontmatter[this.mapping.refs]).map(stripWiki).filter(Boolean);
+  }
+
+  get tags() {
+    return asList(this.frontmatter[this.mapping.tags]).map((tag) => String(tag).replace(/^#/, ""));
+  }
+
+  get aliases() {
+    return this.mapping.aliases ? asList(this.frontmatter[this.mapping.aliases]).map(normalizeTitle) : [];
+  }
+
+  hasDuplicateTitleH1() {
+    return this.h1Headings().some((heading) => sameNoteName(heading.title, this.id));
+  }
+
+  withoutDuplicateTitleH1() {
+    return this.removeH1Matching(this.id);
+  }
 }
 
 export async function loadNotes(vaultPath, mapping = DEFAULT_MAPPING) {
@@ -1527,49 +2070,326 @@ function siblings(note, notes) {
   return notes.filter((candidate) => candidate.id !== note.id && shareNoteNames(candidate.refs, note.refs));
 }
 
-export async function validateVault(vaultPath) {
-  const { mapping } = await readVaultConfig(vaultPath);
-  const notes = await loadNotes(vaultPath, mapping);
-  const excludedTitles = await loadExcludedMarkdownTitles(vaultPath, mapping);
-  const markdownTitles = await loadActiveMarkdownTitles(vaultPath, mapping);
-  const issues = [];
+const RULE_BY_CODE = new Map(RULES.map((rule) => [rule.code, rule]));
+const VALID_NOTE_TYPES = new Set(["note", "index", "root"]);
+const IPA_DATE_RE = /^\d{4}\/\d{2}\/\d{2} \([A-Z][a-z]{2}\) \d{2}:\d{2}:\d{2}$/;
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/;
+
+function ruleMeta(code) {
+  return RULE_BY_CODE.get(code) ?? { code, category: "custom", severity: "warn", scope: "note" };
+}
+
+function registryEnabled(current, setting, aliases) {
+  if (setting === undefined || setting === null) return current;
+  if (typeof setting === "boolean") return setting;
+  const keys = aliases.filter(Boolean);
+  if (Array.isArray(setting)) return keys.some((key) => setting.includes(key));
+  if (typeof setting !== "object") return current;
+  let enabled = current;
+  for (const key of keys) {
+    if (typeof setting[key] === "boolean") enabled = setting[key];
+  }
+  const only = asList(setting.only);
+  const ignore = asList(setting.ignore);
+  if (only.length) enabled = keys.some((key) => only.includes(key));
+  if (keys.some((key) => ignore.includes(key))) enabled = false;
+  return enabled;
+}
+
+function builtinRuleEnabled(config, rule) {
+  if (config.rules?.enabled === false) return false;
+  const convention = config.convention ?? {};
+  if (convention.enabled === false) return false;
+  const aliases = [rule.code, rule.category, rule.scope];
+  let enabled = true;
+  enabled = registryEnabled(enabled, convention.builtin, aliases);
+  enabled = registryEnabled(enabled, convention.rules, aliases);
+  enabled = registryEnabled(enabled, config.rules?.builtin, aliases);
+  enabled = registryEnabled(enabled, config.rules, aliases);
+  enabled = registryEnabled(enabled, config.rules?.items, aliases);
+  return enabled;
+}
+
+function ruleEnabled(config, rule) {
+  if (config.rules?.enabled === false) return false;
+  if (!rule.plugin) return builtinRuleEnabled(config, rule);
+  const aliases = [rule.code, rule.category, rule.scope, rule.plugin, basename(rule.plugin)];
+  let enabled = true;
+  enabled = registryEnabled(enabled, config.rules, aliases);
+  enabled = registryEnabled(enabled, config.rules?.items, aliases);
+  return enabled;
+}
+
+function activeBuiltinRules(config) {
+  return BUILTIN_RULES.filter((rule) => builtinRuleEnabled(config, rule));
+}
+
+function isInFolder(noteOrPath, folder) {
+  const value = typeof noteOrPath === "string" ? noteOrPath : noteOrPath.folder;
+  const normalized = toPosix(String(value ?? "")).replace(/\/+$/, "");
+  const target = toPosix(String(folder ?? "")).replace(/\/+$/, "");
+  return Boolean(target && (normalized === target || normalized.startsWith(`${target}/`)));
+}
+
+function isRawInboxCapture(note, mapping) {
+  return isInFolder(note, mapping.inbox_dir) && Object.keys(note.frontmatter).length === 0;
+}
+
+function validDateValue(value) {
+  const text = String(value ?? "").trim();
+  return IPA_DATE_RE.test(text) || ISO_DATE_RE.test(text);
+}
+
+function noteIssue(code, note, message, extra = {}) {
+  const meta = ruleMeta(code);
+  return { ...issue(code, meta.severity, note, message), ...extra };
+}
+
+function vaultIssue(code, path, message, extra = {}) {
+  const meta = ruleMeta(code);
+  return { code, severity: meta.severity, path, message, ...extra };
+}
+
+function builtinRule(code, handlers) {
+  return { ...ruleMeta(code), source: "builtin", ...handlers };
+}
+
+const BUILTIN_RULES = [
+  builtinRule("ipa.inbox.raw_capture", {
+    checkNote(note, ctx) {
+      return isRawInboxCapture(note, ctx.mapping)
+        ? [noteIssue(this.code, note, "raw inbox capture without frontmatter")]
+        : [];
+    }
+  }),
+  builtinRule("ipa.frontmatter.required_field", {
+    checkNote(note, ctx) {
+      return [ctx.mapping.created_at, ctx.mapping.updated_at, ctx.mapping.tags, ctx.mapping.note_type]
+        .filter((field) => note.frontmatter[field] === undefined)
+        .map((field) => noteIssue(this.code, note, `missing frontmatter field: ${field}`));
+    },
+    async fixNote(note, ctx) {
+      if (!hasFrontmatterBlock(note.raw)) return note.raw;
+      let text = note.raw;
+      const required = [
+        [ctx.mapping.created_at, async () => {
+          const fileStat = await stat(note.path).catch(() => null);
+          return formatVaultDate(fileStat?.birthtime ?? new Date());
+        }],
+        [ctx.mapping.updated_at, () => formatVaultDate(new Date())],
+        [ctx.mapping.tags, () => []],
+        [ctx.mapping.note_type, () => inferNoteType(note.id)]
+      ];
+      for (const [field, valueFactory] of required) {
+        const current = readFrontmatter(text).frontmatter;
+        if (current[field] !== undefined) continue;
+        text = insertFrontmatterField(text, field, await valueFactory());
+      }
+      return text;
+    }
+  }),
+  builtinRule("ipa.frontmatter.date_format", {
+    checkNote(note, ctx) {
+      return [ctx.mapping.created_at, ctx.mapping.updated_at]
+        .filter((field) => note.frontmatter[field] !== undefined && !validDateValue(note.frontmatter[field]))
+        .map((field) => noteIssue(this.code, note, `invalid date format in ${field}: ${note.frontmatter[field]}`));
+    }
+  }),
+  builtinRule("ipa.frontmatter.invalid_type", {
+    checkNote(note) {
+      return note.type && !VALID_NOTE_TYPES.has(String(note.type))
+        ? [noteIssue(this.code, note, `invalid type: ${note.type}`)]
+        : [];
+    }
+  }),
+  builtinRule("ipa.frontmatter.missing_ref", {
+    checkNote(note) {
+      return ["note", "index"].includes(String(note.type)) && note.refs.length === 0
+        ? [noteIssue(this.code, note, "note/index should have at least one ref")]
+        : [];
+    }
+  }),
+  builtinRule("ipa.tag.snake_case", {
+    checkNote(note) {
+      return note.tags
+        .filter((tag) => !/^[a-z0-9_/-]+$/.test(tag))
+        .map((tag) => noteIssue(this.code, note, `tag should be snake_case: ${tag}`));
+    }
+  }),
+  builtinRule("ipa.title.root_prefix", {
+    checkNote(note) {
+      return note.type === "root" && !note.id.startsWith("🏷️")
+        ? [noteIssue(this.code, note, "root title should start with 🏷️")]
+        : [];
+    }
+  }),
+  builtinRule("ipa.title.root_suffix", {
+    checkNote(note) {
+      return note.type === "root" && !note.id.endsWith("Root")
+        ? [noteIssue(this.code, note, "root title should end with Root")]
+        : [];
+    }
+  }),
+  builtinRule("ipa.title.index_prefix", {
+    checkNote(note) {
+      return note.type === "index" && !note.id.startsWith("🔖")
+        ? [noteIssue(this.code, note, "index title should start with 🔖")]
+        : [];
+    }
+  }),
+  builtinRule("ipa.location.type_mismatch", {
+    checkNote(note, ctx) {
+      if (note.type === "note" && !isInFolder(note, ctx.mapping.inbox_dir) && !isInFolder(note, ctx.mapping.archive_dir)) {
+        return [noteIssue(this.code, note, `note type should live under ${ctx.mapping.inbox_dir} or ${ctx.mapping.archive_dir}`)];
+      }
+      if (["index", "root"].includes(String(note.type)) && !isInFolder(note, ctx.mapping.project_dir) && !isInFolder(note, ctx.mapping.archive_dir)) {
+        return [noteIssue(this.code, note, `index/root type should live under ${ctx.mapping.project_dir} or ${ctx.mapping.archive_dir}`)];
+      }
+      return [];
+    }
+  }),
+  builtinRule("ipa.link.ref_target_missing", {
+    checkNote(note, ctx) {
+      return note.refs
+        .filter((ref) => !noteTitleExists(ctx.notes, ref) && !markdownTitleExists(ctx.excludedTitles, ref))
+        .map((ref) => noteIssue(this.code, note, `ref target missing: ${ref}`));
+    }
+  }),
+  builtinRule("ipa.link.wikilink_target_missing", {
+    checkNote(note, ctx) {
+      return note.links
+        .filter((link) =>
+          !markdownTitleExists(ctx.markdownTitles, link) &&
+          !markdownTitleExists(ctx.excludedTitles, link) &&
+          !markdownTitleExists(ctx.attachmentTitles, link)
+        )
+        .map((link) => noteIssue(this.code, note, `wikilink target missing: ${link}`));
+    }
+  }),
+  builtinRule("ipa.root_folder.duplicate", {
+    checkVault(ctx) {
+      const byFolder = rootNotesByProjectFolder(ctx.notes, ctx.mapping);
+      const issues = [];
+      for (const [folder, notes] of byFolder.entries()) {
+        if (notes.length > 1) {
+          for (const note of notes) issues.push(noteIssue(this.code, note, `multiple root notes in project folder: ${folder}`));
+        }
+      }
+      return issues;
+    }
+  }),
+  builtinRule("ipa.root_folder.missing", {
+    async checkVault(ctx) {
+      const byFolder = rootNotesByProjectFolder(ctx.notes, ctx.mapping);
+      const projectRoot = join(ctx.vaultPath, ctx.mapping.project_dir);
+      if (!existsSync(projectRoot)) return [];
+      const entries = await readdir(projectRoot, { withFileTypes: true });
+      return entries
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => toPosix(relative(ctx.vaultPath, join(projectRoot, entry.name))))
+        .filter((folder) => !byFolder.has(folder))
+        .map((folder) => vaultIssue(this.code, folder, `project folder has no root note: ${folder}`));
+    }
+  }),
+  builtinRule("ipa.heading.no_h1", {
+    checkNote(note) {
+      return IpaNoteDocument.fromNote(note).hasH1()
+        ? [noteIssue(this.code, note, "note body should not contain H1 headings")]
+        : [];
+    },
+    fixNote(note, ctx) {
+      return IpaNoteDocument.fromNote(note, ctx.mapping).withoutDuplicateTitleH1();
+    }
+  })
+];
+
+function rootNotesByProjectFolder(notes, mapping) {
+  const byFolder = new Map();
   for (const note of notes) {
-    if (note.folder === mapping.inbox_dir && Object.keys(note.frontmatter).length === 0) {
-      issues.push(issue("ipa.inbox.raw_capture", "warn", note, "raw inbox capture without frontmatter"));
+    if (note.type !== "root" || !isInFolder(note, mapping.project_dir)) continue;
+    const list = byFolder.get(note.folder) ?? [];
+    list.push(note);
+    byFolder.set(note.folder, list);
+  }
+  return byFolder;
+}
+
+function noteTitleExists(notes, title) {
+  return notes.some((note) => sameNoteName(note.id, title) || note.aliases.some((alias) => sameNoteName(alias, title)));
+}
+
+function normalizeRulePlugin(plugin) {
+  const exported = plugin.module.rules ?? plugin.module.rule ?? plugin.module.default ?? (
+    plugin.module.check || plugin.module.fix || plugin.module.checkNote || plugin.module.fixNote ? plugin.module : []
+  );
+  const descriptors = Array.isArray(exported) ? exported : exported ? [exported] : [];
+  return descriptors.map((descriptor, index) => {
+    const code = descriptor.code ?? descriptor.id ?? `${basename(plugin.path, ".js")}.${index + 1}`;
+    const meta = ruleMeta(code);
+    return {
+      ...meta,
+      code,
+      category: descriptor.category ?? meta.category,
+      severity: descriptor.severity ?? meta.severity,
+      scope: descriptor.scope ?? meta.scope,
+      fixable: Boolean(descriptor.fixNote ?? descriptor.fix),
+      plugin: plugin.path,
+      source: "plugin",
+      checkNote: descriptor.checkNote ?? descriptor.check,
+      checkVault: descriptor.checkVault,
+      fixNote: descriptor.fixNote ?? descriptor.fix
+    };
+  });
+}
+
+async function activeRulesForVault(vaultPath, config) {
+  if (config.rules?.enabled === false) return [];
+  const plugins = await loadPluginModules(vaultPath, "rules");
+  return [
+    ...activeBuiltinRules(config),
+    ...plugins.flatMap((plugin) => normalizeRulePlugin(plugin)).filter((rule) => ruleEnabled(config, rule))
+  ];
+}
+
+function normalizeRuleIssues(output, rule, note = null) {
+  return (Array.isArray(output) ? output : output ? [output] : [])
+    .map((item) => ({
+      code: item.code ?? rule.code,
+      severity: item.severity ?? rule.severity ?? "warn",
+      note: item.note ?? note?.id,
+      path: item.path ?? note?.relPath,
+      message: item.message ?? "rule issue",
+      plugin: item.plugin ?? rule.plugin
+    }));
+}
+
+export async function validateVault(vaultPath) {
+  const { config, mapping } = await readVaultConfig(vaultPath);
+  const notes = await loadNotes(vaultPath, mapping);
+  const ctx = {
+    config,
+    mapping,
+    notes,
+    vaultPath,
+    excludedTitles: await loadExcludedMarkdownTitles(vaultPath, mapping),
+    markdownTitles: await loadActiveMarkdownTitles(vaultPath, mapping),
+    attachmentTitles: await loadAttachmentTitles(vaultPath, mapping)
+  };
+  const rules = await activeRulesForVault(vaultPath, config);
+  const issues = [];
+  const rawCaptureRule = rules.find((rule) => rule.code === "ipa.inbox.raw_capture");
+  const noteRules = rules.filter((rule) => rule.checkNote && rule.code !== "ipa.inbox.raw_capture");
+  const vaultRules = rules.filter((rule) => rule.checkVault);
+
+  for (const note of notes) {
+    if (isRawInboxCapture(note, mapping)) {
+      if (rawCaptureRule) issues.push(...normalizeRuleIssues(await rawCaptureRule.checkNote(note, ctx), rawCaptureRule, note));
       continue;
     }
-    for (const field of [mapping.created_at, mapping.updated_at, mapping.tags, mapping.note_type]) {
-      if (note.frontmatter[field] === undefined) {
-        issues.push(issue("ipa.frontmatter.required", "error", note, `missing frontmatter field: ${field}`));
-      }
-    }
-    if (!["note", "index", "root"].includes(String(note.type))) {
-      issues.push(issue("ipa.frontmatter.type", "error", note, `invalid type: ${note.type || "(empty)"}`));
-    }
-    if (note.type !== "root" && note.refs.length === 0) {
-      issues.push(issue("ipa.frontmatter.ref_required", "warn", note, "note/index should have at least one ref"));
-    }
-    for (const tag of note.tags) {
-      if (!/^[a-z0-9_/-]+$/.test(tag)) {
-        issues.push(issue("ipa.tag.snake_case", "warn", note, `tag should be snake_case: ${tag}`));
-      }
-    }
-    for (const ref of note.refs) {
-      if (!findNote(notes, ref) && !markdownTitleExists(excludedTitles, ref)) {
-        issues.push(issue("K001", "warn", note, `ref target missing: ${ref}`));
-      }
-    }
-    for (const link of note.links) {
-      if (!markdownTitleExists(markdownTitles, link) && !markdownTitleExists(excludedTitles, link)) {
-        issues.push(issue("K002", "warn", note, `wikilink target missing: ${link}`));
-      }
-    }
+    for (const rule of noteRules) issues.push(...normalizeRuleIssues(await rule.checkNote(note, ctx), rule, note));
   }
-  for (const plugin of await loadPluginModules(vaultPath, "lint")) {
-    for (const note of notes) {
-      const pluginIssues = await plugin.module.lint(note, { notes, mapping, vaultPath });
-      for (const item of normalizePluginIssues(pluginIssues, plugin.path, note)) issues.push(item);
-    }
+  for (const rule of vaultRules) {
+    if (rule.checkVault) issues.push(...normalizeRuleIssues(await rule.checkVault(ctx), rule));
   }
   return { notes: notes.length, issues, status: issues.some((item) => item.severity === "error") ? "error" : "ok" };
 }
@@ -1588,6 +2408,24 @@ async function loadExcludedMarkdownTitles(vaultPath, mapping) {
     extname(path).toLowerCase() === ".md" && isExcludedPath(relPath, excludes)
   );
   return markdownTitleSet(files);
+}
+
+async function loadAttachmentTitles(vaultPath, mapping) {
+  const excludes = asList(mapping.exclude);
+  const files = await walkFiles(vaultPath, (path, relPath) =>
+    extname(path).toLowerCase() !== ".md" && !isExcludedPath(relPath, excludes)
+  );
+  const titles = new Set();
+  for (const path of files) {
+    for (const title of [basename(path), basename(path, extname(path))]) {
+      const normalized = normalizeTitle(title);
+      titles.add(normalized);
+      titles.add(normalized.toLowerCase());
+      const key = searchableKey(normalized);
+      if (key) titles.add(key);
+    }
+  }
+  return titles;
 }
 
 function markdownTitleSet(files) {
@@ -1611,21 +2449,114 @@ function issue(code, severity, note, message) {
   return { code, severity, note: note.id, path: note.relPath, message };
 }
 
-function normalizePluginIssues(pluginIssues, pluginPath, note) {
-  return (Array.isArray(pluginIssues) ? pluginIssues : pluginIssues ? [pluginIssues] : [])
-    .map((item) => ({
-      code: item.code ?? `plugin.${basename(pluginPath)}`,
-      severity: item.severity ?? "warn",
-      note: item.note ?? note.id,
-      path: item.path ?? note.relPath,
-      message: item.message ?? "plugin issue",
-      plugin: pluginPath
-    }));
+function hasFrontmatterBlock(text) {
+  const normalized = String(text ?? "").replace(/\r\n/g, "\n");
+  return normalized.startsWith("---\n") && normalized.indexOf("\n---", 4) !== -1;
+}
+
+function insertFrontmatterField(text, key, value) {
+  const normalized = String(text ?? "").replace(/\r\n/g, "\n");
+  const end = normalized.indexOf("\n---", 4);
+  if (!normalized.startsWith("---\n") || end === -1) return normalized;
+  const rendered = typeof value === "string" && IPA_DATE_RE.test(value) ? value : yamlScalar(value);
+  const line = `${key}: ${rendered}\n`;
+  return `${normalized.slice(0, end + 1)}${line}${normalized.slice(end + 1)}`;
+}
+
+function inferNoteType(title) {
+  if (String(title).startsWith("🏷️") || String(title).endsWith("Root")) return "root";
+  if (String(title).startsWith("🔖")) return "index";
+  return "note";
+}
+
+function formatVaultDate(date) {
+  const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const pad = (value) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}/${pad(date.getMonth() + 1)}/${pad(date.getDate())} (${days[date.getDay()]}) ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+function removeDuplicateH1(text, title) {
+  const normalized = String(text ?? "").replace(/\r\n/g, "\n");
+  const parsed = readFrontmatter(normalized);
+  const lines = parsed.body.split("\n");
+  let removed = false;
+  const nextLines = lines.filter((line) => {
+    const match = line.match(/^#\s+(.+?)\s*$/);
+    if (!removed && match && sameNoteName(match[1], title)) {
+      removed = true;
+      return false;
+    }
+    return true;
+  });
+  if (!removed) return normalized;
+  return replaceBody(normalized, nextLines.join("\n").replace(/^\n+/, ""));
+}
+
+function replaceBody(text, body) {
+  const normalized = String(text ?? "").replace(/\r\n/g, "\n");
+  if (!normalized.startsWith("---\n")) return body;
+  const end = normalized.indexOf("\n---", 4);
+  if (end === -1) return body;
+  const bodyStart = normalized.indexOf("\n", end + 4);
+  if (bodyStart === -1) return `${normalized}\n${body}`;
+  return `${normalized.slice(0, bodyStart + 1)}${body}`;
+}
+
+function noteFromRaw(note, raw, mapping) {
+  const { frontmatter, body } = readFrontmatter(raw);
+  return {
+    ...note,
+    raw,
+    frontmatter,
+    body,
+    type: frontmatter[mapping.note_type] || "",
+    refs: asList(frontmatter[mapping.refs]).map(stripWiki).filter(Boolean),
+    tags: asList(frontmatter[mapping.tags]).map((tag) => String(tag).replace(/^#/, "")),
+    aliases: mapping.aliases ? asList(frontmatter[mapping.aliases]).map(normalizeTitle) : [],
+    links: extractWikilinks(body),
+    headings: parseHeadings(body)
+  };
+}
+
+function applyRuleFixOutput(text, output) {
+  let next = text;
+  for (const item of Array.isArray(output) ? output : output ? [output] : []) {
+    if (typeof item === "string") next = item;
+    else next = applyFormatterPatch(next, item);
+  }
+  return next;
+}
+
+async function ruleFixPatches(notes, ctx, rules) {
+  const patches = [];
+  for (const note of notes) {
+    let text = note.raw;
+    const applied = [];
+    for (const rule of rules.filter((item) => item.fixNote)) {
+      const workingNote = noteFromRaw(note, text, ctx.mapping);
+      const next = applyRuleFixOutput(text, await rule.fixNote(workingNote, { ...ctx, note: workingNote }));
+      if (next !== text) {
+        text = next;
+        applied.push(rule.code);
+      }
+    }
+    if (text !== note.raw) {
+      patches.push({
+        note: note.id,
+        path: note.relPath,
+        plugin: "rules",
+        rules: applied,
+        content: text
+      });
+    }
+  }
+  return patches;
 }
 
 export async function formatVault(vaultPath, apply = false, options = {}) {
-  const { mapping } = await readVaultConfig(vaultPath);
+  const { config, mapping } = await readVaultConfig(vaultPath);
   const allNotes = await loadNotes(vaultPath, mapping);
+  const rules = await activeRulesForVault(vaultPath, config);
   const requested = asList(options.notes ?? options.note);
   const targets = [];
   for (const noteName of requested) {
@@ -1640,22 +2571,20 @@ export async function formatVault(vaultPath, apply = false, options = {}) {
     ? validation.issues.filter((item) => targetIds.has(item.note) || notes.some((note) => note.relPath === item.path))
     : validation.issues;
   const patches = [];
-  for (const plugin of await loadPluginModules(vaultPath, "formatter")) {
-    for (const note of notes) {
-      const output = await plugin.module.format(note, {
-        notes: allNotes,
-        mapping,
-        vaultPath,
-        apply,
-        target: targetIds.size ? note.id : null,
-        options: {
-          note: targets.length === 1 ? targets[0].id : null,
-          notes: targets.map((item) => item.id)
-        }
-      });
-      patches.push(...normalizeFormatterPatches(output, plugin.path, note));
+  const ruleContext = {
+    config,
+    notes: allNotes,
+    mapping,
+    vaultPath,
+    apply,
+    MarkdownDocument,
+    IpaNoteDocument,
+    options: {
+      note: targets.length === 1 ? targets[0].id : null,
+      notes: targets.map((item) => item.id)
     }
-  }
+  };
+  patches.push(...await ruleFixPatches(notes, ruleContext, rules));
   const applied = apply ? await applyFormatterPatches(notes, patches) : undefined;
   return {
     summary: { issues: issues.length, patches: patches.length },
@@ -2111,7 +3040,7 @@ export async function listPlugins(vaultPath) {
   const { config } = await readVaultConfig(vaultPath);
   const root = join(vaultPath, ".ipa", "plugins");
   const entries = [];
-  for (const kind of ["search", "lint", "formatter"]) {
+  for (const kind of ["search", "rules"]) {
     const dir = join(root, kind);
     const files = existsSync(dir) ? await readdir(dir) : [];
     for (const file of files.filter((name) => name.endsWith(".js") && !name.startsWith("_")).sort()) {
@@ -2129,12 +3058,32 @@ export async function listSearchChannels(vaultPath) {
   return { channels: allSearchChannels(config, pluginChannels) };
 }
 
+export async function listRules(vaultPath) {
+  const { config } = await readVaultConfig(vaultPath);
+  const plugins = await loadPluginModules(vaultPath, "rules");
+  const pluginRules = plugins.flatMap((plugin) => normalizeRulePlugin(plugin));
+  return {
+    rules: [
+      ...RULES.map((rule) => ({ ...rule, enabled: builtinRuleEnabled(config, rule), source: "builtin" })),
+      ...pluginRules.map((rule) => ({
+        code: rule.code,
+        category: rule.category,
+        severity: rule.severity,
+        scope: rule.scope,
+        fixable: Boolean(rule.fixNote),
+        enabled: ruleEnabled(config, rule),
+        source: "plugin",
+        plugin: rule.plugin
+      }))
+    ]
+  };
+}
+
 export function pluginEnabled(config, kind, relPath) {
   const settings = [
     config.plugins,
     config.search?.plugins,
-    kind === "lint" ? config.convention?.plugins : undefined,
-    kind === "formatter" ? config.formatter?.plugins : undefined
+    kind === "rules" ? config.rules?.plugins : undefined
   ];
   let enabled = true;
   for (const setting of settings) {
@@ -2191,11 +3140,16 @@ export async function validatePlugin(path, kind = null) {
     if ((kind === "search" || path.includes("/search/")) && typeof mod.search !== "function" && !normalizeSearchChannelPlugin({ path, module: mod })) {
       issues.push({ code: "plugin.contract", severity: "error", message: "search plugin must export search() or a channel descriptor" });
     }
-    if ((kind === "lint" || path.includes("/lint/")) && typeof mod.lint !== "function") {
-      issues.push({ code: "plugin.contract", severity: "error", message: "lint plugin must export lint()" });
-    }
-    if ((kind === "formatter" || path.includes("/formatter/")) && typeof mod.format !== "function") {
-      issues.push({ code: "plugin.contract", severity: "error", message: "formatter plugin must export format()" });
+    if (kind === "rules" || path.includes("/rules/")) {
+      const rules = normalizeRulePlugin({ path, module: mod });
+      if (!rules.length) {
+        issues.push({ code: "plugin.contract", severity: "error", message: "rules plugin must export rule(s) with check/checkNote/checkVault or fix/fixNote" });
+      }
+      for (const rule of rules) {
+        if (!rule.checkNote && !rule.checkVault && !rule.fixNote) {
+          issues.push({ code: "plugin.contract", severity: "error", message: `rule has no check or fix: ${rule.code}` });
+        }
+      }
     }
   } catch (error) {
     issues.push({ code: "plugin.load_failed", severity: "error", message: error.message });
@@ -2216,20 +3170,19 @@ export async function pluginDryRun(vaultPath, kind, pluginRelPath, options = {})
   }
   const note = findNote(notes, options.note);
   if (!note) throw new Error(`note not found: ${options.note}`);
-  if (kind === "lint") return { kind, plugin: pluginRelPath, note: note.id, issues: await mod.lint(note, { notes, mapping }) };
-  if (kind === "formatter") {
+  if (kind === "rules") {
+    const rules = normalizeRulePlugin({ path: pluginRelPath, module: mod });
+    const ctx = { notes, mapping, vaultPath, apply: false, MarkdownDocument, IpaNoteDocument, options: { note: note.id } };
+    const issues = [];
+    for (const rule of rules.filter((item) => item.checkNote)) {
+      issues.push(...normalizeRuleIssues(await rule.checkNote(note, ctx), rule, note));
+    }
     return {
       kind,
       plugin: pluginRelPath,
       note: note.id,
-      patches: await mod.format(note, {
-        notes,
-        mapping,
-        vaultPath,
-        apply: false,
-        target: note.id,
-        options: { note: note.id }
-      })
+      issues,
+      patches: await ruleFixPatches([note], ctx, rules)
     };
   }
   throw new Error(`unknown plugin dry-run kind: ${kind}`);

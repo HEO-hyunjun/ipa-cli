@@ -105,16 +105,14 @@ User plugins live inside the vault:
 ```text
 {vault}/.ipa/plugins/
   search/              # *.js exporting search(query, notes)
-  lint/                # *.js exporting lint(note, context)
-  formatter/           # *.js exporting format(note, context)
+  rules/               # *.js exporting rule(s) with check() and/or fix()
 ```
 
 Load order is:
 
 1. builtin defaults
 2. `{vault}/.ipa/plugins/search/*.js`
-3. `{vault}/.ipa/plugins/lint/*.js`
-4. `{vault}/.ipa/plugins/formatter/*.js`
+3. `{vault}/.ipa/plugins/rules/*.js`
 
 Vault-local plugins are trusted local code and are enabled by default.
 `.ipa/config.yaml` can disable builtin/plugin behavior globally, by surface,
@@ -174,19 +172,17 @@ weights:
 convention:
   enabled: true
   builtin: true
-  plugins:
-    lint: true
-    formatter: true
-  ignore:
-    - ipa.heading.no_h1
-formatter:
+rules:
   enabled: true
   builtin: false
-  plugins:
-    lint: false
-    formatter: true
+  plugins: true
   only:
-    - vault.formatter.frontmatter_order
+    - vault.frontmatter_order
+  ignore:
+    - ipa.heading.no_h1
+  items:
+    ipa.heading.no_h1: false
+    vault.obsidian.inline_tags_to_yaml: false
 files:
   exclude:
     - AGENTS.md
@@ -197,6 +193,11 @@ files:
 `mapping` is the vault-local declarative mapping for IPA's semantic
 fields/folders. In the JS/TS runtime, custom mapping must live in
 `{vault}/.ipa/config.yaml`; profile-local code fallbacks are not loaded.
+
+`rules.enabled` disables the whole validator/formatter rule engine.
+`rules.builtin` controls builtin rules, `rules.plugins` controls vault-local
+rule plugin files, and `rules.items` controls individual rule ids from either
+builtin or plugin sources.
 
 `convention` controls `ipa convention check`; `formatter` controls
 `ipa formatter plan/apply`. `builtin: false` disables builtin rules for
@@ -236,19 +237,21 @@ copy the directory and read [`examples/sample_profile/README.md`](examples/sampl
 
 Builtin validation is limited to IPA concepts and configured field/folder
 mapping. Vault-specific title styles, prefix markers, and app metadata belong
-in vault-local lint/formatter plugins.
+in vault-local rule plugins. A rule can expose `check()` for validator output,
+`fix()` for formatter patches, or both.
 
 ```js
-// {vault}/.ipa/plugins/lint/short-note-title.js
-export async function lint(note) {
-  if ((note.id ?? "").trim().length >= 6) return [];
-  return [{
-    code: "sample.short_note_title",
-    severity: "info",
-    note: note.id,
-    message: "note title is very short for this vault convention"
-  }];
-}
+// {vault}/.ipa/plugins/rules/short-note-title.js
+export const rules = [{
+  code: "sample.short_note_title",
+  severity: "info",
+  check(note) {
+    if ((note.id ?? "").trim().length >= 6) return [];
+    return [{
+      message: "note title is very short for this vault convention"
+    }];
+  }
+}];
 ```
 
 ### Search channel

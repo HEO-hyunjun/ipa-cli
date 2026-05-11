@@ -6,7 +6,6 @@ import { Command } from "commander";
 import * as colors from "yoctocolors";
 import {
   REFACTORS,
-  RULES,
   buildContext,
   cacheClean,
   cacheDoctor,
@@ -30,6 +29,7 @@ import {
   linkPlan,
   listPlugins,
   listProfiles,
+  listRules,
   listSearchChannels,
   moveNote,
   pluginDoctor,
@@ -168,7 +168,7 @@ const COMMAND_HELP = {
   }),
   formatter: formatDetailedHelp({
     usage: "ipa [OPTIONS] formatter plan|apply [--note NOTE...]",
-    summary: "Plan or apply formatter patches from builtin/plugin formatters.",
+    summary: "Plan or apply fixes from active builtin and vault-local rules.",
     commands: [
       ["ipa formatter plan", "Preview all formatter patches"],
       ["ipa formatter apply", "Apply all formatter patches"],
@@ -213,7 +213,7 @@ const COMMAND_HELP = {
       ["ipa plugin doctor", "Validate all plugin contracts"],
       ["ipa plugin validate .ipa/plugins/search/x.js", "Validate one plugin file"],
       ["ipa plugin dry-run search .ipa/plugins/search/x.js --query Alpha", "Run a search plugin without installing changes"],
-      ["ipa plugin dry-run formatter .ipa/plugins/formatter/x.js --note Alpha", "Preview formatter plugin patches"]
+      ["ipa plugin dry-run rules .ipa/plugins/rules/x.js --note Alpha", "Preview rule issues and fixes"]
     ]
   }),
   profile: formatDetailedHelp({
@@ -646,9 +646,12 @@ function renderRules(items) {
     item.code,
     item.category ?? "-",
     item.severity ?? "-",
-    item.scope ?? "-"
+    item.scope ?? "-",
+    item.fixable ? "yes" : "no",
+    item.enabled === false ? "off" : "on",
+    item.source ?? "-"
   ]);
-  return renderTableReport("validator rules", ["code", "category", "severity", "scope"], rows);
+  return renderTableReport("validator rules", ["code", "category", "severity", "scope", "fix", "active", "source"], rows);
 }
 
 function renderRefactors(items) {
@@ -1329,8 +1332,8 @@ function buildProgram() {
   program.command("list-channels").action(async () => {
     await withVault(globalOptions(program), async (vault) => print(await listSearchChannels(vault), jsonOutput(program)));
   });
-  program.command("list-rules").action(() => {
-    print({ rules: RULES }, jsonOutput(program));
+  program.command("list-rules").action(async () => {
+    await withVault(globalOptions(program), async (vault) => print(await listRules(vault), jsonOutput(program)));
   });
   program.command("list-refactors").action(() => {
     print({ refactors: REFACTORS }, jsonOutput(program));

@@ -46,7 +46,7 @@ test("CLI help and key smoke commands run through ipa-test profile", async () =>
   assert.match(channels, /search channels \(9\)/);
   assert.match(channels, /body_match\s+0\.3630/);
   const rules = run(env, ["--profile", "ipa-test", "list-rules"]);
-  assert.match(rules, /validator rules \(11\)/);
+  assert.match(rules, /validator rules \(15\)/);
   assert.match(rules, /ipa\.link\.wikilink_target_missing/);
   const refactors = run(env, ["--profile", "ipa-test", "list-refactors"]);
   assert.match(refactors, /refactor commands \(7\)/);
@@ -131,8 +131,8 @@ test("legacy surface fixture is covered by JS fixtures", async () => {
   assert.match(channels, /fuzzy\s+0\.2680\s+0\.2680\s+Graded fuzzy match/);
   assert.match(channels, /project\s+0\.0330\s+0\.0330\s+Project folder\/ref boost/);
   const rules = run(env, [...profile, "list-rules"]);
-  assert.match(rules, /validator rules \(11\)/);
-  assert.match(rules, /ipa\.heading\.no_h1\s+heading\s+info\s+note/);
+  assert.match(rules, /validator rules \(15\)/);
+  assert.match(rules, /ipa\.heading\.no_h1\s+heading\s+info\s+note\s+yes\s+on\s+builtin/);
   const refactors = run(env, [...profile, "list-refactors"]);
   assert.match(refactors, /refactor commands \(7\)/);
   assert.match(refactors, /ref-replace\s+ref 교체/);

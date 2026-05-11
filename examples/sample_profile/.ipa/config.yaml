@@ -12,5 +12,4 @@ mapping:
     archive: "02 Archive"
 plugins:
   search: true
-  lint: true
-  formatter: true
+  rules: true

@@ -13,13 +13,9 @@ mapping:
 convention:
   enabled: true
   builtin: true
-  plugins:
-    lint: true
-    formatter: true
-formatter:
+rules:
   enabled: true
   builtin: true
-  plugins:
-    formatter: true
+  plugins: true
 test:
   file: .ipa/tune/testsets/ipa-cli-core.json

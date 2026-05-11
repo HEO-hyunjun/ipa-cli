@@ -1,7 +1,7 @@
 # sample_profile
 
 This directory is a vault-local JS plugin sample. Copy its `.ipa/` directory
-into a vault to enable one extra search channel and one extra lint rule.
+into a vault to enable one extra search channel and one extra rule.
 
 ## Install
 
@@ -30,7 +30,7 @@ Use `ipa --profile sample <command>` only when you need an ad-hoc override.
 | Surface | File | What it does |
 |---|---|---|
 | Search channel | `.ipa/plugins/search/heading-match.js` | Boosts notes whose markdown headings contain the query |
-| Lint rule | `.ipa/plugins/lint/no-emoji-in-filename.js` | Flags non-index/non-root notes whose filename starts with an emoji |
+| Rule | `.ipa/plugins/rules/no-emoji-in-filename.js` | Flags non-index/non-root notes whose filename starts with an emoji |
 
 Vault-local plugins append to builtin behavior by default. Use
 `.ipa/config.yaml` to disable builtin behavior, plugin behavior, or an
@@ -50,8 +50,7 @@ ipa --profile sample engine search "your query" --explain
 ```yaml
 plugins:
   search: false
-  lint: true
-  formatter: true
+  rules: true
 ```
 
 The list is explicit on purpose: what is enabled in `.ipa/config.yaml` is

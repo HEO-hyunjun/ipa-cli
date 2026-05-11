@@ -10,10 +10,13 @@ import {
   cacheStatus,
   formatVault,
   inboxAdd,
+  IpaNoteDocument,
   loadNotes,
+  MarkdownDocument,
   linkApply,
   linkPlan,
   listPlugins,
+  listRules,
   listSearchChannels,
   pluginDryRun,
   readVaultConfig,
@@ -313,6 +316,110 @@ test("validator, cache, review and tune contracts are available", async () => {
   assert.equal(history.trim().split("\n").length, 3);
 });
 
+test("builtin linter rules are listed, applied and configurable", async () => {
+  const vault = await fixtureVault();
+  const configPath = join(vault, ".ipa", "config.yaml");
+  await mkdir(join(vault, "01 Project", "Empty Project"), { recursive: true });
+  await writeFile(
+    join(vault, "00 Inbox", "Bad Note.md"),
+    `---\ndate_created: bad-date\ntype: note\nref: ["[[Missing Target]]"]\ntags: ["Bad Tag"]\n---\n# Bad Note\n\n[[Missing Link]]\n`,
+    "utf8"
+  );
+  await writeFile(
+    join(vault, "01 Project", "Plain Index.md"),
+    `---\ndate_created: 2026/05/10 (Sun) 00:00:00\ndate_modified: 2026/05/10 (Sun) 00:00:00\ntype: index\nref: ["[[🏷️ Topic Root]]"]\ntags: [project]\n---\n## Plain Index\n`,
+    "utf8"
+  );
+  await writeFile(
+    join(vault, "01 Project", "Plain Root Node.md"),
+    `---\ndate_created: 2026/05/10 (Sun) 00:00:00\ndate_modified: 2026/05/10 (Sun) 00:00:00\ntype: root\nref: []\ntags: [project]\n---\n## Plain Root\n`,
+    "utf8"
+  );
+
+  const listed = await listRules(vault);
+  assert.equal(listed.rules.length, 15);
+  assert.equal(listed.rules.find((item) => item.code === "ipa.title.index_prefix").enabled, true);
+
+  const issues = (await validateVault(vault)).issues;
+  const codes = new Set(issues.map((item) => item.code));
+  for (const code of [
+    "ipa.frontmatter.required_field",
+    "ipa.frontmatter.date_format",
+    "ipa.tag.snake_case",
+    "ipa.title.index_prefix",
+    "ipa.title.root_prefix",
+    "ipa.title.root_suffix",
+    "ipa.link.ref_target_missing",
+    "ipa.link.wikilink_target_missing",
+    "ipa.root_folder.missing",
+    "ipa.heading.no_h1"
+  ]) {
+    assert.ok(codes.has(code), `expected ${code}`);
+  }
+
+  await writeFile(
+    configPath,
+    `${await readFile(configPath, "utf8")}\nrules:\n  enabled: true\n  builtin: true\n  plugins: true\n  items:\n    title: false\n    ipa.heading.no_h1: false\n`,
+    "utf8"
+  );
+  const disabled = await listRules(vault);
+  assert.equal(disabled.rules.find((item) => item.code === "ipa.title.index_prefix").enabled, false);
+  assert.equal(disabled.rules.find((item) => item.code === "ipa.heading.no_h1").enabled, false);
+  const nextCodes = new Set((await validateVault(vault)).issues.map((item) => item.code));
+  assert.equal(nextCodes.has("ipa.title.index_prefix"), false);
+  assert.equal(nextCodes.has("ipa.heading.no_h1"), false);
+  assert.equal(nextCodes.has("ipa.link.ref_target_missing"), true);
+});
+
+test("builtin formatter uses reusable markdown and IPA note utilities", async () => {
+  const vault = await fixtureVault();
+  await writeFile(
+    join(vault, "00 Inbox", "Needs Format.md"),
+    `---\ndate_modified: 2026/05/10 (Sun) 00:00:00\nref: ["[[🔖 Topic Index]]"]\ntags: [format]\n---\n# Needs Format\n\nBody\n`,
+    "utf8"
+  );
+  const { mapping } = await readVaultConfig(vault);
+  const note = (await loadNotes(vault, mapping)).find((item) => item.id === "Needs Format");
+  const document = IpaNoteDocument.fromNote(note, mapping);
+  assert.equal(document.hasDuplicateTitleH1(), true);
+  assert.deepEqual(document.refs, ["🔖 Topic Index"]);
+
+  const plan = await formatVault(vault, false, { note: "Needs Format" });
+  assert.equal(plan.patches.length, 1);
+  assert.equal(plan.patches[0].plugin, "rules");
+  assert.deepEqual(plan.patches[0].rules, [
+    "ipa.frontmatter.required_field",
+    "ipa.heading.no_h1"
+  ]);
+
+  const applied = await formatVault(vault, true, { note: "Needs Format" });
+  assert.deepEqual(applied.applied, [{ note: "Needs Format", path: "00 Inbox/Needs Format.md", patches: 1 }]);
+  const text = await readFile(join(vault, "00 Inbox", "Needs Format.md"), "utf8");
+  assert.match(text, /date_created: \d{4}\/\d{2}\/\d{2} \([A-Z][a-z]{2}\) \d{2}:\d{2}:\d{2}/);
+  assert.match(text, /type: note/);
+  assert.doesNotMatch(text, /^# Needs Format/m);
+});
+
+test("MarkdownDocument exposes Obsidian structures for plugin rules", () => {
+  const doc = new MarkdownDocument(`---\ntags: [doc]\n---\n## Graph\n\n\`\`\`mermaid\ngraph TD\n  A --> B\n\`\`\`\n\n- item\n- [x] done\n\n> [!note]- Folded\n> quote\n>   indented quote\n\n> plain quote\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n$$\nx = 1\n$$\n\n![[Image.png]]\n[[Target#Part|Alias]]\nhttps://example.com/path\n#inline_tag\n`);
+
+  assert.deepEqual(doc.frontmatterField("tags"), ["doc"]);
+  assert.equal(doc.headings()[0].title, "Graph");
+  assert.equal(doc.sections()[0].blankAfterHeading, true);
+  assert.equal(doc.mermaidBlocks()[0].content.split("\n")[1].startsWith("  "), true);
+  assert.equal(doc.listBlocks()[0].items.length, 2);
+  assert.equal(doc.taskItems()[0].checked, true);
+  assert.equal(doc.callouts()[0].type, "note");
+  assert.match(doc.callouts()[0].content, /indented quote/);
+  assert.equal(doc.blockquotes()[0].content, "plain quote");
+  assert.deepEqual(doc.tables()[0].headers, ["A", "B"]);
+  assert.match(doc.mathBlocks()[0].content, /x = 1/);
+  assert.equal(doc.embeds()[0].target, "Image.png");
+  assert.equal(doc.vaultLinks().some((link) => link.target === "Target" && link.heading === "Part"), true);
+  assert.equal(doc.externalLinks()[0].url, "https://example.com/path");
+  assert.equal(doc.inlineTags()[0].tag, "inline_tag");
+});
+
 test("tune eval uses the vault-local configured testset by default", async () => {
   const vault = await fixtureVault();
   await mkdir(join(vault, ".ipa", "tune", "testsets"), { recursive: true });
@@ -496,8 +603,7 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
 test("vault-local JS plugins run in search, validation and formatter paths", async () => {
   const vault = await fixtureVault();
   await mkdir(join(vault, ".ipa", "plugins", "search"), { recursive: true });
-  await mkdir(join(vault, ".ipa", "plugins", "lint"), { recursive: true });
-  await mkdir(join(vault, ".ipa", "plugins", "formatter"), { recursive: true });
+  await mkdir(join(vault, ".ipa", "plugins", "rules"), { recursive: true });
   await writeFile(
     join(vault, ".ipa", "plugins", "search", "sample.js"),
     `export async function search(query, notes) {
@@ -507,35 +613,56 @@ test("vault-local JS plugins run in search, validation and formatter paths", asy
     "utf8"
   );
   await writeFile(
-    join(vault, ".ipa", "plugins", "lint", "sample.js"),
-    `export async function lint(note) {
-      return note.id === "Alpha" ? [{ code: "sample.alpha", severity: "warn", message: "plugin lint issue" }] : [];
-    }\n`,
+    join(vault, ".ipa", "plugins", "rules", "sample.js"),
+    `export const rules = [{
+      code: "sample.alpha",
+      severity: "warn",
+      check(note) {
+        return note.id === "Alpha" ? [{ message: "plugin lint issue" }] : [];
+      },
+      fix(note) {
+        return note.id === "Alpha" ? [{ content: note.raw.replace("Alpha mentions Beta", "Alpha formatted Beta") }] : [];
+      }
+    }];\n`,
     "utf8"
   );
-  await writeFile(
-    join(vault, ".ipa", "plugins", "formatter", "sample.js"),
-    `export async function format(note) {
-      return note.id === "Alpha" ? [{ content: note.raw.replace("Alpha mentions Beta", "Alpha formatted Beta") }] : [];
-    }\n`,
-    "utf8"
-  );
-  assert.equal((await listPlugins(vault)).plugins.length, 3);
+  assert.equal((await listPlugins(vault)).plugins.length, 2);
   const dryRun = await pluginDryRun(vault, "search", ".ipa/plugins/search/sample.js", { query: "Alpha" });
   assert.deepEqual(dryRun.results, []);
   const search = await searchVault(vault, "plugin-only");
   assert.equal(search.results[0].note, "Beta");
   assert.equal(search.results[0].reasons["plugin:sample.js"].matched, "plugin");
   const validation = await validateVault(vault);
-  assert.ok(validation.issues.some((item) => item.code === "sample.alpha" && item.plugin === ".ipa/plugins/lint/sample.js"));
+  assert.ok(validation.issues.some((item) => item.code === "sample.alpha" && item.plugin === ".ipa/plugins/rules/sample.js"));
+  const ruleDryRun = await pluginDryRun(vault, "rules", ".ipa/plugins/rules/sample.js", { note: "Alpha" });
+  assert.ok(ruleDryRun.issues.some((item) => item.code === "sample.alpha"));
+  assert.equal(ruleDryRun.patches.length, 1);
+  await writeFile(
+    join(vault, ".ipa", "config.yaml"),
+    `${await readFile(join(vault, ".ipa", "config.yaml"), "utf8")}\nrules:\n  enabled: true\n  builtin: false\n  plugins: true\n`,
+    "utf8"
+  );
   const format = await formatVault(vault);
-  assert.ok(format.patches.some((item) => item.note === "Alpha" && item.plugin === ".ipa/plugins/formatter/sample.js"));
+  assert.ok(format.patches.some((item) => item.note === "Alpha" && item.rules.includes("sample.alpha")));
   const scopedMiss = await formatVault(vault, false, { note: "Beta" });
   assert.equal(scopedMiss.patches.length, 0);
   const scopedHit = await formatVault(vault, false, { note: "Alpha" });
   assert.equal(scopedHit.patches.length, 1);
   const scopedList = await formatVault(vault, false, { notes: ["Alpha", "Beta"] });
   assert.equal(scopedList.patches.length, 1);
+  await writeFile(
+    join(vault, ".ipa", "config.yaml"),
+    `${await readFile(join(vault, ".ipa", "config.yaml"), "utf8")}\nrules:\n  enabled: true\n  builtin: false\n  plugins: true\n  items:\n    sample.alpha: false\n`,
+    "utf8"
+  );
+  assert.equal((await listRules(vault)).rules.find((item) => item.code === "sample.alpha").enabled, false);
+  assert.equal((await validateVault(vault)).issues.some((item) => item.code === "sample.alpha"), false);
+  assert.equal((await formatVault(vault, false, { note: "Alpha" })).patches.length, 0);
+  await writeFile(
+    join(vault, ".ipa", "config.yaml"),
+    `${await readFile(join(vault, ".ipa", "config.yaml"), "utf8")}\nrules:\n  enabled: true\n  builtin: false\n  plugins: true\n`,
+    "utf8"
+  );
   await assert.rejects(() => formatVault(vault, false, { note: "Missing" }), /note not found: Missing/);
   await assert.rejects(() => formatVault(vault, false, { notes: ["Alpha", "Missing"] }), /note not found: Missing/);
   const applied = await formatVault(vault, true);
@@ -546,7 +673,7 @@ test("vault-local JS plugins run in search, validation and formatter paths", asy
     `mapping:\n  fields:\n    note_type: type\n    refs: ref\n    tags: tags\n    created_at: date_created\n    updated_at: date_modified\n    aliases: aliases\n  folders:\n    inbox: 00 Inbox\n    project: 01 Project\n    archive: 02 Archive\nplugins:\n  search: false\n`,
     "utf8"
   );
-  assert.equal((await listPlugins(vault)).plugins.length, 2);
+  assert.equal((await listPlugins(vault)).plugins.length, 1);
   await writeFile(
     join(vault, ".ipa", "config.yaml"),
     `mapping:\n  fields:\n    note_type: type\n    refs: ref\n    tags: tags\n    created_at: date_created\n    updated_at: date_modified\n    aliases: aliases\n  folders:\n    inbox: 00 Inbox\n    project: 01 Project\n    archive: 02 Archive\nplugins: false\n`,

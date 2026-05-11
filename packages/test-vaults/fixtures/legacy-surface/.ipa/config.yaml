@@ -13,11 +13,7 @@ mapping:
 convention:
   enabled: true
   builtin: true
-  plugins:
-    lint: true
-    formatter: true
-formatter:
+rules:
   enabled: true
   builtin: true
-  plugins:
-    formatter: true
+  plugins: true
