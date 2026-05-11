@@ -14,6 +14,7 @@ import {
   linkApply,
   linkPlan,
   listPlugins,
+  listSearchChannels,
   pluginDryRun,
   readVaultConfig,
   refactorVault,
@@ -71,7 +72,7 @@ test("project search channel follows configured folder mapping", async () => {
   );
   await writeFile(
     join(vault, "20 Active", "Custom Project Index.md"),
-    `---\ndate_created: 2026-05-10T00:00:00.000Z\ndate_modified: 2026-05-10T00:00:00.000Z\ntype: index\nref: ["[[🏷️ Topic Root]]"]\ntags: [custom]\n---\n# Custom Project Index\n`,
+    `---\ndate_created: 2026-05-10T00:00:00.000Z\ndate_modified: 2026-05-10T00:00:00.000Z\ntype: index\nref: []\ntags: [custom]\n---\n# Custom Project Index\n`,
     "utf8"
   );
 
@@ -79,8 +80,8 @@ test("project search channel follows configured folder mapping", async () => {
   const notes = await loadNotes(vault, mapping);
   const note = notes.find((item) => item.id === "Custom Project Index");
   assert.ok(note);
-  assert.equal(scoreNote(note, "zzzz", notes, {}, mapping).channelScores.project, 0.35);
-  assert.equal(scoreNote(note, "zzzz", notes, {}, { ...mapping, project_dir: "01 Project" }).channelScores.project, 0);
+  assert.equal(scoreNote(note, "Custom", notes, {}, mapping).channelScores.project, 1);
+  assert.equal(scoreNote(note, "Custom", notes, {}, { ...mapping, project_dir: "01 Project" }).channelScores.project, 0);
 });
 
 test("profile and vault overrides resolve in the documented priority order", async () => {
@@ -336,6 +337,38 @@ test("tune eval uses the vault-local configured testset by default", async () =>
   assert.equal(result.misses, 0);
 });
 
+test("tune loss preserves regression and scenario weights", async () => {
+  const vault = await fixtureVault();
+  await mkdir(join(vault, ".ipa", "tune", "testsets"), { recursive: true });
+  await writeFile(
+    join(vault, ".ipa", "tune", "testsets", "testset.json"),
+    JSON.stringify({
+      cases: [
+        { id: "C1", queries: ["Alpha"], target_filename: "Alpha" }
+      ],
+      scenario_cases: [
+        { id: "S1", queries: ["zzzz-no-hit"], target_filename: "Beta", recall_mode: "top5" }
+      ]
+    }),
+    "utf8"
+  );
+  await writeFile(
+    join(vault, ".ipa", "config.yaml"),
+    `${await readFile(join(vault, ".ipa", "config.yaml"), "utf8")}\ntest:\n  file: .ipa/tune/testsets/testset.json\n`,
+    "utf8"
+  );
+
+  const shown = await tuneTestsetShow(vault);
+  assert.equal(shown.cases, 2);
+  assert.equal(shown.rows[1].kind, "scenario");
+
+  const result = await tuneEval(vault);
+  assert.equal(result.total, 2);
+  assert.equal(result.groups.regression.misses, 0);
+  assert.equal(result.groups.scenario.misses, 1);
+  assert.equal(result.loss, 51);
+});
+
 test("tune analyze, replay and testset commands are functional", async () => {
   const vault = await fixtureVault();
   const list = await tuneTestsetList(vault);
@@ -384,7 +417,7 @@ test("activated tune results are applied to search defaults", async () => {
   await mkdir(join(vault, ".ipa", "tune", "results"), { recursive: true });
   await writeFile(
     join(vault, ".ipa", "tune", "results", "active.json"),
-    JSON.stringify({ best: { params: { threshold: 2, cap: 1, weights: { filename: 0 } } } }),
+    JSON.stringify({ best: { params: { threshold: 2, cap: 1, weights: { fuzzy: 0 } } } }),
     "utf8"
   );
   await tuneUse(vault, "active.json");
@@ -520,4 +553,46 @@ test("vault-local JS plugins run in search, validation and formatter paths", asy
     "utf8"
   );
   assert.equal((await listPlugins(vault)).plugins.length, 0);
+});
+
+test("search channels can disable builtins and use tunable plugin channels", async () => {
+  const vault = await fixtureVault();
+  const baseConfig = await readFile(join(vault, ".ipa", "config.yaml"), "utf8");
+  await mkdir(join(vault, ".ipa", "plugins", "search"), { recursive: true });
+  await writeFile(
+    join(vault, ".ipa", "plugins", "search", "channel-only.js"),
+    `export const channel = {
+      name: "custom_boost",
+      defaultWeight: 1,
+      description: "custom score channel",
+      async search({ query }) {
+        return query === "channel-only" ? [{ note: "Beta", score: 1, reason: { matched: "channel" } }] : [];
+      }
+    };\n`,
+    "utf8"
+  );
+  await writeFile(
+    join(vault, ".ipa", "config.yaml"),
+    `${baseConfig}\nsearch:\n  channels:\n    builtin: false\n`,
+    "utf8"
+  );
+
+  const channels = await listSearchChannels(vault);
+  assert.equal(channels.channels.find((item) => item.name === "filename").enabled, false);
+  assert.equal(channels.channels.find((item) => item.name === "custom_boost").enabled, true);
+  assert.equal((await searchVault(vault, "Alpha")).count, 0);
+  const pluginHit = await searchVault(vault, "channel-only");
+  assert.equal(pluginHit.results[0].note, "Beta");
+  assert.equal(pluginHit.results[0].reasons.custom_boost.matched, "channel");
+  const dryRun = await pluginDryRun(vault, "search", ".ipa/plugins/search/channel-only.js", { query: "channel-only" });
+  assert.equal(dryRun.results[0].note, "Beta");
+
+  await writeFile(
+    join(vault, ".ipa", "config.yaml"),
+    `${baseConfig}\nsearch:\n  channels:\n    builtin: false\n    plugins:\n      custom_boost: false\n`,
+    "utf8"
+  );
+  const disabledChannels = await listSearchChannels(vault);
+  assert.equal(disabledChannels.channels.find((item) => item.name === "custom_boost").enabled, false);
+  assert.equal((await searchVault(vault, "channel-only")).count, 0);
 });

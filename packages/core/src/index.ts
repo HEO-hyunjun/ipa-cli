@@ -461,6 +461,91 @@ function subsequenceScore(needle, haystack) {
   return j / q.length * 0.7;
 }
 
+function jamoTrigrams(text) {
+  const chars = Array.from(String(text ?? "").toLowerCase().normalize("NFD"));
+  if (chars.length < 3) return [];
+  const out = [];
+  for (let i = 0; i <= chars.length - 3; i += 1) {
+    out.push(chars.slice(i, i + 3).join(""));
+  }
+  return out;
+}
+
+function fuzzyNameScore(queryLower, name) {
+  if (!queryLower) return 0;
+  const rawName = String(name ?? "");
+  const lower = rawName.toLowerCase();
+  if (lower === queryLower) return 1;
+  if (lower.includes(queryLower)) return 1;
+  const noSpace = queryLower.replace(/\s+/g, "");
+  if (noSpace && lower.replace(/\s+/g, "").includes(noSpace)) return 1;
+  const queryTrigrams = new Set(jamoTrigrams(queryLower));
+  if (queryTrigrams.size) {
+    const nameTrigrams = new Set(jamoTrigrams(name));
+    if (nameTrigrams.size) {
+      let overlap = 0;
+      for (const item of queryTrigrams) {
+        if (nameTrigrams.has(item)) overlap += 1;
+      }
+      const score = overlap / queryTrigrams.size;
+      if (score >= 0.4) return score;
+    }
+  }
+  return subsequenceScore(queryLower, name);
+}
+
+function buildBm25Index(notes) {
+  const corpus = notes.map((note) => ({
+    note,
+    tokens: jamoTrigrams(note.body ? `${note.id}\n${note.body}` : note.id)
+  }));
+  const termToIndex = new Map();
+  for (const doc of corpus) {
+    for (const token of doc.tokens) {
+      if (!termToIndex.has(token)) termToIndex.set(token, termToIndex.size);
+    }
+  }
+  const docTf = [];
+  const docLen = [];
+  for (const doc of corpus) {
+    const tf = new Map();
+    for (const token of doc.tokens) {
+      const index = termToIndex.get(token);
+      tf.set(index, (tf.get(index) ?? 0) + 1);
+    }
+    docTf.push(tf);
+    docLen.push(doc.tokens.length);
+  }
+  const docFreq = new Map();
+  for (const tf of docTf) {
+    for (const index of tf.keys()) docFreq.set(index, (docFreq.get(index) ?? 0) + 1);
+  }
+  const nDocs = corpus.length;
+  const avgdl = docLen.reduce((sum, value) => sum + value, 0) / Math.max(nDocs, 1);
+  const idf = new Map();
+  for (const [index, count] of docFreq.entries()) {
+    idf.set(index, Math.log(1 + (nDocs - count + 0.5) / (count + 0.5)));
+  }
+  return { termToIndex, docTf, docLen, avgdl, idf, nDocs, k1: 1.5, b: 0.75 };
+}
+
+function bm25Score(index, queryTokens, docIndex) {
+  const tf = index.docTf[docIndex];
+  if (!tf) return 0;
+  const dl = index.docLen[docIndex] ?? 0;
+  let score = 0;
+  for (const token of queryTokens) {
+    const tokenIndex = index.termToIndex.get(token);
+    if (tokenIndex === undefined) continue;
+    const frequency = tf.get(tokenIndex);
+    if (!frequency) continue;
+    const idf = index.idf.get(tokenIndex) ?? 0;
+    const denom = frequency + index.k1 * (1 - index.b + index.b * dl / Math.max(index.avgdl, 1));
+    score += idf * frequency * (index.k1 + 1) / Math.max(denom, 1e-9);
+  }
+  return score;
+}
+
 export function scoreNote(note, query, notes, weights = {}, mapping = DEFAULT_MAPPING) {
   const raw = searchableTitle(query);
   const lower = raw.toLowerCase();
@@ -479,7 +564,7 @@ export function scoreNote(note, query, notes, weights = {}, mapping = DEFAULT_MA
   channelScores.filename = bestName;
   if (bestName) reasons.filename = { matched: names.find((name) => searchableKey(name).includes(lower)) ?? note.id };
 
-  const fuzzy = lower ? Math.max(0, ...searchNames.map((name) => subsequenceScore(lower, name))) : 0;
+  const fuzzy = lower ? Math.max(0, ...searchNames.map((name) => fuzzyNameScore(lower, name))) : 0;
   channelScores.fuzzy = fuzzy;
   if (fuzzy) reasons.fuzzy = { score: fuzzy };
 
@@ -513,15 +598,27 @@ export function scoreNote(note, query, notes, weights = {}, mapping = DEFAULT_MA
   if (shared) reasons.related = { shared: true };
 
   const projectDir = mapping.project_dir ?? DEFAULT_MAPPING.project_dir;
-  channelScores.project = note.folder === projectDir || note.folder.startsWith(`${projectDir}/`) ? 0.35 : 0;
-  const childBody = note.type === "index" || note.type === "root"
-    ? Math.max(0, ...notes.filter((candidate) => hasNoteName(candidate.refs, note.id)).map((candidate) => {
+  const childBody = note.type === "index" || note.type === "root" || note.id.startsWith("🔖")
+    ? Math.max(0, ...notes
+      .filter((candidate) => candidate.type !== "index" && candidate.type !== "root" && !candidate.id.startsWith("🔖"))
+      .filter((candidate) => hasNoteName(candidate.refs, note.id))
+      .map((candidate) => {
         const candidateBody = searchableTitle(candidate.body).toLowerCase();
         return tokens.length ? tokens.filter((token) => candidateBody.includes(token)).length / tokens.length : 0;
       }))
     : 0;
   channelScores.child_body_match = childBody;
   if (childBody) reasons.child_body_match = { coverage: childBody };
+
+  const hasSearchSignal = Object.entries(channelScores).some(([key, value]) => key !== "project" && value > 0);
+  const hasProjectContext = note.folder === projectDir ||
+    note.folder.startsWith(`${projectDir}/`) ||
+    note.refs.some((ref) => {
+      const target = findNote(notes, ref);
+      return target && (target.folder === projectDir || target.folder.startsWith(`${projectDir}/`));
+    });
+  channelScores.project = hasSearchSignal && hasProjectContext ? 1 : 0;
+  if (channelScores.project) reasons.project = { context: true };
 
   let score = 0;
   for (const channel of CHANNELS) {
@@ -533,6 +630,7 @@ export function scoreNote(note, query, notes, weights = {}, mapping = DEFAULT_MA
 
 function prepareSearchNotes(notes, mapping = DEFAULT_MAPPING) {
   const projectDir = mapping.project_dir ?? DEFAULT_MAPPING.project_dir;
+  const noteById = new Map(notes.map((note) => [note.id, note]));
   const prepared = notes.map((note) => {
     const names = [note.id, ...note.aliases];
     const searchNames = names.map(searchableTitle).filter(Boolean);
@@ -547,30 +645,65 @@ function prepareSearchNotes(notes, mapping = DEFAULT_MAPPING) {
       bodyTokenSet: new Set(tokenize(`${searchNames.join(" ")} ${bodySearch}`)),
       keywordText: searchableTitle(`${note.refs.join(" ")} ${note.tags.join(" ")} ${note.aliases.join(" ")} ${note.body}`).toLowerCase(),
       isProject: note.folder === projectDir || note.folder.startsWith(`${projectDir}/`),
+      hasProjectContext: note.folder === projectDir ||
+        note.folder.startsWith(`${projectDir}/`) ||
+        note.refs.some((ref) => {
+          const target = findNote(notes, ref);
+          return target && (target.folder === projectDir || target.folder.startsWith(`${projectDir}/`));
+        }),
       childBodyLowers: []
     };
   });
   for (const item of prepared) {
-    if (item.note.type !== "index" && item.note.type !== "root") continue;
+    if (item.note.type !== "index" && item.note.type !== "root" && !item.note.id.startsWith("🔖")) continue;
     item.childBodyLowers = prepared
+      .filter((candidate) => candidate.note.type !== "index" && candidate.note.type !== "root" && !candidate.note.id.startsWith("🔖"))
       .filter((candidate) => hasNoteName(candidate.note.refs, item.note.id))
       .map((candidate) => candidate.bodyLower);
   }
+  prepared.notes = notes;
+  prepared.noteById = noteById;
+  prepared.bm25 = buildBm25Index(notes);
+  prepared.relatedCandidatesBySeed = buildRelatedCandidateIndex(notes);
   return prepared;
 }
 
 function prepareSearchQuery(query, preparedNotes) {
   const raw = searchableTitle(query);
   const lower = raw.toLowerCase();
+  const trigrams = jamoTrigrams(raw);
+  const bm25Scores = new Map();
+  const childBm25Scores = new Map();
+  if (trigrams.length && preparedNotes.bm25?.nDocs > 0) {
+    const rawScores = preparedNotes.map((_, index) => bm25Score(preparedNotes.bm25, trigrams, index));
+    const maxRaw = Math.max(0, ...rawScores);
+    if (maxRaw > 0) {
+      rawScores.forEach((score, index) => {
+        if (score > 0) bm25Scores.set(preparedNotes[index].note.id, score / maxRaw);
+      });
+      rawScores.forEach((score, index) => {
+        if (score <= 0) return;
+        const child = preparedNotes[index].note;
+        if (child.type === "index" || child.type === "root") return;
+        for (const ref of child.refs) {
+          const target = findNote(preparedNotes.notes ?? [], ref);
+          if (!target || (target.type !== "index" && target.type !== "root" && !target.id.startsWith("🔖"))) continue;
+          childBm25Scores.set(target.id, Math.max(childBm25Scores.get(target.id) ?? 0, score / maxRaw));
+        }
+      });
+    }
+  }
   return {
     raw,
     lower,
     tokens: tokenize(raw),
-    directHits: lower ? preparedNotes.filter((candidate) => candidate.idKey.includes(lower)) : []
+    directHits: lower ? preparedNotes.filter((candidate) => candidate.idKey.includes(lower)) : [],
+    bm25Scores,
+    childBm25Scores
   };
 }
 
-function scorePreparedNote(prepared, query, weights = {}) {
+function scorePreparedChannels(prepared, query) {
   const { note } = prepared;
   const reasons = {};
   const channelScores = {};
@@ -583,7 +716,7 @@ function scorePreparedNote(prepared, query, weights = {}) {
   channelScores.filename = bestName;
   if (bestName) reasons.filename = { matched: prepared.names.find((name) => searchableKey(name).includes(query.lower)) ?? note.id };
 
-  const fuzzy = query.lower ? Math.max(0, ...prepared.searchNames.map((name) => subsequenceScore(query.lower, name))) : 0;
+  const fuzzy = query.lower ? Math.max(0, ...prepared.searchNames.map((name) => fuzzyNameScore(query.lower, name))) : 0;
   channelScores.fuzzy = fuzzy;
   if (fuzzy) reasons.fuzzy = { score: fuzzy };
 
@@ -610,33 +743,157 @@ function scorePreparedNote(prepared, query, weights = {}) {
   const body = query.tokens.length
     ? query.tokens.filter((token) => prepared.bodyLower.includes(token)).length / query.tokens.length
     : 0;
-  channelScores.body_match = Math.max(body, coverage);
+  channelScores.body_match = query.bm25Scores.get(note.id) ?? Math.max(body, coverage);
   if (channelScores.body_match) reasons.body_match = { coverage: channelScores.body_match };
 
-  const shared = query.directHits.some((candidate) =>
-    candidate.note.id !== note.id &&
-    (shareNoteNames(candidate.note.refs, note.refs) || candidate.note.tags.some((tag) => note.tags.includes(tag)))
-  );
-  channelScores.related = shared ? 0.5 : 0;
-  if (shared) reasons.related = { shared: true };
-
-  channelScores.project = prepared.isProject ? 0.35 : 0;
-  const childBody = note.type === "index" || note.type === "root"
-    ? Math.max(0, ...prepared.childBodyLowers.map((candidateBody) =>
+  const childBody = note.type === "index" || note.type === "root" || note.id.startsWith("🔖")
+    ? (query.childBm25Scores.get(note.id) ?? Math.max(0, ...prepared.childBodyLowers.map((candidateBody) =>
         query.tokens.length
           ? query.tokens.filter((token) => candidateBody.includes(token)).length / query.tokens.length
           : 0
-      ))
+      )))
     : 0;
   channelScores.child_body_match = childBody;
   if (childBody) reasons.child_body_match = { coverage: childBody };
 
+  return { reasons, channelScores };
+}
+
+function weightedScore(channelScores, weights = {}, channels = CHANNELS) {
   let score = 0;
-  for (const channel of CHANNELS) {
+  for (const channel of channels) {
     const weight = weights[channel.name] ?? channel.defaultWeight;
     score += (channelScores[channel.name] ?? 0) * weight;
   }
-  return { score, reasons, channelScores };
+  return score;
+}
+
+function scorePreparedNote(prepared, query, weights = {}) {
+  const scored = scorePreparedChannels(prepared, query);
+  return { ...scored, score: weightedScore(scored.channelScores, weights) };
+}
+
+const BUILTIN_CHANNEL_PHASES = {
+  fuzzy: "base",
+  keyword: "base",
+  filename: "base",
+  sequence_match: "base",
+  filename_partial: "base",
+  body_match: "base",
+  child_body_match: "base",
+  related: "related",
+  project: "project"
+};
+
+const BUILTIN_SEARCH_CHANNELS = CHANNELS.map((channel) => ({
+  ...channel,
+  source: "builtin",
+  phase: BUILTIN_CHANNEL_PHASES[channel.name] ?? "base"
+}));
+
+function publicChannel(channel, enabled = true) {
+  return {
+    name: channel.name,
+    defaultWeight: channel.defaultWeight,
+    description: channel.description,
+    source: channel.source,
+    path: channel.path,
+    enabled
+  };
+}
+
+function searchChannelEnabled(config, group, channel) {
+  const channelConfig = config.search?.channels;
+  const settings = [
+    channelConfig,
+    group === "builtin" ? channelConfig?.builtin : undefined,
+    group === "plugins" ? channelConfig?.plugins : undefined
+  ];
+  let enabled = true;
+  for (const setting of settings) {
+    if (setting === undefined || setting === null) continue;
+    enabled = applyChannelSetting(enabled, setting, channel);
+  }
+  return enabled;
+}
+
+function applyChannelSetting(current, setting, channel) {
+  if (typeof setting === "boolean") return setting;
+  if (Array.isArray(setting)) {
+    return setting.includes(channel.name) || setting.includes(channel.path) || setting.includes(basename(channel.path ?? ""));
+  }
+  if (typeof setting !== "object") return current;
+  let enabled = current;
+  const keys = [channel.name, channel.path, basename(channel.path ?? "")].filter(Boolean);
+  if (typeof setting.enabled === "boolean") enabled = setting.enabled;
+  for (const key of keys) {
+    if (typeof setting[key] === "boolean") enabled = setting[key];
+    if (setting[key] && typeof setting[key] === "object" && typeof setting[key].enabled === "boolean") enabled = setting[key].enabled;
+  }
+  const only = asList(setting.only);
+  const ignore = asList(setting.ignore);
+  if (only.length) enabled = keys.some((key) => only.includes(key));
+  if (keys.some((key) => ignore.includes(key))) enabled = false;
+  return enabled;
+}
+
+function resolveSearchChannels(config, pluginChannels = []) {
+  const builtins = BUILTIN_SEARCH_CHANNELS
+    .filter((channel) => searchChannelEnabled(config, "builtin", channel));
+  const plugins = pluginChannels
+    .filter((channel) => searchChannelEnabled(config, "plugins", channel));
+  return [...builtins, ...plugins];
+}
+
+function allSearchChannels(config, pluginChannels = []) {
+  return [
+    ...BUILTIN_SEARCH_CHANNELS.map((channel) => publicChannel(channel, searchChannelEnabled(config, "builtin", channel))),
+    ...pluginChannels.map((channel) => publicChannel(channel, searchChannelEnabled(config, "plugins", channel)))
+  ];
+}
+
+function buildRootSets(notes) {
+  const rootSets = new Map();
+  const visit = (note, seen = new Set()) => {
+    if (!note || seen.has(note.id)) return new Set();
+    if (rootSets.has(note.id)) return new Set(rootSets.get(note.id));
+    seen.add(note.id);
+    if (note.type === "root") {
+      const roots = new Set([note.id]);
+      rootSets.set(note.id, roots);
+      return new Set(roots);
+    }
+    const roots = new Set();
+    for (const ref of note.refs) {
+      const target = findNote(notes, ref);
+      for (const root of visit(target, seen)) roots.add(root);
+    }
+    rootSets.set(note.id, roots);
+    return new Set(roots);
+  };
+  for (const note of notes) visit(note);
+  return rootSets;
+}
+
+function buildRelatedCandidateIndex(notes) {
+  const rootSets = buildRootSets(notes);
+  const bySeed = new Map();
+  for (const seed of notes) {
+    const seedRoots = rootSets.get(seed.id) ?? new Set();
+    const related = [];
+    for (const candidate of notes) {
+      if (candidate.id === seed.id) continue;
+      let score = 0;
+      if (shareNoteNames(seed.refs, candidate.refs)) score += 3;
+      const candidateRoots = rootSets.get(candidate.id) ?? new Set();
+      if ([...seedRoots].some((root) => candidateRoots.has(root))) score += 2;
+      score += seed.tags.filter((tag) => candidate.tags.includes(tag)).length;
+      if (hasNoteName(candidate.links, seed.id) || hasNoteName(seed.links, candidate.id)) score += 2;
+      if (score > 0) related.push({ note: candidate.id, score });
+    }
+    bySeed.set(seed.id, related);
+  }
+  return bySeed;
 }
 
 async function activeSearchParams(vaultPath) {
@@ -666,48 +923,49 @@ export async function searchVault(vaultPath, query, options = {}) {
 }
 
 async function prepareSearchContext(vaultPath) {
-  const { mapping } = await readVaultConfig(vaultPath);
+  const { config, mapping } = await readVaultConfig(vaultPath);
   const notes = await loadNotes(vaultPath, mapping);
   const active = await activeSearchParams(vaultPath);
-  const plugins = await loadPluginModules(vaultPath, "search");
-  return { vaultPath, mapping, notes, active, plugins, preparedNotes: prepareSearchNotes(notes, mapping) };
+  const searchPlugins = await loadPluginModules(vaultPath, "search");
+  const pluginChannels = [];
+  const plugins = [];
+  for (const plugin of searchPlugins) {
+    const channel = normalizeSearchChannelPlugin(plugin);
+    if (channel) pluginChannels.push(channel);
+    else plugins.push(plugin);
+  }
+  const channels = resolveSearchChannels(config, pluginChannels);
+  return { vaultPath, mapping, notes, active, plugins, channels, preparedNotes: prepareSearchNotes(notes, mapping), queryScoreCache: new Map() };
 }
 
 async function searchWithContext(context, query, options = {}) {
-  const { vaultPath, mapping, notes, active, plugins, preparedNotes } = context;
+  const { active } = context;
   const threshold = options.showAll ? 0 : options.threshold ?? active.threshold ?? 0.3;
   const cap = options.maxResults ?? options.cap ?? active.cap ?? 10;
   const weights = options.weights ?? active.weights ?? {};
-  const searchQuery = prepareSearchQuery(query, preparedNotes);
-  const hitsByNote = new Map();
-  for (const prepared of preparedNotes) {
-    const { note } = prepared;
-    const scored = scorePreparedNote(prepared, searchQuery, weights);
-    hitsByNote.set(note.id, {
-        note: note.id,
-        path: note.relPath,
-        type: note.type || "?",
-        refs: note.refs,
-        score: Number(scored.score.toFixed(6)),
-        reasons: scored.reasons
-    });
+  const channels = context.channels ?? BUILTIN_SEARCH_CHANNELS;
+  const baseRows = await baseSearchRows(context, query);
+  const rowsByNote = new Map(baseRows.map((row) => [row.note, {
+    ...row,
+    channelScores: { ...row.channelScores },
+    reasons: { ...row.reasons },
+    pluginReasons: { ...row.pluginReasons }
+  }]));
+  if (channels.some((channel) => channel.name === "related")) {
+    applyRelatedScores(rowsByNote, context.preparedNotes.relatedCandidatesBySeed, weights, channels);
   }
-  for (const hit of await runSearchPlugins(vaultPath, query, notes, mapping, plugins)) {
-    const note = findNote(notes, hit.note);
-    if (!note) continue;
-    const current = hitsByNote.get(note.id) ?? {
-      note: note.id,
-      path: note.relPath,
-      type: note.type || "?",
-      refs: note.refs,
-      score: 0,
-      reasons: {}
-    };
-    current.score = Number((current.score + hit.score).toFixed(6));
-    current.reasons[`plugin:${basename(hit.plugin)}`] = hit.reason ?? { score: hit.score };
-    hitsByNote.set(note.id, current);
+  if (channels.some((channel) => channel.name === "project")) {
+    applyProjectScores(rowsByNote);
   }
-  const hits = [...hitsByNote.values()]
+  const hits = [...rowsByNote.values()]
+    .map((row) => ({
+      note: row.note,
+      path: row.path,
+      type: row.type,
+      refs: row.refs,
+      score: Number((weightedScore(row.channelScores, weights, channels) + row.pluginScore).toFixed(6)),
+      reasons: { ...row.reasons, ...row.pluginReasons }
+    }))
     .filter((hit) => options.showAll || hit.score >= threshold)
     .sort((a, b) => b.score - a.score || a.note.localeCompare(b.note))
     .slice(0, cap);
@@ -720,6 +978,130 @@ async function searchWithContext(context, query, options = {}) {
     .sort((a, b) => b[1] - a[1])
     .map(([ref, count]) => ({ ref, count }));
   return { query, threshold, max_results: cap, count: hits.length, results: hits, ref_distribution };
+}
+
+async function baseSearchRows(context, query) {
+  if (context.queryScoreCache?.has(query)) return context.queryScoreCache.get(query);
+  const { vaultPath, mapping, notes, plugins, preparedNotes, channels = BUILTIN_SEARCH_CHANNELS } = context;
+  const searchQuery = prepareSearchQuery(query, preparedNotes);
+  const enabledBaseBuiltins = new Set(channels
+    .filter((channel) => channel.source === "builtin" && channel.phase === "base")
+    .map((channel) => channel.name));
+  const rowsByNote = new Map();
+  for (const prepared of preparedNotes) {
+    const { note } = prepared;
+    const scored = scorePreparedChannels(prepared, searchQuery);
+    for (const key of Object.keys(scored.channelScores)) {
+      if (!enabledBaseBuiltins.has(key)) {
+        delete scored.channelScores[key];
+        delete scored.reasons[key];
+      }
+    }
+    rowsByNote.set(note.id, {
+      note: note.id,
+      source: note,
+      path: note.relPath,
+      type: note.type || "?",
+      refs: note.refs,
+      channelScores: scored.channelScores,
+      reasons: scored.reasons,
+      hasProjectContext: prepared.hasProjectContext,
+      pluginScore: 0,
+      pluginReasons: {}
+    });
+  }
+  await applyPluginSearchChannels(rowsByNote, channels, { vaultPath, mapping, notes, query, searchQuery });
+  for (const hit of await runSearchPlugins(vaultPath, query, notes, mapping, plugins)) {
+    const note = findNote(notes, hit.note);
+    if (!note) continue;
+    const current = rowsByNote.get(note.id) ?? {
+      note: note.id,
+      source: note,
+      path: note.relPath,
+      type: note.type || "?",
+      refs: note.refs,
+      channelScores: {},
+      reasons: {},
+      hasProjectContext: note.folder === (mapping.project_dir ?? DEFAULT_MAPPING.project_dir) ||
+        note.folder.startsWith(`${mapping.project_dir ?? DEFAULT_MAPPING.project_dir}/`),
+      pluginScore: 0,
+      pluginReasons: {}
+    };
+    current.pluginScore = Number((current.pluginScore + hit.score).toFixed(6));
+    current.pluginReasons[`plugin:${basename(hit.plugin)}`] = hit.reason ?? { score: hit.score };
+    rowsByNote.set(note.id, current);
+  }
+  const rows = [...rowsByNote.values()];
+  context.queryScoreCache?.set(query, rows);
+  return rows;
+}
+
+function channelWeight(name, weights = {}, channels = CHANNELS) {
+  const channel = channels.find((item) => item.name === name) ?? CHANNELS.find((item) => item.name === name);
+  return weights[name] ?? channel?.defaultWeight ?? 0;
+}
+
+function applyRelatedScores(rowsByNote, relatedCandidatesBySeed = new Map(), weights = {}, channels = CHANNELS) {
+  const preRelatedChannels = ["filename", "fuzzy", "sequence_match", "filename_partial", "keyword"];
+  const preSignal = (row) =>
+    preRelatedChannels.some((channel) => (row.channelScores[channel] ?? 0) > 0);
+  const seedScore = (row) =>
+    preRelatedChannels.reduce((sum, channel) =>
+      sum + (row.channelScores[channel] ?? 0) * channelWeight(channel, weights, channels), 0);
+  const seeds = [...rowsByNote.values()]
+    .filter(preSignal)
+    .sort((a, b) => seedScore(b) - seedScore(a) || a.note.localeCompare(b.note))
+    .slice(0, 3);
+  const related = [];
+  for (const seed of seeds) {
+    for (const candidate of relatedCandidatesBySeed.get(seed.note) ?? []) {
+      const row = rowsByNote.get(candidate.note);
+      if (!row || preSignal(row)) continue;
+      if (candidate.score > 0) related.push({ row, score: candidate.score, seed: seed.note });
+    }
+  }
+  const maxScore = Math.max(0, ...related.map((item) => item.score));
+  if (!maxScore) return;
+  for (const item of related) {
+    const normalized = item.score / maxScore;
+    if (normalized > (item.row.channelScores.related ?? 0)) {
+      item.row.channelScores.related = normalized;
+      item.row.reasons.related = { seed: item.seed, score: normalized };
+    }
+  }
+}
+
+function applyProjectScores(rowsByNote) {
+  for (const row of rowsByNote.values()) {
+    const hasSearchSignal = Object.entries(row.channelScores).some(([key, value]) => key !== "project" && value > 0);
+    if (hasSearchSignal && row.hasProjectContext) {
+      row.channelScores.project = 1;
+      row.reasons.project = { context: true };
+    } else {
+      delete row.channelScores.project;
+      delete row.reasons.project;
+    }
+  }
+}
+
+async function applyPluginSearchChannels(rowsByNote, channels, context) {
+  for (const channel of channels.filter((item) => item.source === "plugin" && item.phase === "base")) {
+    const output = await channel.search({
+      query: context.query,
+      preparedQuery: context.searchQuery,
+      notes: context.notes,
+      mapping: context.mapping,
+      vaultPath: context.vaultPath
+    });
+    for (const hit of normalizeSearchChannelOutput(output, channel.path)) {
+      const note = findNote(context.notes, hit.note);
+      if (!note) continue;
+      const row = rowsByNote.get(note.id);
+      if (!row) continue;
+      row.channelScores[channel.name] = Math.max(row.channelScores[channel.name] ?? 0, hit.score);
+      row.reasons[channel.name] = hit.reason ?? { plugin: channel.path, score: hit.score };
+    }
+  }
 }
 
 async function runSearchPlugins(vaultPath, query, notes, mapping, plugins = null) {
@@ -749,6 +1131,53 @@ function normalizeSearchPluginOutput(output, pluginPath) {
         score: Number(item.score ?? 1) || 0,
         reason: item.reason,
         plugin: pluginPath
+      };
+    })
+    .filter((item) => item.note);
+}
+
+function normalizeSearchChannelPlugin(plugin) {
+  const mod = plugin.module;
+  const descriptor = mod.channel ?? mod.default?.channel;
+  const search = descriptor?.search ?? mod.searchChannel ?? mod.score;
+  if (!descriptor && typeof mod.searchChannel !== "function" && typeof mod.score !== "function") return null;
+  if (typeof search !== "function") return null;
+  const rawName = descriptor?.name ?? mod.name ?? basename(plugin.path, ".js");
+  const name = String(rawName ?? "").trim();
+  if (!name) return null;
+  const defaultWeight = Number(descriptor?.defaultWeight ?? descriptor?.default_weight ?? mod.defaultWeight ?? mod.default_weight ?? 0.1);
+  return {
+    name,
+    defaultWeight: Number.isFinite(defaultWeight) ? defaultWeight : 0.1,
+    description: descriptor?.description ?? mod.description ?? `Search channel plugin ${basename(plugin.path)}`,
+    source: "plugin",
+    phase: "base",
+    path: plugin.path,
+    search
+  };
+}
+
+function normalizeSearchChannelOutput(output, pluginPath) {
+  if (!output) return [];
+  const payload = output.scores ?? output;
+  if (!Array.isArray(payload) && payload instanceof Map) {
+    return [...payload.entries()].map(([note, score]) => ({ note, score: Number(score) || 0, reason: { plugin: pluginPath } }));
+  }
+  if (!Array.isArray(payload) && typeof payload === "object") {
+    const reasons = output.reasons ?? {};
+    return Object.entries(payload).map(([note, score]) => ({
+      note,
+      score: Number(score) || 0,
+      reason: reasons[note] ?? { plugin: pluginPath }
+    }));
+  }
+  return (Array.isArray(payload) ? payload : [payload])
+    .map((item) => {
+      const note = item.note?.id ?? item.note ?? item.id ?? item.name;
+      return {
+        note,
+        score: Number(item.score ?? item.raw ?? 1) || 0,
+        reason: item.reason ?? { plugin: pluginPath }
       };
     })
     .filter((item) => item.note);
@@ -1693,6 +2122,13 @@ export async function listPlugins(vaultPath) {
   return { plugins: entries };
 }
 
+export async function listSearchChannels(vaultPath) {
+  const { config } = await readVaultConfig(vaultPath);
+  const searchPlugins = await loadPluginModules(vaultPath, "search");
+  const pluginChannels = searchPlugins.map((plugin) => normalizeSearchChannelPlugin(plugin)).filter(Boolean);
+  return { channels: allSearchChannels(config, pluginChannels) };
+}
+
 export function pluginEnabled(config, kind, relPath) {
   const settings = [
     config.plugins,
@@ -1752,8 +2188,8 @@ export async function validatePlugin(path, kind = null) {
   const issues = [];
   try {
     const mod = await import(pathToFileURL(path).href + `?t=${Date.now()}`);
-    if ((kind === "search" || path.includes("/search/")) && typeof mod.search !== "function") {
-      issues.push({ code: "plugin.contract", severity: "error", message: "search plugin must export search()" });
+    if ((kind === "search" || path.includes("/search/")) && typeof mod.search !== "function" && !normalizeSearchChannelPlugin({ path, module: mod })) {
+      issues.push({ code: "plugin.contract", severity: "error", message: "search plugin must export search() or a channel descriptor" });
     }
     if ((kind === "lint" || path.includes("/lint/")) && typeof mod.lint !== "function") {
       issues.push({ code: "plugin.contract", severity: "error", message: "lint plugin must export lint()" });
@@ -1772,7 +2208,10 @@ export async function pluginDryRun(vaultPath, kind, pluginRelPath, options = {})
   const notes = await loadNotes(vaultPath, mapping);
   const mod = await import(pathToFileURL(resolve(vaultPath, pluginRelPath)).href + `?t=${Date.now()}`);
   if (kind === "search") {
-    const results = await mod.search(options.query ?? "", notes);
+    const channel = normalizeSearchChannelPlugin({ path: pluginRelPath, module: mod });
+    const results = channel
+      ? normalizeSearchChannelOutput(await channel.search({ query: options.query ?? "", notes, mapping, vaultPath }), pluginRelPath)
+      : await mod.search(options.query ?? "", notes);
     return { kind, plugin: pluginRelPath, query: options.query, results };
   }
   const note = findNote(notes, options.note);
@@ -1798,14 +2237,11 @@ export async function pluginDryRun(vaultPath, kind, pluginRelPath, options = {})
 
 export function builtinQueryPack(name) {
   if (name !== "ipa-cli-core") return null;
-  return {
-    name,
-    queries: [
-      { query: "Alpha", target: "Alpha" },
-      { query: "Beta", target: "Beta" },
-      { query: "Topic", target: "Topic Index" }
-    ]
-  };
+  return tunePack(name, [
+    { queries: ["Alpha"], targets: ["Alpha"], kind: "query" },
+    { queries: ["Beta"], targets: ["Beta"], kind: "query" },
+    { queries: ["Topic"], targets: ["Topic Index"], kind: "query" }
+  ]);
 }
 
 async function configuredQueryPack(vaultPath) {
@@ -1815,15 +2251,75 @@ async function configuredQueryPack(vaultPath) {
   const path = resolve(vaultPath, file);
   if (!existsSync(path)) return null;
   const payload = JSON.parse(await readFile(path, "utf8"));
-  const queries = [];
-  for (const item of payload.cases ?? payload.queries ?? []) {
-    const target = normalizeTitle(item.target_filename ?? item.target ?? item.note ?? item.expected);
-    const itemQueries = Array.isArray(item.queries) ? item.queries : [item.query];
-    for (const query of itemQueries.filter(Boolean)) {
-      if (target) queries.push({ query, target });
-    }
+  return tunePack(file, normalizeTuneCases(payload));
+}
+
+function tunePack(name, cases) {
+  return {
+    name,
+    cases,
+    queries: cases.flatMap((item) => item.queries.map((query) => ({
+      query,
+      target: item.targets[0] ?? null,
+      kind: item.kind
+    })))
+  };
+}
+
+function normalizeTuneCases(payload) {
+  const cases = [];
+  for (const { item, kind } of tuneTestsetEntries(payload)) {
+    const normalized = normalizeTuneCase(item, kind);
+    if (normalized) cases.push(normalized);
   }
-  return { name: file, queries };
+  return cases;
+}
+
+function tuneTestsetEntries(payload) {
+  return [
+    ...normalizeTestsetPayload({ cases: payload.cases ?? payload.queries ?? [] }).map((item) => ({ item, kind: "regression" })),
+    ...normalizeTestsetPayload({ cases: payload.scenario_cases ?? [] }).map((item) => ({ item, kind: "scenario" }))
+  ];
+}
+
+function normalizeTuneCase(item, fallbackKind = "query") {
+  const queries = (Array.isArray(item.queries) ? item.queries : [item.query]).filter(Boolean).map(String);
+  const targetValues = tuneTargetValues(item);
+  const targets = targetValues.map((target) => normalizeTitle(target)).filter(Boolean);
+  if (!queries.length || !targets.length) return null;
+  const kind = tuneCaseKind(item, fallbackKind);
+  const recallLimit = tuneRecallLimit(item);
+  return {
+    id: item.id ?? null,
+    kind,
+    category: item.category ?? item.tag ?? null,
+    queries,
+    targets,
+    recall_mode: item.recall_mode ?? `top${recallLimit}`,
+    recall_limit: recallLimit,
+    recall_threshold: Math.max(1, Number(item.recall_threshold ?? 1) || 1)
+  };
+}
+
+function tuneTargetValues(item) {
+  return Array.isArray(item.target_filenames)
+    ? item.target_filenames
+    : [item.target_filename ?? item.target ?? item.note ?? item.expected].filter(Boolean);
+}
+
+function tuneCaseKind(item, fallbackKind) {
+  const raw = String(item.kind ?? item.type ?? item.scope ?? item.group ?? "").toLowerCase();
+  if (raw.includes("scenario") || raw === "scn") return "scenario";
+  if (raw.includes("regression") || raw === "reg") return "regression";
+  if (String(item.id ?? "").startsWith("S")) return "scenario";
+  if (String(item.id ?? "").startsWith("C")) return "regression";
+  return fallbackKind;
+}
+
+function tuneRecallLimit(item) {
+  const mode = String(item.recall_mode ?? item.recallMode ?? "top10").toLowerCase();
+  const match = mode.match(/top(\d+)/);
+  return match ? Number(match[1]) : 10;
 }
 
 async function resolveTunePack(vaultPath, packName = null) {
@@ -1838,19 +2334,83 @@ async function resolveTunePack(vaultPath, packName = null) {
 
 async function evaluateTunePack(searchContext, pack, params = {}) {
   const rows = [];
-  for (const item of pack.queries) {
-    const searchOptions = {
-      threshold: params.threshold,
-      maxResults: params.cap
-    };
-    if (Object.hasOwn(params, "weights")) searchOptions.weights = params.weights;
-    const result = await searchWithContext(searchContext, item.query, searchOptions);
-    const rank = result.results.findIndex((hit) => sameNoteName(hit.note, item.target)) + 1;
-    rows.push({ query: item.query, target: item.target, rank: rank || null, hit: rank > 0 });
-  }
+  for (const item of pack.cases ?? []) rows.push(await evaluateTuneCase(searchContext, item, params));
   const hits = rows.filter((row) => row.hit).length;
   const avgRank = hits ? rows.filter((row) => row.rank).reduce((sum, row) => sum + row.rank, 0) / hits : null;
-  return { pack: pack.name, total: rows.length, hits, misses: rows.length - hits, avg_rank: avgRank, rows };
+  const evaluation = {
+    pack: pack.name,
+    total: rows.length,
+    hits,
+    misses: rows.length - hits,
+    avg_rank: avgRank,
+    groups: tuneGroups(rows),
+    rows
+  };
+  return { ...evaluation, loss: tuneLoss(evaluation) };
+}
+
+async function evaluateTuneCase(searchContext, item, params = {}) {
+  const recallLimit = Number(params.recallLimit ?? item.recall_limit ?? 10) || 10;
+  const requestedMax = Number(params.cap ?? 0) || 0;
+  const searchOptions = {
+    threshold: params.threshold,
+    maxResults: Math.max(requestedMax, recallLimit),
+    showAll: params.showAll
+  };
+  if (Object.hasOwn(params, "weights")) searchOptions.weights = params.weights;
+
+  const matched = new Set();
+  let bestRank = null;
+  let bestScore = null;
+  for (const query of item.queries) {
+    const result = await searchWithContext(searchContext, query, searchOptions);
+    const scoped = result.results.slice(0, recallLimit);
+    for (const target of item.targets) {
+      const index = scoped.findIndex((hit) => sameNoteName(hit.note, target));
+      if (index < 0) continue;
+      matched.add(target);
+      const rank = index + 1;
+      const score = scoped[index].score ?? null;
+      if (bestRank === null || rank < bestRank) bestRank = rank;
+      if (score !== null && (bestScore === null || score > bestScore)) bestScore = score;
+    }
+  }
+  const recallThreshold = Math.max(1, Number(item.recall_threshold ?? 1) || 1);
+  const hit = matched.size >= recallThreshold;
+  return {
+    id: item.id,
+    kind: item.kind,
+    category: item.category,
+    query: item.queries.join(" | "),
+    queries: item.queries,
+    target: item.targets[0] ?? null,
+    targets: item.targets,
+    recall_mode: item.recall_mode,
+    recall_threshold: recallThreshold,
+    matched: matched.size,
+    rank: hit ? bestRank : null,
+    score: hit ? bestScore : null,
+    hit
+  };
+}
+
+function tuneGroups(rows) {
+  const groups = {};
+  for (const row of rows) {
+    const key = row.kind ?? "query";
+    groups[key] ??= { total: 0, hits: 0, misses: 0, avg_rank: null, ranks: [] };
+    groups[key].total += 1;
+    if (row.hit) {
+      groups[key].hits += 1;
+      if (row.rank) groups[key].ranks.push(row.rank);
+    }
+  }
+  for (const group of Object.values(groups)) {
+    group.misses = group.total - group.hits;
+    group.avg_rank = group.ranks.length ? group.ranks.reduce((sum, rank) => sum + rank, 0) / group.ranks.length : null;
+    delete group.ranks;
+  }
+  return groups;
 }
 
 export async function tuneEval(vaultPath, packName = null, params = {}) {
@@ -1858,6 +2418,13 @@ export async function tuneEval(vaultPath, packName = null, params = {}) {
 }
 
 function tuneLoss(evaluation) {
+  if (evaluation.groups?.regression || evaluation.groups?.scenario) {
+    const regressionMisses = evaluation.groups.regression?.misses ?? 0;
+    const scenarioMisses = evaluation.groups.scenario?.misses ?? 0;
+    const groupedMisses = regressionMisses + scenarioMisses;
+    const otherMisses = Math.max(0, evaluation.misses - groupedMisses);
+    return regressionMisses * 100 + scenarioMisses * 50 + otherMisses * 100 + (evaluation.avg_rank ?? 99);
+  }
   return evaluation.misses * 100 + (evaluation.avg_rank ?? 99);
 }
 
@@ -1881,15 +2448,20 @@ export async function tuneAnalyze(vaultPath, options = {}) {
     });
   }
   const targetScores = [];
-  for (const item of pack.queries) {
-    const result = await searchWithContext(searchContext, item.query, { threshold: 0, maxResults: options.maxResults ?? 50, showAll: true });
-    const index = result.results.findIndex((hit) => sameNoteName(hit.note, item.target));
-    const hit = index >= 0 ? result.results[index] : null;
+  for (const item of pack.cases ?? []) {
+    const row = await evaluateTuneCase(searchContext, item, {
+      threshold: 0,
+      cap: options.maxResults ?? 50,
+      recallLimit: options.maxResults ?? 50,
+      showAll: true
+    });
     targetScores.push({
-      query: item.query,
-      target: item.target,
-      rank: hit ? index + 1 : null,
-      score: hit?.score ?? null
+      id: row.id,
+      kind: row.kind,
+      query: row.query,
+      target: row.targets.length > 1 ? row.targets.join(", ") : row.target,
+      rank: row.rank,
+      score: row.score
     });
   }
   const scoredHits = targetScores.map((item) => item.score).filter((value) => value !== null);
@@ -1989,15 +2561,15 @@ export async function tuneTestsetShow(vaultPath, file = null) {
   const path = await activeTestsetPath(vaultPath, file);
   if (!existsSync(path)) throw new Error(`testset not found: ${toPosix(relative(vaultPath, path))}`);
   const payload = JSON.parse(await readFile(path, "utf8"));
-  const cases = normalizeTestsetPayload(payload);
-  const rows = [];
-  for (const item of cases) {
-    const queries = Array.isArray(item.queries) ? item.queries : [item.query].filter(Boolean);
-    rows.push({
-      target: item.target_filename ?? item.target ?? item.note ?? item.expected ?? null,
-      queries
-    });
-  }
+  const rows = normalizeTuneCases(payload).map((item) => ({
+    id: item.id,
+    kind: item.kind,
+    target: item.targets.length > 1 ? item.targets.join(", ") : item.targets[0],
+    targets: item.targets,
+    queries: item.queries,
+    recall_mode: item.recall_mode,
+    recall_threshold: item.recall_threshold
+  }));
   return {
     file: toPosix(relative(vaultPath, path)),
     cases: rows.length,
@@ -2018,19 +2590,21 @@ export async function tuneTestsetValidate(vaultPath, file = null) {
   } catch (error) {
     return { file: toPosix(relative(vaultPath, path)), status: "error", issues: [{ severity: "error", code: "testset.json", message: error.message }] };
   }
-  const cases = normalizeTestsetPayload(payload);
+  const entries = tuneTestsetEntries(payload);
   const notes = await loadNotes(vaultPath, (await readVaultConfig(vaultPath)).mapping);
-  cases.forEach((item, index) => {
+  entries.forEach(({ item, kind }, index) => {
     const queries = Array.isArray(item.queries) ? item.queries : [item.query].filter(Boolean);
-    const target = item.target_filename ?? item.target ?? item.note ?? item.expected;
-    if (!queries.length) issues.push({ severity: "error", code: "testset.query", case: index, message: "case must include query or queries" });
-    if (!target) issues.push({ severity: "error", code: "testset.target", case: index, message: "case must include target_filename, target, note, or expected" });
-    else if (!findNote(notes, target)) issues.push({ severity: "warn", code: "testset.target_missing", case: index, target, message: `target note not found: ${target}` });
+    const targets = tuneTargetValues(item);
+    if (!queries.length) issues.push({ severity: "error", code: "testset.query", case: index, kind, message: "case must include query or queries" });
+    if (!targets.length) issues.push({ severity: "error", code: "testset.target", case: index, kind, message: "case must include target_filename, target_filenames, target, note, or expected" });
+    for (const target of targets) {
+      if (!findNote(notes, target)) issues.push({ severity: "warn", code: "testset.target_missing", case: index, kind, target, message: `target note not found: ${target}` });
+    }
   });
   return {
     file: toPosix(relative(vaultPath, path)),
     status: issues.some((item) => item.severity === "error") ? "error" : "ok",
-    cases: cases.length,
+    cases: entries.length,
     issues
   };
 }
@@ -2117,11 +2691,12 @@ export async function tuneRun(vaultPath, options = {}) {
   const startedAt = Date.now();
   const pack = await resolveTunePack(vaultPath, options.packName ?? null);
   const searchContext = await prepareSearchContext(vaultPath);
+  const tuneChannels = searchContext.channels ?? BUILTIN_SEARCH_CHANNELS;
   const startupTrials = Math.max(1, Math.min(30, Math.floor(trials / 4) || 1));
   for (let i = 0; i < trials; i += 1) {
-    const params = i < startupTrials ? randomTuneParams(rng) : sampleTpeLite(history, rng);
+    const params = i < startupTrials ? randomTuneParams(rng, tuneChannels) : sampleTpeLite(history, rng, tuneChannels);
     const evaluation = await evaluateTunePack(searchContext, pack, params);
-    const loss = evaluation.misses * 100 + (evaluation.avg_rank ?? 99);
+    const loss = tuneLoss(evaluation);
     const trial = { trial: i, optimizer: "tpe-lite", params, loss, metrics: evaluation };
     history.push(trial);
     if (!best || loss < best.loss) best = trial;
@@ -2154,24 +2729,27 @@ export async function tuneRun(vaultPath, options = {}) {
   return { ...result, result_file: resultFile, active: active?.active ?? null };
 }
 
-function randomTuneParams(rng) {
+function randomTuneParams(rng, channels = CHANNELS) {
   return {
     threshold: Number((0.05 + rng() * 0.5).toFixed(4)),
     cap: 5 + Math.floor(rng() * 26),
-    weights: Object.fromEntries(CHANNELS.map((channel) => [channel.name, Number((rng() * 0.4).toFixed(4))]))
+    weights: Object.fromEntries(channels.map((channel) => [channel.name, Number((rng() * 0.4).toFixed(4))]))
   };
 }
 
-function sampleTpeLite(history, rng) {
+function sampleTpeLite(history, rng, channels = CHANNELS) {
   const sorted = [...history].sort((a, b) => a.loss - b.loss);
   const goodCount = Math.max(1, Math.ceil(sorted.length * 0.2));
-  const good = sorted.slice(0, goodCount);
-  const bad = sorted.slice(goodCount);
-  let bestCandidate = randomTuneParams(rng);
+  const good = limitPool(sorted.slice(0, goodCount), 64);
+  const bad = limitPool(sorted.slice(goodCount), 128);
+  const fallbackBad = limitPool(sorted, 128);
+  const goodStats = paramStats(good);
+  const badStats = paramStats(bad.length ? bad : fallbackBad);
+  let bestCandidate = randomTuneParams(rng, channels);
   let bestScore = -Infinity;
   for (let i = 0; i < 24; i += 1) {
-    const candidate = sampleAroundGood(good, rng);
-    const score = densityRatio(candidate, good, bad.length ? bad : sorted);
+    const candidate = sampleAroundGood(good, rng, channels);
+    const score = densityRatio(candidate, goodStats, badStats);
     if (score > bestScore) {
       bestScore = score;
       bestCandidate = candidate;
@@ -2180,26 +2758,48 @@ function sampleTpeLite(history, rng) {
   return bestCandidate;
 }
 
-function sampleAroundGood(good, rng) {
+function sampleAroundGood(good, rng, channels = CHANNELS) {
   const threshold = clamp(sampleNormal(mean(good.map((trial) => trial.params.threshold)), std(good.map((trial) => trial.params.threshold)) || 0.08, rng), 0.05, 0.55);
   const cap = Math.round(clamp(sampleNormal(mean(good.map((trial) => trial.params.cap)), std(good.map((trial) => trial.params.cap)) || 4, rng), 5, 30));
   const weights = {};
-  for (const channel of CHANNELS) {
+  for (const channel of channels) {
     const values = good.map((trial) => trial.params.weights[channel.name] ?? channel.defaultWeight);
     weights[channel.name] = Number(clamp(sampleNormal(mean(values), std(values) || 0.06, rng), 0, 0.4).toFixed(4));
   }
   return { threshold: Number(threshold.toFixed(4)), cap, weights };
 }
 
-function densityRatio(candidate, good, bad) {
+function limitPool(items, maxItems) {
+  if (items.length <= maxItems) return items;
+  if (maxItems <= 1) return [items[0]];
+  const out = [];
+  const step = (items.length - 1) / (maxItems - 1);
+  for (let i = 0; i < maxItems; i += 1) {
+    out.push(items[Math.round(i * step)]);
+  }
+  return out;
+}
+
+function paramStats(trials) {
+  const rows = trials.map((trial) => flattenParams(trial.params));
+  const keys = new Set(rows.flatMap((row) => Object.keys(row)));
+  const stats = {};
+  for (const key of keys) {
+    const values = rows.map((row) => row[key]).filter((value) => Number.isFinite(value));
+    stats[key] = { mean: mean(values), std: std(values) || 0.05 };
+  }
+  return stats;
+}
+
+function densityRatio(candidate, goodStats, badStats) {
   const params = flattenParams(candidate);
   let goodDensity = 1;
   let badDensity = 1;
   for (const [key, value] of Object.entries(params)) {
-    const goodValues = good.map((trial) => flattenParams(trial.params)[key]);
-    const badValues = bad.map((trial) => flattenParams(trial.params)[key]);
-    goodDensity *= gaussianDensity(value, mean(goodValues), std(goodValues) || 0.05);
-    badDensity *= gaussianDensity(value, mean(badValues), std(badValues) || 0.05);
+    const good = goodStats[key] ?? { mean: value, std: 0.05 };
+    const bad = badStats[key] ?? { mean: value, std: 0.05 };
+    goodDensity *= gaussianDensity(value, good.mean, good.std);
+    badDensity *= gaussianDensity(value, bad.mean, bad.std);
   }
   return goodDensity / Math.max(badDensity, 1e-12);
 }
