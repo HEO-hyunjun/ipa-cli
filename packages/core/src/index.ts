@@ -4133,9 +4133,10 @@ const prompt = String(input.prompt ?? input.user_prompt ?? "").trim();
 const lines = [
   "[IPA CLI]",
   "Use plain ipa commands; project-local .ipa-profile/.ipa-config can select the vault.",
-  "Before answering IPA/vault questions, search the vault and view relevant notes.",
+  "Before answering IPA/vault questions, search the vault, view relevant notes, and use context when note relationships matter.",
   \`Search: \${prefix} search "keyword"\`,
-  \`View:   \${prefix} view "Note Title" --full\`
+  \`View:   \${prefix} view "Note Title" --full\`,
+  \`Context: \${prefix} context "Note Title" --by-note\`
 ];
 
 if (prompt.length >= 8) {
@@ -4147,7 +4148,7 @@ if (prompt.length >= 8) {
     try {
       const parsed = JSON.parse(result.stdout);
       const hits = (parsed.results || []).slice(0, 5).map((item) => \`- \${item.note} (\${Number(item.score || 0).toFixed(2)})\`);
-      if (hits.length) lines.push("", "Possible related notes:", ...hits);
+      if (hits.length) lines.push("", "Possible related notes:", ...hits, "", "For a chosen note, run context to inspect refs and nearby notes before answering.");
     } catch {
       // Ignore malformed search output.
     }

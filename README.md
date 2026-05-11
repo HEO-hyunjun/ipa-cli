@@ -323,7 +323,7 @@ For the selected target, install writes:
 - user-global IPA CLI skill: `~/.codex/skills/ipa/SKILL.md` or
   `~/.claude/skills/ipa/SKILL.md`
 - user-global inbox creation guard hook
-- user-global `UserPromptSubmit` IPA search/view nudge hook
+- user-global `UserPromptSubmit` IPA search/view/context nudge hook
 - user-global post-write Markdown lint/format nudge hook
 - vault-local manifest and guard helper under `.ipa/harness/<target>/`
 - vault-local system prompt block in `AGENTS.md` for Codex or `CLAUDE.md`

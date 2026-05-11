@@ -559,11 +559,19 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   assert.match(skill, /formatter plan --note "Note A" "Note B"/);
   assert.match(await readFile(join(home, ".codex", "hooks", "ipa-inbox-guard.mjs"), "utf8"), /shared IPA inbox creation guard/);
   assert.match(await readFile(join(home, ".codex", "hooks", "ipa-md-write-nudge.mjs"), "utf8"), /note-scoped format plan/);
+  const promptHook = join(home, ".codex", "hooks", "ipa-user-prompt-nudge.mjs");
+  assert.match(await readFile(promptHook, "utf8"), /context "Note Title" --by-note/);
   assert.match(await readFile(join(vault, "AGENTS.md"), "utf8"), /IPA CLI Harness/);
   const hooks = await readFile(join(home, ".codex", "hooks.json"), "utf8");
   assert.match(hooks, /ipa-inbox-guard\.mjs/);
   assert.match(hooks, /ipa-user-prompt-nudge\.mjs/);
   assert.match(hooks, /ipa-md-write-nudge\.mjs/);
+  const promptNudge = spawnSync(process.execPath, [promptHook], {
+    input: JSON.stringify({ prompt: "vault" }),
+    encoding: "utf8"
+  });
+  assert.equal(promptNudge.status, 0);
+  assert.match(JSON.parse(promptNudge.stdout).hookSpecificOutput.additionalContext, /ipa context "Note Title" --by-note/);
   const guardScript = join(home, ".codex", "hooks", "ipa-inbox-guard.mjs");
   const blocked = spawnSync(process.execPath, [guardScript], {
     input: JSON.stringify({ tool_name: "Write", tool_input: { file_path: join(vault, "02 Archive", "New.md") } }),
