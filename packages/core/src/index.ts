@@ -2687,27 +2687,160 @@ async function walkAll(root) {
   return out;
 }
 
+const CONTEXT_SIZE_PRESETS = {
+  small: { maxChars: 4000, maxNotes: 2, targetExcerpt: 700, relatedExcerpt: 120, neighborLimit: 3 },
+  medium: { maxChars: 10000, maxNotes: 3, targetExcerpt: 1200, relatedExcerpt: 220, neighborLimit: 5 },
+  large: { maxChars: 25000, maxNotes: 5, targetExcerpt: 2500, relatedExcerpt: 500, neighborLimit: 8 },
+  full: { maxChars: 60000, maxNotes: 5, targetExcerpt: 12000, relatedExcerpt: 1000, neighborLimit: 12 }
+};
+
+function contextPreset(options = {}) {
+  const key = options.full && !options.size ? "full" : String(options.size ?? "medium").toLowerCase();
+  const preset = CONTEXT_SIZE_PRESETS[key] ?? CONTEXT_SIZE_PRESETS.medium;
+  return {
+    name: CONTEXT_SIZE_PRESETS[key] ? key : "medium",
+    maxChars: Number(options.maxChars ?? preset.maxChars),
+    maxNotes: Number(options.maxNotes ?? preset.maxNotes),
+    targetExcerpt: preset.targetExcerpt,
+    relatedExcerpt: preset.relatedExcerpt,
+    neighborLimit: preset.neighborLimit
+  };
+}
+
+function uniqueNotes(notes) {
+  const seen = new Set();
+  return notes.filter((note) => {
+    if (!note || seen.has(note.id)) return false;
+    seen.add(note.id);
+    return true;
+  });
+}
+
+function noteRef(note, query, excerptChars = 0) {
+  const item = {
+    id: note.id,
+    type: note.type,
+    path: note.relPath
+  };
+  if (excerptChars > 0) item.excerpt = excerptText(note.body, excerptChars, query);
+  return item;
+}
+
+function noteRefs(items, query, limit, excerptChars) {
+  return uniqueNotes(items)
+    .sort((a, b) => a.id.localeCompare(b.id))
+    .slice(0, limit)
+    .map((note) => noteRef(note, query, excerptChars));
+}
+
+function backlinkNotes(note, notes) {
+  return notes.filter((candidate) =>
+    candidate.id !== note.id && hasNoteName([...candidate.refs, ...candidate.links], note.id)
+  );
+}
+
+function outlinkNotes(note, notes) {
+  return uniqueNotes(note.links.map((link) => findNote(notes, link)).filter(Boolean));
+}
+
+function childNotes(note, notes) {
+  return notes.filter((candidate) => candidate.id !== note.id && hasNoteName(candidate.refs, note.id));
+}
+
+function contextNote(note, notes, query, hit, preset) {
+  const limit = preset.neighborLimit;
+  const relatedExcerpt = preset.relatedExcerpt;
+  return {
+    id: note.id,
+    path: note.relPath,
+    type: note.type,
+    refs: note.refs,
+    tags: note.tags,
+    score: hit?.score ?? null,
+    reason: hit?.reason ?? null,
+    upward_paths: upwardPaths(note, notes).slice(0, limit),
+    backlinks: noteRefs(backlinkNotes(note, notes), query, limit, relatedExcerpt),
+    siblings: noteRefs(siblings(note, notes), query, limit, relatedExcerpt),
+    outlinks: noteRefs(outlinkNotes(note, notes), query, limit, relatedExcerpt),
+    children: noteRefs(childNotes(note, notes), query, limit, relatedExcerpt),
+    excerpt: excerptText(note.body, preset.targetExcerpt, query),
+    body: excerptText(note.body, preset.targetExcerpt, query)
+  };
+}
+
+function excerptText(text, maxChars, query = "") {
+  const clean = String(text ?? "").replace(/^\s+/, "").trimEnd();
+  if (!clean) return "";
+  if (!Number.isFinite(maxChars) || maxChars <= 0 || clean.length <= maxChars) return clean;
+  const lower = clean.toLowerCase();
+  const tokens = String(query ?? "").toLowerCase().split(/\s+/).filter((token) => token.length >= 2);
+  const hit = tokens.map((token) => lower.indexOf(token)).find((index) => index >= 0);
+  const start = hit === undefined ? 0 : Math.max(0, hit - Math.floor(maxChars / 3));
+  const end = Math.min(clean.length, start + maxChars);
+  const prefix = start > 0 ? "..." : "";
+  const suffix = end < clean.length ? "..." : "";
+  return `${prefix}${clean.slice(start, end).trim()}${suffix}`;
+}
+
+function contextSubgraph(contextNotes, notes) {
+  const ids = new Set();
+  for (const item of contextNotes) {
+    ids.add(item.id);
+    for (const group of [item.backlinks, item.siblings, item.outlinks, item.children]) {
+      for (const ref of group ?? []) ids.add(ref.id);
+    }
+  }
+  const edges = {};
+  for (const note of notes.filter((candidate) => ids.has(candidate.id))) {
+    const targets = uniqueNotes([...note.refs, ...note.links].map((target) => findNote(notes, target)).filter(Boolean))
+      .map((target) => target.id)
+      .filter((id) => ids.has(id));
+    edges[note.id] = targets;
+  }
+  return edges;
+}
+
+function contextCommands(contextNotes) {
+  const first = contextNotes[0];
+  if (!first) return [];
+  const commands = [
+    `ipa view "${first.id}" --full`,
+    first.type === "index" || first.type === "root"
+      ? `ipa traversal --down "${first.id}"`
+      : `ipa traversal --up "${first.id}"`,
+    `ipa traversal --siblings "${first.id}"`
+  ];
+  if (first.tags?.[0]) commands.push(`ipa search "${first.tags[0]}"`);
+  return commands;
+}
+
 export async function buildContext(vaultPath, query, options = {}) {
   const { mapping } = await readVaultConfig(vaultPath);
   const notes = await loadNotes(vaultPath, mapping);
+  const preset = contextPreset(options);
   const search = options.byNote
     ? { results: [{ note: findNote(notes, query)?.id, score: 1 }].filter((item) => item.note) }
-    : await searchVault(vaultPath, query, { maxResults: options.maxResults ?? 5, threshold: 0 });
-  const selected = search.results.map((hit) => findNote(notes, hit.note)).filter(Boolean);
-  const graph = buildGraph(notes);
+    : await searchVault(vaultPath, query, { maxResults: options.maxResults ?? preset.maxNotes, threshold: 0 });
+  const selected = uniqueNotes(search.results.map((hit) => findNote(notes, hit.note)).filter(Boolean)).slice(0, preset.maxNotes);
+  const contextNotes = selected.map((note) =>
+    contextNote(note, notes, query, search.results.find((hit) => sameNoteName(hit.note, note.id)), preset)
+  );
+  const warnings = [];
+  if (options.byNote && !selected.length) warnings.push({ code: "context.note_not_found", message: `note not found: ${query}` });
+  if (!options.byNote && !selected.length) warnings.push({ code: "context.no_search_results", message: `no notes found for query: ${query}` });
   return {
     query,
-    notes: selected.map((note) => ({
-      id: note.id,
-      path: note.relPath,
-      type: note.type,
-      refs: note.refs,
-      tags: note.tags,
-      body: options.full ? note.body : note.body.slice(0, 500)
-    })),
-    edges: graph.edges,
+    mode: options.byNote ? "by-note" : "search",
+    size: preset.name,
+    budget: {
+      max_chars: preset.maxChars,
+      max_notes: preset.maxNotes
+    },
+    notes: contextNotes,
+    edges: contextSubgraph(contextNotes, notes),
     sources: selected.map((note) => note.relPath),
-    warnings: []
+    next_commands: contextCommands(contextNotes),
+    warnings
   };
 }
 
@@ -3978,12 +4111,12 @@ Use this skill when a task mentions IPA, a vault note, inbox capture, note searc
 ## Read First
 
 \`\`\`bash
-${prefix} search "keyword"
+${prefix} context "task or note" --size medium --format markdown
 ${prefix} view "Note Title" --full
-${prefix} traversal --up "Note Title"
+${prefix} search "keyword"
 \`\`\`
 
-Search before answering IPA/vault questions. If search returns a relevant note, inspect it with \`view --full\` before relying on memory.
+Start IPA/vault tasks with \`context\` to gather a compact note-centered pack. Use \`view --full\` for selected notes. Use \`search\` only when the topic changes, context is missing, or additional notes may be relevant.
 
 ## Safe Writes
 
@@ -4021,11 +4154,14 @@ This vault has an IPA CLI harness installed for ${spec.name}.
 Use the IPA CLI for vault-aware operations:
 
 \`\`\`bash
-${prefix} search "keyword"
+${prefix} context "task or note" --size medium --format markdown
 ${prefix} view "Note Title" --full
+${prefix} search "keyword"
 ${prefix} validator
 ${prefix} formatter plan --note "Edited Note"
 \`\`\`
+
+Start IPA/vault work with \`${prefix} context "task or note" --size medium --format markdown\`. Use \`search\` only when the topic changes, context is insufficient, or you need discovery beyond the current context.
 
 Create new Markdown notes under the configured inbox, or import drafts with \`${prefix} inbox add <file>\`. Existing Markdown notes may be edited in place. After editing vault Markdown, run lint/validation and note-scoped formatter planning before finishing. Formatter commands accept multiple notes as \`${prefix} formatter plan --note "Note A" "Note B"\`.
 `;
@@ -4114,7 +4250,6 @@ if (!allowed) {
 function userPromptNudgeScript(vaultPath, options = {}) {
   return `#!/usr/bin/env node
 // ${HARNESS_MARKER}: IPA UserPromptSubmit context nudge.
-import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
 const vaultPath = ${JSON.stringify(vaultPath)};
@@ -4130,30 +4265,18 @@ function inputJson() {
 
 const input = inputJson();
 const prompt = String(input.prompt ?? input.user_prompt ?? "").trim();
+const topic = prompt.length >= 8 ? prompt.slice(0, 120).replace(/\\s+/g, " ") : "task or note";
+const topicArg = JSON.stringify(topic);
 const lines = [
   "[IPA CLI]",
   "Use plain ipa commands; project-local .ipa-profile/.ipa-config can select the vault.",
-  "Before answering IPA/vault questions, search the vault, view relevant notes, and use context when note relationships matter.",
-  \`Search: \${prefix} search "keyword"\`,
-  \`View:   \${prefix} view "Note Title" --full\`,
-  \`Context: \${prefix} context "Note Title" --by-note\`
+  "For a new IPA/vault task, start with a compact context pack. Continue from existing conversation context when it is sufficient.",
+  "Use search only when the topic changed, context is missing, or additional notes may be relevant.",
+  \`Bootstrap: \${prefix} context \${topicArg} --size small --format markdown\`,
+  \`Known note: \${prefix} context "Note Title" --by-note --size small --format markdown\`,
+  \`View:      \${prefix} view "Note Title" --full\`,
+  \`Discover:  \${prefix} search "keyword"\`
 ];
-
-if (prompt.length >= 8) {
-  const result = spawnSync("ipa", ["--vault", vaultPath, "search", prompt.slice(0, 120), "--json", "--max", "5"], {
-    encoding: "utf8",
-    timeout: 4000
-  });
-  if (result.status === 0 && result.stdout) {
-    try {
-      const parsed = JSON.parse(result.stdout);
-      const hits = (parsed.results || []).slice(0, 5).map((item) => \`- \${item.note} (\${Number(item.score || 0).toFixed(2)})\`);
-      if (hits.length) lines.push("", "Possible related notes:", ...hits, "", "For a chosen note, run context to inspect refs and nearby notes before answering.");
-    } catch {
-      // Ignore malformed search output.
-    }
-  }
-}
 
 process.stdout.write(JSON.stringify({
   hookSpecificOutput: {

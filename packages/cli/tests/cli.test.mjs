@@ -77,9 +77,14 @@ test("CLI help and key smoke commands run through ipa-test profile", async () =>
   assert.match(root, /Root\(s\) for 'Alpha':/);
   const context = JSON.parse(run(env, ["--profile", "ipa-test", "context", "Alpha", "--by-note", "--format", "json"]));
   assert.equal(context.notes[0].id, "Alpha");
+  assert.equal(context.mode, "by-note");
+  assert.ok(context.notes[0].backlinks.some((note) => note.id === "Beta"));
+  assert.ok(Object.keys(context.edges).length < 6);
   const humanContext = run(env, ["--profile", "ipa-test", "context", "Alpha", "--by-note"]);
   assert.match(humanContext, /Context/);
   assert.match(humanContext, /Alpha\s+note\s+00 Inbox\/Alpha\.md/);
+  assert.match(humanContext, /backlinks:/);
+  assert.match(humanContext, /Next commands:/);
   assert.doesNotMatch(humanContext, /"edges"/);
   const doctor = JSON.parse(run(env, ["--profile", "ipa-test", "doctor", "--json"]));
   assert.equal(doctor.status, "ok");

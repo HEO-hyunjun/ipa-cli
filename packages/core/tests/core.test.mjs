@@ -166,6 +166,12 @@ test("search, view, traversal and context work in the JS runtime", async () => {
   assert.deepEqual(down.tree.children.map((child) => child.note), ["Alpha", "Beta"]);
   const context = await buildContext(vault, "Alpha", { byNote: true });
   assert.equal(context.notes[0].id, "Alpha");
+  assert.equal(context.mode, "by-note");
+  assert.equal(context.size, "medium");
+  assert.ok(context.notes[0].upward_paths.some((path) => path.join(" -> ") === "Alpha -> 🔖 Topic Index -> 🏷️ Topic Root"));
+  assert.ok(context.notes[0].backlinks.some((note) => note.id === "Beta"));
+  assert.ok(context.notes[0].siblings.some((note) => note.id === "Beta"));
+  assert.deepEqual(context.edges.Alpha, ["🔖 Topic Index"]);
 });
 
 test("note-name search and lookup ignore emoji markers but preserve display names", async () => {
@@ -554,7 +560,8 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   assert.equal((await harnessDoctor(vault, options)).status, "ok");
   const skill = await readFile(join(home, ".codex", "skills", "ipa", "SKILL.md"), "utf8");
   assert.ok(skill.startsWith("---\nname: ipa\n"), "skill YAML frontmatter must be first");
-  assert.match(skill, /ipa search/);
+  assert.match(skill, /ipa context "task or note" --size medium --format markdown/);
+  assert.match(skill, /Use `search` only when the topic changes/);
   assert.doesNotMatch(skill, /ipa --profile ipa-test search/);
   assert.match(skill, /formatter plan --note "Note A" "Note B"/);
   assert.match(await readFile(join(home, ".codex", "hooks", "ipa-inbox-guard.mjs"), "utf8"), /shared IPA inbox creation guard/);
@@ -571,7 +578,10 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
     encoding: "utf8"
   });
   assert.equal(promptNudge.status, 0);
-  assert.match(JSON.parse(promptNudge.stdout).hookSpecificOutput.additionalContext, /ipa context "Note Title" --by-note/);
+  const promptContext = JSON.parse(promptNudge.stdout).hookSpecificOutput.additionalContext;
+  assert.match(promptContext, /ipa context "task or note" --size small --format markdown/);
+  assert.match(promptContext, /Use search only when the topic changed/);
+  assert.doesNotMatch(promptContext, /Possible related notes/);
   const guardScript = join(home, ".codex", "hooks", "ipa-inbox-guard.mjs");
   const blocked = spawnSync(process.execPath, [guardScript], {
     input: JSON.stringify({ tool_name: "Write", tool_input: { file_path: join(vault, "02 Archive", "New.md") } }),

@@ -127,17 +127,20 @@ const COMMAND_HELP = {
     ]
   }),
   context: formatDetailedHelp({
-    usage: "ipa [OPTIONS] context QUERY [--by-note] [--format json|markdown]",
-    summary: "Build a compact note context for agent prompts.",
+    usage: "ipa [OPTIONS] context QUERY [--by-note] [--size small|medium|large|full] [--format json|markdown]",
+    summary: "Build a compact note-centered context pack for agent prompts.",
     options: [
       ["--by-note", "Treat QUERY as a note title instead of a search query"],
-      ["--include full", "Include full note bodies"],
+      ["--size NAME", "Context budget preset: small, medium, large, or full"],
+      ["--max-notes N", "Override selected primary note count"],
+      ["--max-chars N", "Override the target character budget"],
       ["--format json", "Print structured JSON"],
-      ["--format markdown", "Print markdown note bodies"]
+      ["--format markdown", "Print a markdown context pack"]
     ],
     examples: [
-      ["ipa context \"ipa cli\"", "Search and assemble related notes"],
-      ["ipa context \"Alpha\" --by-note", "Build context around one note"]
+      ["ipa context \"ipa cli\"", "Search and assemble a medium context pack"],
+      ["ipa context \"Alpha\" --by-note", "Build context around one note"],
+      ["ipa context \"Alpha\" --by-note --size small --format markdown", "Hook-friendly compact context"]
     ]
   }),
   contract: formatDetailedHelp({
@@ -622,13 +625,51 @@ function renderTraversal(payload) {
 }
 
 function renderContext(payload) {
-  const rows = payload.notes.map((note) => [note.id, note.type || "?", note.path]);
-  return [
+  const lines = [
     styleTitle("Context"),
-    `Query: ${payload.query}   Notes: ${payload.notes.length}`,
-    "",
-    table(["Note", "Type", "Path"], rows)
-  ].join("\n");
+    `Query: ${payload.query}   Mode: ${payload.mode ?? "search"}   Size: ${payload.size ?? "medium"}   Notes: ${payload.notes.length}`,
+    ""
+  ];
+  const rows = payload.notes.map((note) => [
+    note.id,
+    note.type || "?",
+    note.path,
+    note.score === null || note.score === undefined ? "-" : Number(note.score).toFixed(2)
+  ]);
+  if (rows.length) lines.push(table(["Note", "Type", "Path", "Score"], rows));
+  for (const note of payload.notes) {
+    lines.push("", `## ${note.id}`, `type: ${note.type || "?"}`, `path: ${note.path}`);
+    if (note.refs?.length) lines.push(`refs: ${note.refs.join(", ")}`);
+    if (note.tags?.length) lines.push(`tags: ${note.tags.join(", ")}`);
+    if (note.upward_paths?.length) {
+      lines.push("upward:");
+      for (const path of note.upward_paths) lines.push(`  - ${path.join(" -> ")}`);
+    }
+    for (const [label, items] of [
+      ["backlinks", note.backlinks],
+      ["siblings", note.siblings],
+      ["outlinks", note.outlinks],
+      ["children", note.children]
+    ]) {
+      if (!items?.length) continue;
+      lines.push(`${label}:`);
+      for (const item of items) lines.push(`  - ${item.id} [${item.type || "?"}] ${item.path}`);
+    }
+    if (note.excerpt) lines.push("excerpt:", indentBlock(note.excerpt, "  "));
+  }
+  if (payload.next_commands?.length) lines.push("", "Next commands:", ...payload.next_commands.map((command) => `  ${command}`));
+  if (payload.warnings?.length) lines.push("", renderIssues({ issues: payload.warnings }));
+  return truncateRenderedContext(lines.join("\n"), payload.budget?.max_chars);
+}
+
+function indentBlock(text, prefix) {
+  return String(text ?? "").split("\n").map((line) => `${prefix}${line}`).join("\n");
+}
+
+function truncateRenderedContext(text, maxChars) {
+  if (!Number.isFinite(Number(maxChars)) || text.length <= Number(maxChars)) return text;
+  const suffix = "\n\n...context truncated. Use `ipa view \"Note Title\" --full` for full source text.";
+  return text.slice(0, Math.max(0, Number(maxChars) - suffix.length)).trimEnd() + suffix;
 }
 
 function renderChannels(items) {
@@ -892,14 +933,20 @@ function buildProgram() {
     .option("--by-note", "Treat QUERY as a note title instead of a search query")
     .option("--include <mode>", "Include extra context")
     .option("--format <format>", "Output format")
+    .option("--size <size>", "Context budget preset")
+    .option("--max-notes <number>", "Maximum primary note count")
+    .option("--max-chars <number>", "Target character budget")
     .action(async (queryParts, options) => {
       await withVault(globalOptions(program), async (vault) => {
         const payload = await buildContext(vault, queryParts.join(" "), {
           byNote: Boolean(options.byNote),
-          full: String(options.include ?? "").includes("full")
+          full: String(options.include ?? "").includes("full"),
+          size: options.size,
+          maxNotes: optionNumber(options.maxNotes),
+          maxChars: optionNumber(options.maxChars)
         });
         if (options.format === "markdown") {
-          print(payload.notes.map((note) => `## ${note.id}\n${note.body}`).join("\n\n"));
+          print(renderContext(payload));
         } else {
           print(payload, jsonOutput(program) || options.format === "json");
         }

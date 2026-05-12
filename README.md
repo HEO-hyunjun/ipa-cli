@@ -323,7 +323,7 @@ For the selected target, install writes:
 - user-global IPA CLI skill: `~/.codex/skills/ipa/SKILL.md` or
   `~/.claude/skills/ipa/SKILL.md`
 - user-global inbox creation guard hook
-- user-global `UserPromptSubmit` IPA search/view/context nudge hook
+- user-global `UserPromptSubmit` IPA context-first nudge hook
 - user-global post-write Markdown lint/format nudge hook
 - vault-local manifest and guard helper under `.ipa/harness/<target>/`
 - vault-local system prompt block in `AGENTS.md` for Codex or `CLAUDE.md`
@@ -333,6 +333,11 @@ The built-in guard policy is intentionally small: new Markdown files must be
 created under the configured inbox folder, while existing Markdown edits and
 non-Markdown files are allowed. This supports editor/agent hooks without
 hard-coding one user's vault naming convention.
+
+Harness prompts prefer `ipa context "task or note" --size small|medium --format
+markdown` for the initial compact note pack. `ipa view "Note Title" --full`
+is for selected note inspection, and `ipa search "keyword"` is for discovery
+when the topic changes or the current context is insufficient.
 
 The post-write nudge hook does not format automatically. It reminds the agent
 to run `ipa validator` and a note-scoped
@@ -355,6 +360,7 @@ old in-package parity oracle has been removed.
 | `list-refactors`   | `packages/cli` → `@ipa/core.REFACTORS`| Registry inspection for the 7 refactor recipes.                        |
 | `view`             | `@ipa/core.viewNote`                 | Note rendering with context header, frontmatter, body/structure, footer. |
 | `traversal`        | `@ipa/core.traversal`                | Ref-based up/down/siblings/root traversal.                             |
+| `context`          | `@ipa/core.buildContext`             | Compact agent context pack with selected notes, excerpts, and local graph. |
 | `validator`        | `@ipa/core.validateVault`            | Validator engine plus formatter-aware issue reporting.                 |
 | `search`           | `@ipa/core.searchVault`              | Weighted builtin and vault-local JS plugin search.                     |
 | `refactor`         | `@ipa/core.refactorVault`            | Parse-layer scan/filter plus frontmatter/body mutation.                |
