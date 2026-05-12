@@ -334,7 +334,7 @@ created under the configured inbox folder, while existing Markdown edits and
 non-Markdown files are allowed. This supports editor/agent hooks without
 hard-coding one user's vault naming convention.
 
-Harness prompts prefer `ipa context "task or note" --size small|medium --format
+Harness prompts prefer `ipa context "keyword" --size small|medium --format
 markdown` for the initial compact note pack. `ipa view "Note Title" --full`
 is for selected note inspection, and `ipa search "keyword"` is for discovery
 when the topic changes or the current context is insufficient.

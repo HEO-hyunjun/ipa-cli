@@ -4111,7 +4111,7 @@ Use this skill when a task mentions IPA, a vault note, inbox capture, note searc
 ## Read First
 
 \`\`\`bash
-${prefix} context "task or note" --size medium --format markdown
+${prefix} context "keyword" --size medium --format markdown
 ${prefix} view "Note Title" --full
 ${prefix} search "keyword"
 \`\`\`
@@ -4154,14 +4154,14 @@ This vault has an IPA CLI harness installed for ${spec.name}.
 Use the IPA CLI for vault-aware operations:
 
 \`\`\`bash
-${prefix} context "task or note" --size medium --format markdown
+${prefix} context "keyword" --size medium --format markdown
 ${prefix} view "Note Title" --full
 ${prefix} search "keyword"
 ${prefix} validator
 ${prefix} formatter plan --note "Edited Note"
 \`\`\`
 
-Start IPA/vault work with \`${prefix} context "task or note" --size medium --format markdown\`. Use \`search\` only when the topic changes, context is insufficient, or you need discovery beyond the current context.
+Start IPA/vault work with \`${prefix} context "keyword" --size medium --format markdown\`. Use \`search\` only when the topic changes, context is insufficient, or you need discovery beyond the current context.
 
 Create new Markdown notes under the configured inbox, or import drafts with \`${prefix} inbox add <file>\`. Existing Markdown notes may be edited in place. After editing vault Markdown, run lint/validation and note-scoped formatter planning before finishing. Formatter commands accept multiple notes as \`${prefix} formatter plan --note "Note A" "Note B"\`.
 `;
@@ -4250,29 +4250,17 @@ if (!allowed) {
 function userPromptNudgeScript(vaultPath, options = {}) {
   return `#!/usr/bin/env node
 // ${HARNESS_MARKER}: IPA UserPromptSubmit context nudge.
-import { readFileSync } from "node:fs";
 
 const vaultPath = ${JSON.stringify(vaultPath)};
 const prefix = "ipa";
 
-function inputJson() {
-  try {
-    return JSON.parse(readFileSync(0, "utf8"));
-  } catch {
-    return {};
-  }
-}
-
-const input = inputJson();
-const prompt = String(input.prompt ?? input.user_prompt ?? "").trim();
-const topic = prompt.length >= 8 ? prompt.slice(0, 120).replace(/\\s+/g, " ") : "task or note";
-const topicArg = JSON.stringify(topic);
 const lines = [
   "[IPA CLI]",
   "Use plain ipa commands; project-local .ipa-profile/.ipa-config can select the vault.",
   "For a new IPA/vault task, start with a compact context pack. Continue from existing conversation context when it is sufficient.",
   "Use search only when the topic changed, context is missing, or additional notes may be relevant.",
-  \`Bootstrap: \${prefix} context \${topicArg} --size small --format markdown\`,
+  "Do not paste raw file paths or the full user prompt into context. Pick a short keyword or an exact note title.",
+  \`Bootstrap: \${prefix} context "keyword" --size small --format markdown\`,
   \`Known note: \${prefix} context "Note Title" --by-note --size small --format markdown\`,
   \`View:      \${prefix} view "Note Title" --full\`,
   \`Discover:  \${prefix} search "keyword"\`

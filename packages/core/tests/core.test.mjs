@@ -560,7 +560,7 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   assert.equal((await harnessDoctor(vault, options)).status, "ok");
   const skill = await readFile(join(home, ".codex", "skills", "ipa", "SKILL.md"), "utf8");
   assert.ok(skill.startsWith("---\nname: ipa\n"), "skill YAML frontmatter must be first");
-  assert.match(skill, /ipa context "task or note" --size medium --format markdown/);
+  assert.match(skill, /ipa context "keyword" --size medium --format markdown/);
   assert.match(skill, /Use `search` only when the topic changes/);
   assert.doesNotMatch(skill, /ipa --profile ipa-test search/);
   assert.match(skill, /formatter plan --note "Note A" "Note B"/);
@@ -574,13 +574,16 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   assert.match(hooks, /ipa-user-prompt-nudge\.mjs/);
   assert.match(hooks, /ipa-md-write-nudge\.mjs/);
   const promptNudge = spawnSync(process.execPath, [promptHook], {
-    input: JSON.stringify({ prompt: "vault" }),
+    input: JSON.stringify({ prompt: "/Users/mac/Downloads/sales_graph\\ \\(1\\).mmd /Users/mac/Downloads/sales_graph_mapping\\ \\(1\\).yaml" }),
     encoding: "utf8"
   });
   assert.equal(promptNudge.status, 0);
   const promptContext = JSON.parse(promptNudge.stdout).hookSpecificOutput.additionalContext;
-  assert.match(promptContext, /ipa context "task or note" --size small --format markdown/);
+  assert.match(promptContext, /ipa context "keyword" --size small --format markdown/);
   assert.match(promptContext, /Use search only when the topic changed/);
+  assert.match(promptContext, /Do not paste raw file paths/);
+  assert.doesNotMatch(promptContext, /Downloads/);
+  assert.doesNotMatch(promptContext, /sales_graph/);
   assert.doesNotMatch(promptContext, /Possible related notes/);
   const guardScript = join(home, ".codex", "hooks", "ipa-inbox-guard.mjs");
   const blocked = spawnSync(process.execPath, [guardScript], {
