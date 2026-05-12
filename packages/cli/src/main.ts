@@ -1314,19 +1314,16 @@ function buildProgram() {
       }), jsonOutput(program)));
     });
   const packCommand = tuneCommand.command("pack");
-  packCommand.command("list").action(() => {
+  const printTunePacks = () => {
     print({ packs: ["ipa-cli-core"] }, jsonOutput(program));
-  });
+  };
+  packCommand.action(printTunePacks);
+  packCommand.command("list").action(printTunePacks);
   packCommand
     .command("eval")
     .argument("[name]", "Pack name", "ipa-cli-core")
     .action(async (name) => {
       await withVault(globalOptions(program), async (vault) => print(await tuneEval(vault, name), jsonOutput(program)));
-    });
-  packCommand
-    .argument("[args...]", "Pack arguments")
-    .action((args) => {
-      print({ status: "ok", pack: args.join(" ") }, jsonOutput(program));
     });
 
   program.command("list-channels").action(async () => {

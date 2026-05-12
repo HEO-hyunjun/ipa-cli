@@ -33,6 +33,14 @@ function run(env, args) {
   return result.stdout;
 }
 
+function runRaw(env, args) {
+  return spawnSync(process.execPath, [cli, ...args], {
+    cwd: root,
+    env,
+    encoding: "utf8"
+  });
+}
+
 test("CLI help and key smoke commands run through ipa-test profile", async () => {
   const { env } = await fixtureProfile();
   const help = run(env, ["--help"]);
@@ -78,6 +86,11 @@ test("CLI help and key smoke commands run through ipa-test profile", async () =>
   const tune = run(env, ["--profile", "ipa-test", "tune", "pack", "eval", "ipa-cli-core"]);
   assert.match(tune, /Tune evaluation/);
   assert.match(tune, /Misses: 0/);
+  const packs = JSON.parse(run(env, ["--profile", "ipa-test", "tune", "pack", "--json"]));
+  assert.deepEqual(packs.packs, ["ipa-cli-core"]);
+  const unknownPackCommand = runRaw(env, ["--profile", "ipa-test", "tune", "pack", "foo", "--json"]);
+  assert.notEqual(unknownPackCommand.status, 0);
+  assert.match(unknownPackCommand.stderr, /too many arguments|unknown command/i);
 });
 
 test("legacy surface fixture is covered by JS fixtures", async () => {
