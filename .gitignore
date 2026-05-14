@@ -18,3 +18,5 @@ packages/*/dist/
 # Test fixture caches written by SearchEngine/BM25 channels.
 packages/test-vaults/fixtures/**/.cache/
 packages/test-vaults/fixtures/**/*.pkl
+
+.claude/

@@ -635,6 +635,9 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   assert.deepEqual((await harnessStatus(vault, options)).installed, []);
   const install = await harnessInstall(vault, "codex", options);
   assert.equal(install.installed, true);
+  assert.ok(install.files.includes(".agents/skills/ipa-rule/SKILL.md"));
+  assert.ok(install.files.includes(".agents/skills/ipa-config/SKILL.md"));
+  assert.ok(install.files.includes(".agents/skills/ipa-tune/SKILL.md"));
   assert.ok(install.plugin_init.created.includes(".ipa/plugins/jsconfig.json"));
   assert.ok(install.plugin_init.created.includes(".ipa/plugins/types/ipa-plugin.d.ts"));
   assert.match(await readFile(join(vault, ".ipa", "plugins", "rules", "_example-title-length.js"), "utf8"), /@ts-check/);
@@ -661,8 +664,22 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   assert.match(agentsPrompt, /IPA CLI Harness/);
   assert.match(agentsPrompt, /Vault Operation Workflow/);
   assert.match(agentsPrompt, /Convention And JS Rule Workflow/);
+  assert.match(agentsPrompt, /Vault-Local Helper Skills/);
+  assert.match(agentsPrompt, /\.agents\/skills/);
   assert.match(agentsPrompt, /plugin dry-run search/);
   assert.match(agentsPrompt, /ipa config show/);
+  const ruleSkill = await readFile(join(vault, ".agents", "skills", "ipa-rule", "SKILL.md"), "utf8");
+  assert.match(ruleSkill, /name: ipa-rule/);
+  assert.match(ruleSkill, /Use this skill whenever the user mentions IPA rules/);
+  assert.match(ruleSkill, /ipa plugin validate/);
+  const configSkill = await readFile(join(vault, ".agents", "skills", "ipa-config", "SKILL.md"), "utf8");
+  assert.match(configSkill, /Use this skill whenever the user asks about ipa config show/);
+  assert.match(configSkill, /ipa profile current/);
+  assert.match(configSkill, /\.ipa\/config\.yaml/);
+  const tuneSkill = await readFile(join(vault, ".agents", "skills", "ipa-tune", "SKILL.md"), "utf8");
+  assert.match(tuneSkill, /Use this skill whenever the user wants better IPA search results/);
+  assert.match(tuneSkill, /ipa tune log --limit 50/);
+  assert.match(tuneSkill, /Do not run the optimizer by default/);
   const hooks = await readFile(join(home, ".codex", "hooks.json"), "utf8");
   assert.match(hooks, /ipa-inbox-guard\.mjs/);
   assert.match(hooks, /ipa-user-prompt-nudge\.mjs/);
@@ -702,14 +719,20 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
     encoding: "utf8"
   });
   assert.equal(nudge.status, 0);
+  const nudgePayload = JSON.parse(nudge.stdout);
+  assert.equal(nudgePayload.hookSpecificOutput.hookEventName, "PostToolUse");
   assert.match(nudge.stdout, /formatter plan --note \\"Alpha\\"/);
   assert.match(nudge.stdout, /formatter apply --note \\"Alpha\\"/);
   assert.match(nudge.stdout, /Do not stop at formatter plan/);
 
   const claudeInstall = await harnessInstall(vault, "claude", options);
   assert.equal(claudeInstall.installed, true);
+  assert.ok(claudeInstall.files.includes(".claude/skills/ipa-rule/SKILL.md"));
+  assert.ok(claudeInstall.files.includes(".claude/skills/ipa-config/SKILL.md"));
+  assert.ok(claudeInstall.files.includes(".claude/skills/ipa-tune/SKILL.md"));
   assert.match(await readFile(join(home, ".claude", "skills", "ipa", "SKILL.md"), "utf8"), /IPA CLI Skill/);
   assert.match(await readFile(join(vault, "CLAUDE.md"), "utf8"), /IPA CLI Harness/);
+  assert.match(await readFile(join(vault, ".claude", "skills", "ipa-tune", "SKILL.md"), "utf8"), /name: ipa-tune/);
 
   assert.equal((await harnessGuardCheck(vault, "00 Inbox/New.md")).allowed, true);
   const denied = await harnessGuardCheck(vault, "02 Archive/New.md");
@@ -719,6 +742,7 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
 
   const uninstall = await harnessUninstall(vault, "codex", options);
   assert.equal(uninstall.installed, false);
+  assert.ok(uninstall.removed.includes(".agents/skills/ipa-rule/SKILL.md"));
   await harnessUninstall(vault, "claude", options);
   assert.deepEqual((await harnessStatus(vault, options)).installed, []);
 });

@@ -4662,6 +4662,89 @@ function commandPrefix(vaultPath, options = {}, local = false) {
   return "ipa";
 }
 
+const VAULT_LOCAL_SKILLS = [
+  {
+    name: "ipa-rule",
+    description: "Create, modify, review, and debug IPA vault convention rules using .ipa/plugins/rules/*.js and formatter fixes. Use this skill whenever the user mentions IPA rules, vault conventions, frontmatter requirements, title/tag/ref validation, folder/type policy, validator warnings, formatter rule fixes, or wants the vault to enforce a custom convention.",
+    body: `# IPA Rule Skill
+
+Use this skill when the user wants to add, change, review, or debug IPA vault conventions such as frontmatter rules, note title rules, folder/type rules, tag rules, or formatter fixes.
+
+## Workflow
+
+1. Inspect the active convention surface with \`ipa list-rules\` and \`ipa validator\`.
+2. Scaffold plugin authoring files with \`ipa plugin init\` if \`.ipa/plugins\` is missing.
+3. Implement vault-specific convention checks under \`.ipa/plugins/rules/*.js\`.
+4. Use \`// @ts-check\` and the local type contract, for example \`import("../types/ipa-plugin").Rule\`.
+5. Verify the rule with \`ipa plugin validate .ipa/plugins/rules/<rule>.js\`.
+6. Dry-run against focused notes with \`ipa plugin dry-run rules .ipa/plugins/rules/<rule>.js --note "Note Title"\`.
+7. Run \`ipa list-rules\` and \`ipa validator\` after enabling or editing rules.
+8. If the rule has a safe fix, verify the formatter loop with \`ipa formatter plan --note "Note Title"\` and \`ipa formatter apply --note "Note Title"\`.
+
+Keep rules narrow and convention-focused. Do not use rule plugins for search ranking; use an IPA search plugin or the ipa-tune workflow instead.`
+  },
+  {
+    name: "ipa-config",
+    description: "Configure IPA vault and profile settings in .ipa/config.yaml and the global IPA profile registry. Use this skill whenever the user asks about ipa config show, IPA_PROFILE, profile init/new/use/list/current, vault selection, folder/field mapping, files.exclude, plugin enablement, search channels, test.file, weights.file, or profile/config troubleshooting.",
+    body: `# IPA Config Skill
+
+Use this skill when the user wants to inspect or change IPA profile selection, vault mappings, folder names, plugin policy, search channels, active tune results, or \`.ipa/config.yaml\`.
+
+## Workflow
+
+1. Resolve the active context first with \`ipa config show\`.
+2. Inspect profile state with \`ipa profile current\` and \`ipa profile list\`.
+3. Create or update profiles with \`ipa profile init --vault <path>\`, \`ipa profile new <name> <path>\`, or \`ipa profile use <name>\`.
+4. Keep machine-global profile concerns in the profile registry and vault-specific policy in \`.ipa/config.yaml\`.
+5. For vault-local config, prefer minimal edits to mapping, folders, files.exclude, plugins, search channel toggles, test.file, and weights.file.
+6. Verify config-sensitive behavior with \`ipa config show\`, \`ipa list-rules\`, \`ipa list-channels\`, \`ipa validator\`, and a focused \`ipa search "keyword"\`.
+
+Do not hard-code one user's absolute vault path into vault-local files. Use project-local selectors, profiles, or documented setup commands instead.`
+  },
+  {
+    name: "ipa-tune",
+    description: "Guide IPA search tuning from recent search logs to labelled testsets, tune result analysis, and safe activation. Use this skill whenever the user wants better IPA search results, says a search result was wrong, asks to review tune logs, sample cases, label correct notes, build or validate a testset, analyze weights/threshold/cap, or apply a tune result.",
+    body: `# IPA Tune Skill
+
+Use this skill when the user wants to improve IPA search quality, review misses, create search evaluation cases, analyze tune results, or apply tuned weights.
+
+## Workflow
+
+1. Inspect recent search activity with \`ipa tune log --limit 50\` or \`ipa tune log --query "keyword"\`.
+2. Sample candidate cases from logs with \`ipa tune testset draft --file testset.json\`.
+3. Ask the user which note should have been the correct result for ambiguous or failed queries.
+4. Add labelled cases with \`ipa tune testset add --file testset.json --query "user query" --target "Correct Note"\`.
+5. Validate the evaluation set with \`ipa tune testset validate testset.json\`.
+6. Show the user the tune command to run, for example \`ipa tune --trials 200\` or \`ipa tune --trials 500 --quiet\`.
+7. Do not run the optimizer by default. Present the command and wait for the user to run it unless they explicitly ask you to execute it.
+8. After the user runs tuning, collect results with \`ipa tune list\`, \`ipa tune analyze\`, and \`ipa tune replay <result.json>\` when useful.
+9. Summarize weight, threshold, and cap changes; call out likely regressions and whether the result is worth activating.
+10. Apply only the chosen artifact with \`ipa tune use <result.json>\`, then verify with \`ipa tune eval\` and focused \`ipa search "keyword"\` checks.
+
+Treat tuning as an evaluation loop, not a one-off command. Prefer better labels and representative cases over simply increasing trial count.`
+  }
+];
+
+function vaultLocalSkillRootRel(spec) {
+  return `${spec.name === "claude" ? ".claude" : ".agents"}/skills`;
+}
+
+function vaultLocalSkillRelPath(spec, name) {
+  return `${vaultLocalSkillRootRel(spec)}/${name}/SKILL.md`;
+}
+
+function vaultLocalSkillContent(skill) {
+  return `---
+name: ${skill.name}
+description: ${JSON.stringify(skill.description)}
+---
+
+<!-- ${HARNESS_MARKER} -->
+
+${skill.body.trim()}
+`;
+}
+
 function shellQuote(value) {
   return `'${String(value).replace(/'/g, "'\\''")}'`;
 }
@@ -4735,6 +4818,18 @@ async function removeManagedFile(path, removed) {
   if (!text.includes(HARNESS_MARKER)) return;
   await rm(path, { force: true });
   removed.push(path);
+}
+
+async function writeManagedVaultFile(vaultPath, relPath, content, files) {
+  const written = [];
+  await writeManagedFile(join(vaultPath, relPath), content, written);
+  if (written.length) files.push(relPath);
+}
+
+async function removeManagedVaultFile(vaultPath, relPath, removed) {
+  const before = removed.length;
+  await removeManagedFile(join(vaultPath, relPath), removed);
+  if (removed.length > before) removed[removed.length - 1] = relPath;
 }
 
 async function upsertManagedBlock(path, body) {
@@ -4829,6 +4924,7 @@ For multiple edited notes, pass the note titles after one \`--note\`, for exampl
 
 function localPromptContent(vaultPath, spec, mapping, options = {}) {
   const prefix = commandPrefix(vaultPath, options, true);
+  const skillRoot = vaultLocalSkillRootRel(spec);
   return `## IPA CLI Harness
 
 This vault has an IPA CLI harness installed for ${spec.name}.
@@ -4872,7 +4968,38 @@ Start IPA/vault work with \`${prefix} context "keyword" --size medium --format m
 - Verify plugin work with \`${prefix} plugin validate\`, \`${prefix} plugin dry-run rules ... --note "Note Title"\` or \`${prefix} plugin dry-run search ... --query "keyword"\`, \`${prefix} list-rules\`, \`${prefix} validator\`, and \`${prefix} formatter plan/apply --note ...\`.
 
 Formatter commands accept multiple notes as \`${prefix} formatter plan --note "Note A" "Note B"\` and \`${prefix} formatter apply --note "Note A" "Note B"\`.
+
+## Vault-Local Helper Skills
+
+The harness installs focused helper skills under \`${skillRoot}/\`:
+
+- \`ipa-rule\` — customize IPA vault conventions with \`.ipa/plugins/rules/*.js\`.
+- \`ipa-config\` — manage \`.ipa/config.yaml\`, project-local selectors, and global IPA profiles.
+- \`ipa-tune\` — guide search log review, labelled testset creation, tune result analysis, and safe activation.
 `;
+}
+
+async function installVaultLocalSkills(vaultPath, spec) {
+  const files = [];
+  for (const skill of VAULT_LOCAL_SKILLS) {
+    await writeManagedVaultFile(vaultPath, vaultLocalSkillRelPath(spec, skill.name), vaultLocalSkillContent(skill), files);
+  }
+  return files;
+}
+
+async function uninstallVaultLocalSkills(vaultPath, spec) {
+  const removed = [];
+  for (const skill of VAULT_LOCAL_SKILLS) {
+    await removeManagedVaultFile(vaultPath, vaultLocalSkillRelPath(spec, skill.name), removed);
+  }
+  return removed;
+}
+
+function vaultLocalSkillStatus(vaultPath, spec) {
+  return Object.fromEntries(VAULT_LOCAL_SKILLS.map((skill) => [
+    skill.name,
+    hasManagedFile(join(vaultPath, vaultLocalSkillRelPath(spec, skill.name)))
+  ]));
 }
 
 function inboxGuardScript(vaultPath, inboxDir) {
@@ -5085,6 +5212,7 @@ const message = [
 
 process.stdout.write(JSON.stringify({
   hookSpecificOutput: {
+    hookEventName: "PostToolUse",
     additionalContext: message
   }
 }) + "\\n");
@@ -5168,7 +5296,8 @@ export async function harnessStatus(vaultPath, options = {}) {
       prompt_hook: hasManagedFile(join(spec.hooksDir, "ipa-user-prompt-nudge.mjs")),
       markdown_nudge_hook: hasManagedFile(join(spec.hooksDir, "ipa-md-write-nudge.mjs")),
       hooks_config: existsSync(spec.hooksConfig),
-      prompt: hasManagedFile(spec.globalPromptFile)
+      prompt: hasManagedFile(spec.globalPromptFile),
+      local_skills: vaultLocalSkillStatus(vaultPath, spec)
     };
   }
   return {
@@ -5199,6 +5328,10 @@ export async function harnessInstall(vaultPath, target = "codex", options = {}) 
       skill: `~/.${name}/skills/ipa/SKILL.md`,
       hooks_config: name === "claude" ? "~/.claude/settings.json" : "~/.codex/hooks.json",
       prompt: `~/.${name}/${spec.localPrompt}`
+    },
+    local_skills: {
+      root: vaultLocalSkillRootRel(spec),
+      skills: VAULT_LOCAL_SKILLS.map((skill) => skill.name)
     },
     plugin_scaffold: {
       root: ".ipa/plugins",
@@ -5234,6 +5367,7 @@ export async function harnessInstall(vaultPath, target = "codex", options = {}) 
     "utf8"
   );
   await upsertManagedBlock(join(vaultPath, spec.localPrompt), localPromptContent(vaultPath, spec, mapping, options));
+  const localSkillFiles = await installVaultLocalSkills(vaultPath, spec);
   const globalFiles = await installGlobalHarness(vaultPath, spec, mapping, options);
   const index = await readHarnessIndex(vaultPath);
   index.targets = index.targets || {};
@@ -5248,7 +5382,7 @@ export async function harnessInstall(vaultPath, target = "codex", options = {}) 
     target: name,
     installed: true,
     plugin_init: pluginInitResult,
-    files: [`.ipa/harness/${name}/manifest.json`, `.ipa/harness/${name}/guard.mjs`, ".ipa/harness/manifest.json", spec.localPrompt],
+    files: [`.ipa/harness/${name}/manifest.json`, `.ipa/harness/${name}/guard.mjs`, ".ipa/harness/manifest.json", spec.localPrompt, ...localSkillFiles],
     global_files: globalFiles
   };
 }
@@ -5258,11 +5392,12 @@ export async function harnessUninstall(vaultPath, target = "codex", options = {}
   const name = spec.name;
   await rm(join(harnessRoot(vaultPath), name), { recursive: true, force: true });
   await removeManagedBlock(join(vaultPath, spec.localPrompt));
+  const localSkillRemoved = await uninstallVaultLocalSkills(vaultPath, spec);
   const globalRemoved = await uninstallGlobalHarness(spec);
   const index = await readHarnessIndex(vaultPath);
   if (index.targets) delete index.targets[name];
   await writeHarnessIndex(vaultPath, index);
-  return { status: "ok", target: name, installed: false, removed: [`.ipa/harness/${name}`, spec.localPrompt], global_removed: globalRemoved };
+  return { status: "ok", target: name, installed: false, removed: [`.ipa/harness/${name}`, spec.localPrompt, ...localSkillRemoved], global_removed: globalRemoved };
 }
 
 export async function harnessDoctor(vaultPath, options = {}) {
@@ -5291,6 +5426,12 @@ export async function harnessDoctor(vaultPath, options = {}) {
     }
     if (!existsSync(join(vaultPath, entry.local_prompt ?? spec.localPrompt))) {
       issues.push({ severity: "warn", code: "harness.local_prompt_missing", target, message: `missing ${entry.local_prompt ?? spec.localPrompt}` });
+    }
+    for (const skill of VAULT_LOCAL_SKILLS) {
+      const relPath = vaultLocalSkillRelPath(spec, skill.name);
+      if (!hasManagedFile(join(vaultPath, relPath))) {
+        issues.push({ severity: "warn", code: "harness.local_skill_missing", target, message: `missing managed vault-local skill ${relPath}` });
+      }
     }
     const scaffold = pluginScaffoldStatus(vaultPath);
     if (!scaffold.jsconfig || !scaffold.types || !scaffold.rules_dir || !scaffold.search_dir) {

@@ -375,6 +375,9 @@ For the selected target, install writes:
 - vault-local manifest and guard helper under `.ipa/harness/<target>/`
 - vault-local system prompt block in `AGENTS.md` for Codex or `CLAUDE.md`
   for Claude
+- vault-local helper skills:
+  - Codex: `.agents/skills/ipa-rule`, `.agents/skills/ipa-config`, `.agents/skills/ipa-tune`
+  - Claude: `.claude/skills/ipa-rule`, `.claude/skills/ipa-config`, `.claude/skills/ipa-tune`
 - vault-local `.ipa/plugins` scaffold with JS types and disabled rule/search
   examples
 
@@ -397,6 +400,12 @@ adjust `.ipa/plugins/rules/*.js`, verify it with `ipa plugin validate`,
 `ipa plugin dry-run rules ... --note "Note Title"`, `ipa list-rules`,
 `ipa validator`, and then run the formatter plan/apply loop. For retrieval
 behavior, use `.ipa/plugins/search/*.js` and `ipa plugin dry-run search`.
+
+The helper skills split common IPA operations into focused workflows:
+`ipa-rule` for rule plugins and formatter-backed conventions, `ipa-config` for
+`.ipa/config.yaml` and profile registry work, and `ipa-tune` for search-log
+sampling, labelled testsets, tune result analysis, and activating selected
+results.
 
 The post-write nudge hook does not format automatically, but it makes apply the
 expected completion path: run `ipa validator`, inspect the note-scoped
