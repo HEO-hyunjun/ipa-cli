@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import {
+  appendFile,
   mkdir,
   readFile,
   readdir,
@@ -25,6 +26,8 @@ export const DEFAULT_MAPPING = {
   archive_dir: "02 Archive",
   exclude: []
 };
+
+const CACHE_SCHEMA = "notes-v2";
 
 export const CHANNELS = [
   { name: "fuzzy", defaultWeight: 0.268, description: "Graded fuzzy match on note id and aliases" },
@@ -897,29 +900,188 @@ export async function loadNotes(vaultPath, mapping = DEFAULT_MAPPING) {
   const notes = [];
   for (const path of files.sort()) {
     const raw = await readFile(path, "utf8");
-    const relPath = toPosix(relative(vaultPath, path));
-    const { frontmatter, body } = readFrontmatter(raw);
-    const id = normalizeTitle(basename(path, ".md"));
-    const refs = asList(frontmatter[mapping.refs]).map(stripWiki).filter(Boolean);
-    const tags = asList(frontmatter[mapping.tags]).map((tag) => String(tag).replace(/^#/, ""));
-    const aliases = mapping.aliases ? asList(frontmatter[mapping.aliases]).map(normalizeTitle) : [];
-    notes.push({
-      id,
-      path,
-      relPath,
-      folder: toPosix(dirname(relPath)),
-      raw,
-      frontmatter,
-      body,
-      type: frontmatter[mapping.note_type] || "",
-      refs,
-      tags,
-      aliases,
-      links: extractWikilinks(body),
-      headings: parseHeadings(body)
-    });
+    notes.push(noteFromFile(vaultPath, path, raw, mapping));
   }
   return notes;
+}
+
+function noteFromFile(vaultPath, path, raw, mapping = DEFAULT_MAPPING) {
+  const relPath = toPosix(relative(vaultPath, path));
+  const { frontmatter, body } = readFrontmatter(raw);
+  const id = normalizeTitle(basename(path, ".md"));
+  const refs = asList(frontmatter[mapping.refs]).map(stripWiki).filter(Boolean);
+  const tags = asList(frontmatter[mapping.tags]).map((tag) => String(tag).replace(/^#/, ""));
+  const aliases = mapping.aliases ? asList(frontmatter[mapping.aliases]).map(normalizeTitle) : [];
+  return {
+    id,
+    path,
+    relPath,
+    folder: toPosix(dirname(relPath)),
+    raw,
+    frontmatter,
+    body,
+    type: frontmatter[mapping.note_type] || "",
+    refs,
+    tags,
+    aliases,
+    links: extractWikilinks(body),
+    headings: parseHeadings(body)
+  };
+}
+
+async function activeMarkdownFileStats(vaultPath, mapping = DEFAULT_MAPPING) {
+  const excludes = asList(mapping.exclude);
+  const files = await walkFiles(vaultPath, (path, relPath) =>
+    extname(path).toLowerCase() === ".md" && !isExcludedPath(relPath, excludes)
+  );
+  const rows = [];
+  for (const path of files.sort()) {
+    const fileStat = await stat(path);
+    rows.push({
+      path,
+      relPath: toPosix(relative(vaultPath, path)),
+      byteSize: fileStat.size,
+      mtimeMs: fileStat.mtimeMs
+    });
+  }
+  return rows;
+}
+
+function cacheFileEntry(note, fileStat = null) {
+  return {
+    note: note.id,
+    path: note.relPath,
+    sha256: sha256(note.raw),
+    size: note.raw.length,
+    byte_size: fileStat?.byteSize,
+    mtime_ms: fileStat?.mtimeMs,
+    type: note.type,
+    refs: note.refs,
+    tags: note.tags,
+    aliases: note.aliases,
+    links: note.links
+  };
+}
+
+function noteSummaryFromCacheEntry(vaultPath, entry) {
+  const relPath = toPosix(String(entry.path ?? ""));
+  const notePath = join(vaultPath, relPath);
+  return {
+    id: normalizeTitle(entry.note ?? basename(relPath, ".md")),
+    path: notePath,
+    relPath,
+    folder: toPosix(dirname(relPath)),
+    raw: "",
+    frontmatter: {},
+    body: "",
+    type: String(entry.type ?? ""),
+    refs: asList(entry.refs).map(stripWiki).filter(Boolean),
+    tags: asList(entry.tags).map((tag) => String(tag).replace(/^#/, "")),
+    aliases: asList(entry.aliases).map(normalizeTitle),
+    links: asList(entry.links).map(normalizeTitle).filter(Boolean),
+    headings: []
+  };
+}
+
+function hasViewCacheMetadata(entry) {
+  return Boolean(
+    entry &&
+    typeof entry.path === "string" &&
+    typeof entry.note === "string" &&
+    Number.isFinite(Number(entry.byte_size)) &&
+    Number.isFinite(Number(entry.mtime_ms)) &&
+    Array.isArray(entry.refs) &&
+    Array.isArray(entry.tags) &&
+    Array.isArray(entry.aliases) &&
+    Array.isArray(entry.links)
+  );
+}
+
+function sameMtime(left, right) {
+  return Math.abs(Number(left) - Number(right)) < 1;
+}
+
+async function readCacheFileEntries(vaultPath) {
+  const filesPath = join(vaultPath, ".ipa", "cache", "files.jsonl");
+  if (!existsSync(filesPath)) return null;
+  const lines = (await readFile(filesPath, "utf8"))
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (!lines.length) return null;
+  const entries = [];
+  try {
+    for (const line of lines) entries.push(JSON.parse(line));
+  } catch {
+    return null;
+  }
+  if (!entries.every(hasViewCacheMetadata)) return null;
+  return entries;
+}
+
+async function cacheFileDiff(vaultPath, mapping = DEFAULT_MAPPING, entries = null) {
+  const cachedEntries = entries ?? await readCacheFileEntries(vaultPath);
+  if (!cachedEntries) return null;
+  const currentFiles = await activeMarkdownFileStats(vaultPath, mapping);
+  const entriesByPath = new Map(cachedEntries.map((entry) => [toPosix(entry.path).normalize("NFC"), entry]));
+  const currentByPath = new Map(currentFiles.map((file) => [file.relPath.normalize("NFC"), file]));
+  const added = [];
+  const changed = [];
+  const deleted = [];
+  const unchanged = [];
+
+  for (const file of currentFiles) {
+    const entry = entriesByPath.get(file.relPath.normalize("NFC"));
+    if (!entry) {
+      added.push(file);
+    } else if (Number(entry.byte_size) !== file.byteSize || !sameMtime(entry.mtime_ms, file.mtimeMs)) {
+      changed.push(file);
+    } else {
+      unchanged.push(file);
+    }
+  }
+  for (const entry of cachedEntries) {
+    const relPath = toPosix(entry.path).normalize("NFC");
+    if (!currentByPath.has(relPath)) deleted.push(entry);
+  }
+
+  return { entries: cachedEntries, currentFiles, added, changed, deleted, unchanged };
+}
+
+function hasCacheFileChanges(diff) {
+  return Boolean(diff && (diff.added.length || diff.changed.length || diff.deleted.length));
+}
+
+function cacheChangeSummary(diff) {
+  return {
+    added: diff?.added.length ?? 0,
+    changed: diff?.changed.length ?? 0,
+    deleted: diff?.deleted.length ?? 0
+  };
+}
+
+async function loadCachedNoteSummaries(vaultPath, mapping = DEFAULT_MAPPING) {
+  const manifest = await readCacheManifest(vaultPath);
+  if (manifest?.cache_schema !== CACHE_SCHEMA) return null;
+  if (manifest?.mapping_fingerprint !== mappingFingerprint(mapping)) return null;
+  if (manifest?.plugin_fingerprint !== await pluginFingerprint(vaultPath)) return null;
+  const entries = await readCacheFileEntries(vaultPath);
+  if (!entries) return null;
+  const diff = await cacheFileDiff(vaultPath, mapping, entries);
+  if (!diff || hasCacheFileChanges(diff)) return null;
+  return entries.map((entry) => noteSummaryFromCacheEntry(vaultPath, entry));
+}
+
+async function loadNotesForView(vaultPath, mapping = DEFAULT_MAPPING) {
+  return await loadCachedNoteSummaries(vaultPath, mapping) ??
+    await refreshCachedNoteSummaries(vaultPath, mapping) ??
+    await loadNotes(vaultPath, mapping);
+}
+
+async function refreshCachedNoteSummaries(vaultPath, mapping = DEFAULT_MAPPING) {
+  const result = await rebuildCache(vaultPath, { allowFull: false });
+  if (!result) return null;
+  return await loadCachedNoteSummaries(vaultPath, mapping);
 }
 
 function isExcludedPath(relPath, patterns) {
@@ -1462,7 +1624,40 @@ function tuneResultPath(vaultPath, filename) {
 }
 
 export async function searchVault(vaultPath, query, options = {}) {
-  return searchWithContext(await prepareSearchContext(vaultPath), query, options);
+  const result = await searchWithContext(await prepareSearchContext(vaultPath), query, options);
+  await maybeRecordSearchEvent(vaultPath, result, options);
+  return result;
+}
+
+function envFlag(name) {
+  const value = process.env[name];
+  return value === "1" || value === "true" || value === "yes" || value === "on";
+}
+
+function shouldRecordSearchEvent(options = {}) {
+  if (options.logSearch !== undefined) return Boolean(options.logSearch);
+  return envFlag("IPA_SEARCH_LOG") || envFlag("IPA_TUNE_LOG_SEARCH");
+}
+
+async function maybeRecordSearchEvent(vaultPath, result, options = {}) {
+  if (!shouldRecordSearchEvent(options)) return;
+  const path = join(vaultPath, ".ipa", "tune", "logs", "search-events.jsonl");
+  const event = {
+    ts: nowIso(),
+    source: options.logSource ?? "search",
+    query: result.query,
+    threshold: result.threshold,
+    max_results: result.max_results,
+    count: result.count,
+    results: (result.results ?? []).map((hit) => ({
+      note: hit.note,
+      score: hit.score,
+      type: hit.type,
+      path: hit.path
+    }))
+  };
+  await mkdir(dirname(path), { recursive: true });
+  await appendFile(path, JSON.stringify(event) + "\n", "utf8");
 }
 
 async function prepareSearchContext(vaultPath) {
@@ -1728,14 +1923,16 @@ function normalizeSearchChannelOutput(output, pluginPath) {
 
 export async function viewNote(vaultPath, noteName, options = {}) {
   const { mapping } = await readVaultConfig(vaultPath);
-  const notes = await loadNotes(vaultPath, mapping);
+  const notes = await loadNotesForView(vaultPath, mapping);
   const note = findNote(notes, noteName);
   if (!note) throw new Error(`note not found: ${noteName}`);
+  const raw = await readFile(note.path, "utf8");
+  const target = noteFromRaw(note, raw, mapping);
   if (options.section) {
-    return renderSectionNote(note, options.section);
+    return renderSectionNote(target, options.section);
   }
-  if (options.full) return renderFullNote(note, notes, vaultPath);
-  return renderOverviewNote(note, notes, vaultPath);
+  if (options.full) return renderFullNote(target, notes, vaultPath);
+  return renderOverviewNote(target, notes, vaultPath);
 }
 
 function renderOverviewNote(note, notes, vaultPath) {
@@ -2800,17 +2997,19 @@ function contextSubgraph(contextNotes, notes) {
   return edges;
 }
 
-function contextCommands(contextNotes) {
+function contextCommands(contextNotes, query = "") {
   const first = contextNotes[0];
   if (!first) return [];
+  const searchQuery = String(query ?? "").trim() || first.id;
   const commands = [
+    `ipa search "${searchQuery}"`,
     `ipa view "${first.id}" --full`,
     first.type === "index" || first.type === "root"
       ? `ipa traversal --down "${first.id}"`
       : `ipa traversal --up "${first.id}"`,
     `ipa traversal --siblings "${first.id}"`
   ];
-  if (first.tags?.[0]) commands.push(`ipa search "${first.tags[0]}"`);
+  if (first.tags?.[0] && first.tags[0] !== searchQuery) commands.push(`ipa search "${first.tags[0]}"`);
   return commands;
 }
 
@@ -2839,45 +3038,133 @@ export async function buildContext(vaultPath, query, options = {}) {
     notes: contextNotes,
     edges: contextSubgraph(contextNotes, notes),
     sources: selected.map((note) => note.relPath),
-    next_commands: contextCommands(contextNotes),
+    next_commands: contextCommands(contextNotes, query),
     warnings
   };
 }
 
-export async function rebuildCache(vaultPath) {
-  const { mapping } = await readVaultConfig(vaultPath);
-  const notes = await loadNotes(vaultPath, mapping);
-  const cacheDir = join(vaultPath, ".ipa", "cache");
-  await mkdir(cacheDir, { recursive: true });
-  const files = [];
-  for (const note of notes) {
-    files.push({
-      path: note.relPath,
-      sha256: sha256(note.raw),
-      size: note.raw.length
-    });
+function mappingFingerprint(mapping) {
+  return sha256(JSON.stringify(Object.keys(mapping).sort().map((key) => [key, mapping[key]])));
+}
+
+async function readCacheManifest(vaultPath) {
+  const path = join(vaultPath, ".ipa", "cache", "manifest.json");
+  if (!existsSync(path)) return null;
+  try {
+    return JSON.parse(await readFile(path, "utf8"));
+  } catch {
+    return null;
   }
-  const graph = buildGraph(notes);
-  const manifest = {
-    version: 1,
-    generated_at: nowIso(),
-    file_count: files.length,
-    plugin_fingerprint: await pluginFingerprint(vaultPath)
-  };
+}
+
+async function writeCachePayload(cacheDir, manifest, files, graph) {
   await writeFile(join(cacheDir, "manifest.json"), JSON.stringify(manifest, null, 2), "utf8");
   await writeFile(join(cacheDir, "files.jsonl"), files.map((item) => JSON.stringify(item)).join("\n") + "\n", "utf8");
   await writeFile(join(cacheDir, "graph.json"), JSON.stringify(graph, null, 2), "utf8");
-  return { manifest, files, graph };
+}
+
+function cacheManifest(payload, mode, fileCount, pluginFingerprintValue, mappingFingerprintValue, changes = null) {
+  return {
+    version: 1,
+    cache_schema: CACHE_SCHEMA,
+    generated_at: nowIso(),
+    file_count: fileCount,
+    plugin_fingerprint: pluginFingerprintValue,
+    mapping_fingerprint: mappingFingerprintValue,
+    rebuild_mode: mode,
+    ...(changes ? { changes } : {}),
+    ...payload
+  };
+}
+
+async function rebuildCacheFull(vaultPath, mapping, cacheDir, pluginFingerprintValue, mappingFingerprintValue) {
+  const currentFiles = await activeMarkdownFileStats(vaultPath, mapping);
+  const notes = [];
+  for (const file of currentFiles) {
+    notes.push(noteFromFile(vaultPath, file.path, await readFile(file.path, "utf8"), mapping));
+  }
+  const fileStatsByPath = new Map(currentFiles.map((item) => [item.relPath, item]));
+  const files = [];
+  for (const note of notes) {
+    files.push(cacheFileEntry(note, fileStatsByPath.get(note.relPath)));
+  }
+  const graph = buildGraph(notes);
+  const manifest = cacheManifest({}, "full", files.length, pluginFingerprintValue, mappingFingerprintValue);
+  await writeCachePayload(cacheDir, manifest, files, graph);
+  return { manifest, files, graph, mode: "full", cache_changes: { added: files.length, changed: 0, deleted: 0 } };
+}
+
+async function rebuildCacheIncremental(vaultPath, mapping, cacheDir, diff, pluginFingerprintValue, mappingFingerprintValue) {
+  const entriesByPath = new Map(diff.entries.map((entry) => [toPosix(entry.path).normalize("NFC"), entry]));
+  for (const entry of diff.deleted) entriesByPath.delete(toPosix(entry.path).normalize("NFC"));
+  for (const file of [...diff.added, ...diff.changed]) {
+    const note = noteFromFile(vaultPath, file.path, await readFile(file.path, "utf8"), mapping);
+    entriesByPath.set(file.relPath.normalize("NFC"), cacheFileEntry(note, file));
+  }
+
+  const files = diff.currentFiles.map((file) => entriesByPath.get(file.relPath.normalize("NFC"))).filter(Boolean);
+  if (files.length !== diff.currentFiles.length) {
+    return rebuildCacheFull(vaultPath, mapping, cacheDir, pluginFingerprintValue, mappingFingerprintValue);
+  }
+  const graphNotes = files.map((entry) => noteSummaryFromCacheEntry(vaultPath, entry));
+  const graph = buildGraph(graphNotes);
+  const changes = cacheChangeSummary(diff);
+  const manifest = cacheManifest({}, "incremental", files.length, pluginFingerprintValue, mappingFingerprintValue, changes);
+  await writeCachePayload(cacheDir, manifest, files, graph);
+  return { manifest, files, graph, mode: "incremental", cache_changes: changes };
+}
+
+export async function rebuildCache(vaultPath, options = {}) {
+  const { mapping } = await readVaultConfig(vaultPath);
+  const cacheDir = join(vaultPath, ".ipa", "cache");
+  await mkdir(cacheDir, { recursive: true });
+  const currentPluginFingerprint = await pluginFingerprint(vaultPath);
+  const currentMappingFingerprint = mappingFingerprint(mapping);
+  const manifest = await readCacheManifest(vaultPath);
+  const entries = await readCacheFileEntries(vaultPath);
+  const canIncremental = Boolean(
+    !options.full &&
+    manifest?.cache_schema === CACHE_SCHEMA &&
+    manifest?.plugin_fingerprint === currentPluginFingerprint &&
+    manifest?.mapping_fingerprint === currentMappingFingerprint &&
+    entries
+  );
+
+  if (canIncremental) {
+    const diff = await cacheFileDiff(vaultPath, mapping, entries);
+    if (diff) return rebuildCacheIncremental(vaultPath, mapping, cacheDir, diff, currentPluginFingerprint, currentMappingFingerprint);
+  }
+  if (options.allowFull === false) return null;
+  return rebuildCacheFull(vaultPath, mapping, cacheDir, currentPluginFingerprint, currentMappingFingerprint);
 }
 
 export async function cacheStatus(vaultPath) {
-  const manifestPath = join(vaultPath, ".ipa", "cache", "manifest.json");
-  const manifest = existsSync(manifestPath) ? JSON.parse(await readFile(manifestPath, "utf8")) : null;
+  const { mapping } = await readVaultConfig(vaultPath);
+  const manifest = await readCacheManifest(vaultPath);
   const currentFingerprint = await pluginFingerprint(vaultPath);
+  const currentMappingFingerprint = mappingFingerprint(mapping);
   const stale = [];
+  let changes = { added: 0, changed: 0, deleted: 0 };
   if (!manifest) stale.push({ reason: "missing_manifest" });
-  else if (manifest.plugin_fingerprint !== currentFingerprint) stale.push({ reason: "plugin_fingerprint_changed" });
-  return { manifest, stale, current_plugin_fingerprint: currentFingerprint };
+  else {
+    if (manifest.cache_schema !== CACHE_SCHEMA) stale.push({ reason: "cache_schema_changed" });
+    if (manifest.plugin_fingerprint !== currentFingerprint) stale.push({ reason: "plugin_fingerprint_changed" });
+    if (manifest.mapping_fingerprint !== currentMappingFingerprint) stale.push({ reason: "mapping_changed" });
+    const diff = await cacheFileDiff(vaultPath, mapping);
+    if (!diff) {
+      stale.push({ reason: "files_changed_or_metadata_missing" });
+    } else {
+      changes = cacheChangeSummary(diff);
+      if (hasCacheFileChanges(diff)) stale.push({ reason: "files_changed", ...changes });
+    }
+  }
+  return {
+    manifest,
+    stale,
+    cache_changes: changes,
+    current_plugin_fingerprint: currentFingerprint,
+    current_mapping_fingerprint: currentMappingFingerprint
+  };
 }
 
 export async function cacheDoctor(vaultPath) {
@@ -3167,6 +3454,212 @@ export async function contractExportFixtures(vaultPath, targetRel) {
     await writeFile(join(target, name), JSON.stringify(payload, null, 2), "utf8");
   }
   return { exported: Object.keys(files).map((name) => toPosix(relative(vaultPath, join(target, name)))) };
+}
+
+const PLUGIN_JSCONFIG = `{
+  "compilerOptions": {
+    "checkJs": true,
+    "target": "ES2023",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "noEmit": true
+  },
+  "include": [
+    "rules/**/*.js",
+    "search/**/*.js",
+    "types/**/*.d.ts"
+  ]
+}
+`;
+
+const PLUGIN_TYPES = `export type Severity = "info" | "warn" | "error";
+export type RuleScope = "note" | "vault";
+
+export interface Heading {
+  level: number;
+  title: string;
+  line: number;
+}
+
+export interface Note {
+  id: string;
+  path: string;
+  relPath: string;
+  folder: string;
+  raw: string;
+  body: string;
+  type: string;
+  frontmatter: Record<string, unknown>;
+  refs: string[];
+  tags: string[];
+  aliases: string[];
+  links: string[];
+  headings: Heading[];
+}
+
+export interface Mapping {
+  note_type: string;
+  refs: string;
+  tags: string;
+  created_at: string;
+  updated_at: string;
+  aliases: string;
+  inbox_dir: string;
+  project_dir: string;
+  archive_dir: string;
+  exclude: string[];
+}
+
+export interface RuleContext {
+  vaultPath: string;
+  mapping: Mapping;
+  notes: Note[];
+  apply?: boolean;
+  options?: {
+    note?: string | null;
+    notes?: string[];
+  };
+  MarkdownDocument?: unknown;
+  IpaNoteDocument?: unknown;
+}
+
+export interface RuleIssue {
+  code?: string;
+  severity?: Severity;
+  note?: string;
+  path?: string;
+  message: string;
+  plugin?: string;
+}
+
+export interface FormatterPatch {
+  note?: string;
+  path?: string;
+  content?: string;
+  line?: number;
+  replacement?: string;
+  [key: string]: unknown;
+}
+
+export type RuleCheck = (note: Note, ctx: RuleContext) => RuleIssue | RuleIssue[] | null | undefined | Promise<RuleIssue | RuleIssue[] | null | undefined>;
+export type VaultRuleCheck = (ctx: RuleContext) => RuleIssue | RuleIssue[] | null | undefined | Promise<RuleIssue | RuleIssue[] | null | undefined>;
+export type RuleFix = (note: Note, ctx: RuleContext) => string | FormatterPatch | FormatterPatch[] | null | undefined | Promise<string | FormatterPatch | FormatterPatch[] | null | undefined>;
+
+export interface Rule {
+  code: string;
+  id?: string;
+  category?: string;
+  severity?: Severity;
+  scope?: RuleScope;
+  check?: RuleCheck;
+  checkNote?: RuleCheck;
+  checkVault?: VaultRuleCheck;
+  fix?: RuleFix;
+  fixNote?: RuleFix;
+}
+
+export interface SearchHit {
+  note: string | Note;
+  score: number;
+  reason?: Record<string, unknown>;
+}
+
+export interface SearchContext {
+  query: string;
+  notes: Note[];
+  mapping: Mapping;
+  vaultPath: string;
+}
+
+export type SearchPlugin = (query: string, notes: Note[], ctx: SearchContext) => SearchHit[] | Promise<SearchHit[]>;
+export type SearchChannel = (ctx: SearchContext) => SearchHit[] | Record<string, number> | Map<string, number> | Promise<SearchHit[] | Record<string, number> | Map<string, number>>;
+`;
+
+const PLUGIN_RULE_EXAMPLE = `// @ts-check
+
+/** @type {import("../types/ipa-plugin").Rule[]} */
+export const rules = [{
+  code: "vault.short_title",
+  severity: "info",
+  check(note) {
+    if ((note.id ?? "").trim().length >= 6) return [];
+    return [{
+      message: "note title is very short for this vault convention"
+    }];
+  }
+}];
+`;
+
+const PLUGIN_SEARCH_EXAMPLE = `// @ts-check
+
+/** @type {import("../types/ipa-plugin").SearchPlugin} */
+export async function search(query, notes) {
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+  return notes
+    .filter((note) => note.body.toLowerCase().includes(\`# \${q}\`) || note.body.toLowerCase().includes(\`## \${q}\`))
+    .map((note) => ({
+      note: note.id,
+      score: 1,
+      reason: { matched: "heading" }
+    }));
+}
+`;
+
+async function writePluginScaffoldFile(vaultPath, relPath, content, force, result) {
+  const path = join(vaultPath, relPath);
+  await mkdir(dirname(path), { recursive: true });
+  if (!existsSync(path)) {
+    await writeFile(path, content, "utf8");
+    result.created.push(relPath);
+    return;
+  }
+  const previous = await readFile(path, "utf8");
+  if (previous === content) {
+    result.existing.push(relPath);
+    return;
+  }
+  if (!force) {
+    result.skipped.push(relPath);
+    return;
+  }
+  await writeFile(path, content, "utf8");
+  result.updated.push(relPath);
+}
+
+export async function pluginInit(vaultPath, options = {}) {
+  const root = ".ipa/plugins";
+  const result = {
+    plugin_root: root,
+    created: [],
+    updated: [],
+    skipped: [],
+    existing: [],
+    examples: Boolean(options.examples ?? true)
+  };
+  for (const rel of [root, `${root}/rules`, `${root}/search`, `${root}/types`]) {
+    await mkdir(join(vaultPath, rel), { recursive: true });
+  }
+  const force = Boolean(options.force);
+  await writePluginScaffoldFile(vaultPath, `${root}/jsconfig.json`, PLUGIN_JSCONFIG, force, result);
+  await writePluginScaffoldFile(vaultPath, `${root}/types/ipa-plugin.d.ts`, PLUGIN_TYPES, force, result);
+  if (result.examples) {
+    await writePluginScaffoldFile(vaultPath, `${root}/rules/_example-title-length.js`, PLUGIN_RULE_EXAMPLE, force, result);
+    await writePluginScaffoldFile(vaultPath, `${root}/search/_example-heading-search.js`, PLUGIN_SEARCH_EXAMPLE, force, result);
+  }
+  return result;
+}
+
+function pluginScaffoldStatus(vaultPath) {
+  const root = join(vaultPath, ".ipa", "plugins");
+  return {
+    root: existsSync(root),
+    jsconfig: existsSync(join(root, "jsconfig.json")),
+    types: existsSync(join(root, "types", "ipa-plugin.d.ts")),
+    rules_dir: existsSync(join(root, "rules")),
+    search_dir: existsSync(join(root, "search"))
+  };
 }
 
 export async function listPlugins(vaultPath) {
@@ -3628,9 +4121,49 @@ async function activeTestsetPath(vaultPath, requested = null) {
   return resolve(vaultPath, ".ipa", "tune", "testsets", "testset.json");
 }
 
+async function writeActiveTestsetConfig(vaultPath, file) {
+  const { config } = await readVaultConfig(vaultPath);
+  const rel = toPosix(relative(vaultPath, file));
+  if (config.test?.file === rel) return false;
+  const configPath = join(vaultPath, ".ipa", "config.yaml");
+  config.test = config.test || {};
+  config.test.file = rel;
+  await mkdir(dirname(configPath), { recursive: true });
+  await writeFile(configPath, dumpYaml(config) + "\n", "utf8");
+  return true;
+}
+
 function normalizeTestsetPayload(payload) {
   const cases = payload.cases ?? payload.queries ?? [];
   return Array.isArray(cases) ? cases : [];
+}
+
+export async function tuneTestsetInit(vaultPath, options = {}) {
+  const { config } = await readVaultConfig(vaultPath);
+  const requested = options.file ?? config.test?.file ?? null;
+  const path = await activeTestsetPath(vaultPath, requested);
+  const rel = toPosix(relative(vaultPath, path));
+  await mkdir(dirname(path), { recursive: true });
+  const exists = existsSync(path);
+  const force = Boolean(options.force);
+  if (!exists || force) {
+    const payload = {
+      cases: [],
+      scenario_cases: []
+    };
+    await writeFile(path, JSON.stringify(payload, null, 2) + "\n", "utf8");
+  }
+  const shouldActivate = Boolean(options.activate) || !config.test?.file;
+  const configUpdated = shouldActivate ? await writeActiveTestsetConfig(vaultPath, path) : false;
+  return {
+    file: rel,
+    active: shouldActivate ? rel : config.test?.file ?? null,
+    created: !exists,
+    updated: exists && force,
+    existing: exists && !force,
+    config_updated: configUpdated,
+    cases: 0
+  };
 }
 
 export async function tuneTestsetList(vaultPath) {
@@ -3706,11 +4239,7 @@ export async function tuneTestsetAdd(vaultPath, options = {}) {
   await writeFile(path, JSON.stringify(payload, null, 2) + "\n", "utf8");
   const { config } = await readVaultConfig(vaultPath);
   if (!config.test?.file) {
-    const configPath = join(vaultPath, ".ipa", "config.yaml");
-    config.test = config.test || {};
-    config.test.file = toPosix(relative(vaultPath, path));
-    await mkdir(dirname(configPath), { recursive: true });
-    await writeFile(configPath, dumpYaml(config) + "\n", "utf8");
+    await writeActiveTestsetConfig(vaultPath, path);
   }
   return {
     file: toPosix(relative(vaultPath, path)),
@@ -3941,11 +4470,18 @@ export async function tuneUse(vaultPath, filename) {
   return { active: filename };
 }
 
-export async function tuneLog(vaultPath) {
+export async function tuneLog(vaultPath, options = {}) {
   const path = join(vaultPath, ".ipa", "tune", "logs", "search-events.jsonl");
-  if (!existsSync(path)) return { events: [] };
-  const events = (await readFile(path, "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
-  return { events };
+  if (!existsSync(path)) return { file: toPosix(relative(vaultPath, path)), count: 0, events: [] };
+  let events = (await readFile(path, "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
+  if (options.query) {
+    const needle = String(options.query).toLowerCase();
+    events = events.filter((event) => String(event.query ?? event.q ?? "").toLowerCase().includes(needle));
+  }
+  if (Number.isFinite(Number(options.limit))) {
+    events = events.slice(Math.max(0, events.length - Number(options.limit)));
+  }
+  return { file: toPosix(relative(vaultPath, path)), count: events.length, events };
 }
 
 function harnessRoot(vaultPath) {
@@ -3977,8 +4513,35 @@ function harnessTargetSpec(target = "codex", options = {}) {
     skillFile: join(home, "skills", "ipa", "SKILL.md"),
     hooksDir: join(home, "hooks"),
     hooksConfig: name === "claude" ? join(home, "settings.json") : join(home, "hooks.json"),
-    localPrompt: name === "claude" ? "CLAUDE.md" : "AGENTS.md"
+    localPrompt: name === "claude" ? "CLAUDE.md" : "AGENTS.md",
+    globalPromptFile: join(home, name === "claude" ? "CLAUDE.md" : "AGENTS.md")
   };
+}
+
+function globalPromptContent(spec) {
+  const tool = spec.name === "claude" ? "Claude Code" : "Codex";
+  return `## IPA CLI — Use it, do not bypass it
+
+This ${tool} environment has the IPA CLI harness installed. Whenever the user's request touches IPA, the harness, a vault, a vault note, inbox capture, note search, validation, formatting, or plugins, you MUST drive the work through the \`ipa\` CLI rather than reading vault files directly. This applies on the very first turn — do not wait for the user to ask again.
+
+Minimum required moves:
+
+\`\`\`bash
+ipa context "<short keyword>" --size medium --format markdown   # bootstrap
+ipa search "<keyword>"                                          # widen when context is narrow
+ipa view "Note Title" --full                                    # read a specific note
+ipa validator                                                   # after editing vault Markdown
+ipa formatter plan --note "Edited Note"
+ipa formatter apply --note "Edited Note"
+ipa inbox add ./draft.md --title "Title"                        # new notes go through inbox
+\`\`\`
+
+Rules:
+
+- Do not skip the bootstrap, even for short questions, when the topic could live in the vault.
+- Pick short keywords or exact note titles — never paste raw file paths or the full user prompt.
+- A single context note is not authoritative for broad questions (system, process, history, tradeoff). Run \`ipa search\` to widen.
+- See the IPA skill at \`~/.${spec.name}/skills/ipa/SKILL.md\` and the vault-local \`${spec.localPrompt}\` for the full workflow.`;
 }
 
 function profileRegistryDisplay() {
@@ -4116,7 +4679,21 @@ ${prefix} view "Note Title" --full
 ${prefix} search "keyword"
 \`\`\`
 
-Start IPA/vault tasks with \`context\` to gather a compact note-centered pack. Use \`view --full\` for selected notes. Use \`search\` only when the topic changes, context is missing, or additional notes may be relevant.
+Start IPA/vault tasks with \`context\` to gather a compact note-centered pack, then use \`search\` proactively for discovery. Do not treat a one-note or narrow context pack as complete when the user asks about a broader topic, history, architecture, tradeoff, or process. Use \`view --full\` for selected notes after search has surfaced the likely candidates.
+
+## Vault Convention And Plugins
+
+Use the vault-local plugin workspace for convention and search behavior:
+
+\`\`\`bash
+${prefix} plugin init
+${prefix} list-rules
+${prefix} plugin validate .ipa/plugins/rules/_example-title-length.js
+${prefix} plugin dry-run rules .ipa/plugins/rules/_example-title-length.js --note "Note Title"
+${prefix} plugin dry-run search .ipa/plugins/search/_example-heading-search.js --query "keyword"
+\`\`\`
+
+When a vault convention needs automation, prefer a vault-local JS rule in \`.ipa/plugins/rules/*.js\` with \`// @ts-check\` and \`import("../types/ipa-plugin").Rule\`. Put vault-specific search boosts in \`.ipa/plugins/search/*.js\`, then verify with \`plugin validate\`, \`plugin dry-run\`, \`list-rules\`, and \`validator\` before relying on it.
 
 ## Safe Writes
 
@@ -4135,7 +4712,8 @@ ${prefix} formatter apply --note "Edited Note"
 \`\`\`
 
 For multiple edited notes, pass the note titles after one \`--note\`, for example:
-\`${prefix} formatter plan --note "Note A" "Note B"\`.
+\`${prefix} formatter plan --note "Note A" "Note B"\` then
+\`${prefix} formatter apply --note "Note A" "Note B"\`.
 `;
 }
 
@@ -4159,11 +4737,31 @@ ${prefix} view "Note Title" --full
 ${prefix} search "keyword"
 ${prefix} validator
 ${prefix} formatter plan --note "Edited Note"
+${prefix} formatter apply --note "Edited Note"
+${prefix} plugin init
+${prefix} list-rules
+${prefix} plugin validate .ipa/plugins/rules/_example-title-length.js
+${prefix} plugin dry-run rules .ipa/plugins/rules/_example-title-length.js --note "Edited Note"
 \`\`\`
 
-Start IPA/vault work with \`${prefix} context "keyword" --size medium --format markdown\`. Use \`search\` only when the topic changes, context is insufficient, or you need discovery beyond the current context.
+Start IPA/vault work with \`${prefix} context "keyword" --size medium --format markdown\`. Treat that context as a bootstrap, not final authority: if it returns only one note, mostly structural metadata, or an ambiguous result, run \`${prefix} search "keyword"\` with one or more focused keywords before deciding what the vault says. Use \`view --full\` only after choosing the likely source notes.
 
-Create new Markdown notes under the configured inbox, or import drafts with \`${prefix} inbox add <file>\`. Existing Markdown notes may be edited in place. After editing vault Markdown, run lint/validation and note-scoped formatter planning before finishing. Formatter commands accept multiple notes as \`${prefix} formatter plan --note "Note A" "Note B"\`.
+## Vault Operation Workflow
+
+- Resolve the active vault/profile with \`${prefix} config show\` when behavior depends on the profile.
+- Use \`${prefix} context\` as a bootstrap, \`${prefix} search\` for discovery, \`${prefix} view --full\` for selected sources, and \`${prefix} traversal\` for ref/root/sibling structure.
+- Create new Markdown notes under the configured inbox, or import drafts with \`${prefix} inbox add <file>\`. Existing Markdown notes may be edited in place.
+- After editing vault Markdown, run lint/validation, inspect the note-scoped formatter plan, then run the matching formatter apply when the plan contains only expected changes. Do not stop at plan-only formatting.
+
+## Convention And JS Rule Workflow
+
+- Treat \`.ipa/config.yaml\` as the vault-local policy layer for mapping, excludes, rule enablement, formatter policy, and search/tune pointers.
+- Run \`${prefix} plugin init\` before authoring rules/search plugins. Harness install/init creates the same scaffold when missing.
+- Implement vault-specific convention checks as \`.ipa/plugins/rules/*.js\` using \`// @ts-check\` and \`import("../types/ipa-plugin").Rule\`; add \`fix\`/\`fixNote\` only when the formatter can safely rewrite the note.
+- Implement vault-specific retrieval boosts as \`.ipa/plugins/search/*.js\` using \`import("../types/ipa-plugin").SearchPlugin\`.
+- Verify plugin work with \`${prefix} plugin validate\`, \`${prefix} plugin dry-run rules ... --note "Note Title"\` or \`${prefix} plugin dry-run search ... --query "keyword"\`, \`${prefix} list-rules\`, \`${prefix} validator\`, and \`${prefix} formatter plan/apply --note ...\`.
+
+Formatter commands accept multiple notes as \`${prefix} formatter plan --note "Note A" "Note B"\` and \`${prefix} formatter apply --note "Note A" "Note B"\`.
 `;
 }
 
@@ -4250,20 +4848,74 @@ if (!allowed) {
 function userPromptNudgeScript(vaultPath, options = {}) {
   return `#!/usr/bin/env node
 // ${HARNESS_MARKER}: IPA UserPromptSubmit context nudge.
+import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 const vaultPath = ${JSON.stringify(vaultPath)};
 const prefix = "ipa";
 
+function inputJson() {
+  try {
+    return JSON.parse(readFileSync(0, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+function firstString(values) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return null;
+}
+
+function recordPromptEvent(input) {
+  const prompt = firstString([
+    input.prompt,
+    input.user_prompt,
+    input.userPrompt,
+    input.message,
+    input.text,
+    input.tool_input?.prompt,
+    input.input?.prompt
+  ]);
+  if (!prompt) return;
+  const path = join(vaultPath, ".ipa", "tune", "logs", "search-events.jsonl");
+  const event = {
+    ts: new Date().toISOString(),
+    event_type: "prompt",
+    source: "harness",
+    query: prompt,
+    prompt,
+    prompt_length: prompt.length
+  };
+  mkdirSync(dirname(path), { recursive: true });
+  appendFileSync(path, JSON.stringify(event) + "\\n", "utf8");
+}
+
+const input = inputJson();
+recordPromptEvent(input);
+
 const lines = [
-  "[IPA CLI]",
-  "Use plain ipa commands; project-local .ipa-profile/.ipa-config can select the vault.",
-  "For a new IPA/vault task, start with a compact context pack. Continue from existing conversation context when it is sufficient.",
-  "Use search only when the topic changed, context is missing, or additional notes may be relevant.",
-  "Do not paste raw file paths or the full user prompt into context. Pick a short keyword or an exact note title.",
-  \`Bootstrap: \${prefix} context "keyword" --size small --format markdown\`,
-  \`Known note: \${prefix} context "Note Title" --by-note --size small --format markdown\`,
-  \`View:      \${prefix} view "Note Title" --full\`,
-  \`Discover:  \${prefix} search "keyword"\`
+  "[IPA CLI — MANDATORY before answering]",
+  "If the user's request mentions IPA, harness, vault, a note, inbox, search, validation, formatting, or anything that could live in the IPA vault, you MUST run an \`ipa\` command BEFORE you answer. This rule is non-optional and applies on the very first turn.",
+  "Triggers (not exhaustive): IPA, harness, install, vault, 노트, 인박스, inbox, validator, formatter, plugin, ipa context, ipa search.",
+  "",
+  "Required workflow:",
+  \`1. Bootstrap: \${prefix} context "keyword" --size medium --format markdown\`,
+  \`2. If the pack is narrow, ambiguous, or one-note, widen with \${prefix} search "keyword"\`,
+  \`3. Open a specific note with \${prefix} view "Note Title" --full\`,
+  \`4. Known note shortcut: \${prefix} context "Note Title" --by-note --size medium --format markdown\`,
+  \`5. After editing vault Markdown: \${prefix} validator then \${prefix} formatter plan --note "Title" then \${prefix} formatter apply --note "Title"\`,
+  \`6. New notes enter via \${prefix} inbox add so the configured inbox is respected.\`,
+  "",
+  "Do NOT:",
+  "- Skip the bootstrap when the task touches the vault — even quick questions count.",
+  "- Use plain ipa commands; project-local .ipa-profile/.ipa-config can select the vault, but always run ipa rather than reading vault files directly.",
+  "- Do not stop after a single markdown context note when the user asks about a system, process, history, tradeoff, or broad topic; use search to widen discovery.",
+  "- Do not paste raw file paths or the full user prompt into context/search. Pick short keywords or exact note titles.",
+  "",
+  "Continue from existing conversation context only when it already covers the topic and likely related notes."
 ];
 
 process.stdout.write(JSON.stringify({
@@ -4313,9 +4965,11 @@ const noteTitle = note.split("/").pop().replace(/\\.md$/i, "");
 const noteArg = JSON.stringify(noteTitle);
 const message = [
   \`[IPA CLI] Vault Markdown changed: \${note}\`,
-  "Before finishing, lint/validate and run a note-scoped format plan:",
+  "Before finishing, validate and complete note-scoped formatting. Run plan first, then apply if the planned changes are expected:",
   \`  \${prefix} validator\`,
   \`  \${prefix} formatter plan --note \${noteArg}\`,
+  \`  \${prefix} formatter apply --note \${noteArg}\`,
+  "Do not stop at formatter plan unless the plan shows unexpected changes that need user review.",
   "For multiple edited notes, use one --note followed by the note titles."
 ].join("\\n");
 
@@ -4343,6 +4997,8 @@ async function installGlobalHarness(vaultPath, spec, mapping, options = {}) {
   addHookCommand(config, "UserPromptSubmit", null, hookCommand(promptPath), null, 5);
   await writeJsonObject(spec.hooksConfig, config);
   files.push(spec.hooksConfig);
+  await upsertManagedBlock(spec.globalPromptFile, globalPromptContent(spec));
+  files.push(spec.globalPromptFile);
   return files;
 }
 
@@ -4359,6 +5015,9 @@ async function uninstallGlobalHarness(spec) {
     for (const path of scripts) removeHookCommand(config, hookCommand(path));
     await writeJsonObject(spec.hooksConfig, config);
     removed.push(spec.hooksConfig);
+  }
+  if (await removeManagedBlock(spec.globalPromptFile)) {
+    removed.push(spec.globalPromptFile);
   }
   return removed;
 }
@@ -4398,7 +5057,8 @@ export async function harnessStatus(vaultPath, options = {}) {
       guard_hook: hasManagedFile(join(spec.hooksDir, "ipa-inbox-guard.mjs")),
       prompt_hook: hasManagedFile(join(spec.hooksDir, "ipa-user-prompt-nudge.mjs")),
       markdown_nudge_hook: hasManagedFile(join(spec.hooksDir, "ipa-md-write-nudge.mjs")),
-      hooks_config: existsSync(spec.hooksConfig)
+      hooks_config: existsSync(spec.hooksConfig),
+      prompt: hasManagedFile(spec.globalPromptFile)
     };
   }
   return {
@@ -4406,6 +5066,7 @@ export async function harnessStatus(vaultPath, options = {}) {
     installed: Object.keys(index.targets ?? {}),
     manifest: existsSync(join(harnessRoot(vaultPath), "manifest.json")) ? ".ipa/harness/manifest.json" : null,
     global,
+    plugin_scaffold: pluginScaffoldStatus(vaultPath),
     guard: await harnessGuardStatus(vaultPath)
   };
 }
@@ -4414,6 +5075,7 @@ export async function harnessInstall(vaultPath, target = "codex", options = {}) 
   const spec = harnessTargetSpec(target, options);
   const name = spec.name;
   const { mapping } = await readVaultConfig(vaultPath);
+  const pluginInitResult = await pluginInit(vaultPath, { examples: true });
   const root = harnessRoot(vaultPath);
   const dir = join(root, name);
   const manifest = {
@@ -4425,7 +5087,14 @@ export async function harnessInstall(vaultPath, target = "codex", options = {}) 
     global: {
       home: `~/.${name}`,
       skill: `~/.${name}/skills/ipa/SKILL.md`,
-      hooks_config: name === "claude" ? "~/.claude/settings.json" : "~/.codex/hooks.json"
+      hooks_config: name === "claude" ? "~/.claude/settings.json" : "~/.codex/hooks.json",
+      prompt: `~/.${name}/${spec.localPrompt}`
+    },
+    plugin_scaffold: {
+      root: ".ipa/plugins",
+      types: ".ipa/plugins/types/ipa-plugin.d.ts",
+      rules: ".ipa/plugins/rules/*.js",
+      search: ".ipa/plugins/search/*.js"
     },
     hooks: {
       guard: {
@@ -4436,7 +5105,7 @@ export async function harnessInstall(vaultPath, target = "codex", options = {}) 
         policy: "nudge the agent to search/view IPA notes before answering vault questions"
       },
       markdown_write_nudge: {
-        policy: "nudge the agent to run validator and note-scoped formatter plan after vault Markdown edits"
+        policy: "nudge the agent to run validator, note-scoped formatter plan, and matching formatter apply after vault Markdown edits"
       }
     }
   };
@@ -4468,6 +5137,7 @@ export async function harnessInstall(vaultPath, target = "codex", options = {}) 
     status: "ok",
     target: name,
     installed: true,
+    plugin_init: pluginInitResult,
     files: [`.ipa/harness/${name}/manifest.json`, `.ipa/harness/${name}/guard.mjs`, ".ipa/harness/manifest.json", spec.localPrompt],
     global_files: globalFiles
   };
@@ -4506,8 +5176,15 @@ export async function harnessDoctor(vaultPath, options = {}) {
     ]) {
       if (!hasManagedFile(file)) issues.push({ severity: "warn", code, target, message: `missing managed hook ${basename(file)}` });
     }
+    if (!hasManagedFile(spec.globalPromptFile)) {
+      issues.push({ severity: "warn", code: "harness.global_prompt_missing", target, message: `missing IPA harness block in ~/.${target}/${spec.localPrompt}` });
+    }
     if (!existsSync(join(vaultPath, entry.local_prompt ?? spec.localPrompt))) {
       issues.push({ severity: "warn", code: "harness.local_prompt_missing", target, message: `missing ${entry.local_prompt ?? spec.localPrompt}` });
+    }
+    const scaffold = pluginScaffoldStatus(vaultPath);
+    if (!scaffold.jsconfig || !scaffold.types || !scaffold.rules_dir || !scaffold.search_dir) {
+      issues.push({ severity: "warn", code: "harness.plugin_scaffold_missing", target, message: "missing .ipa/plugins authoring scaffold; run ipa harness init or ipa plugin init" });
     }
   }
   return {
@@ -4650,8 +5327,103 @@ export async function writeProfileRegistry(registry) {
   return path;
 }
 
+function normalizeProfileName(name) {
+  const text = String(name ?? "").trim();
+  if (!text) throw new Error("profile name is required");
+  if (!/^[A-Za-z0-9_.-]+$/.test(text)) {
+    throw new Error(`invalid profile name: ${name}. Use letters, numbers, dots, dashes, or underscores`);
+  }
+  return text;
+}
+
+function normalizeProfileVaultPath(vaultPath) {
+  const text = String(vaultPath ?? "").trim();
+  if (!text) throw new Error("vault path is required");
+  if (text === "~" || text.startsWith("~/") || isAbsolute(text)) return text;
+  return resolve(text);
+}
+
+function markDefaultProfile(registry, name) {
+  for (const key of Object.keys(registry.profiles ?? {})) {
+    registry.profiles[key].default = key === name;
+  }
+}
+
+function profileMutationResult(registry, name, path, extra = {}) {
+  const profile = registry.profiles[name] ?? {};
+  return {
+    profile: name,
+    vault_path: profile.vault_path,
+    default: profile.default === true,
+    ...extra,
+    path
+  };
+}
+
 export async function listProfiles() {
   return readProfileRegistry();
+}
+
+export async function initProfileRegistry(options = {}) {
+  const name = normalizeProfileName(options.name ?? "ipa");
+  const vaultPath = normalizeProfileVaultPath(options.vault ?? "~/ipa");
+  const registry = await readProfileRegistry();
+  registry.profiles = registry.profiles || {};
+
+  const names = Object.keys(registry.profiles);
+  const existing = registry.profiles[name] ?? null;
+  const force = Boolean(options.force);
+
+  if (names.length && !existing && !force) {
+    throw new Error("profile registry already initialized. Use `ipa profile new NAME VAULT` to add another profile");
+  }
+
+  if (existing && !force) {
+    if (existing.vault_path !== vaultPath) {
+      throw new Error(`profile already exists: ${name}. Use --force to update it`);
+    }
+    return profileMutationResult(registry, name, profileRegistryPath(), {
+      created: false,
+      updated: false
+    });
+  }
+
+  const created = !existing;
+  registry.profiles[name] = {
+    ...(existing ?? {}),
+    vault_path: vaultPath
+  };
+  markDefaultProfile(registry, name);
+  const path = await writeProfileRegistry(registry);
+  return profileMutationResult(registry, name, path, {
+    created,
+    updated: !created
+  });
+}
+
+export async function createProfile(name, vaultPath, options = {}) {
+  const profileName = normalizeProfileName(name);
+  const normalizedVaultPath = normalizeProfileVaultPath(vaultPath);
+  const registry = await readProfileRegistry();
+  registry.profiles = registry.profiles || {};
+
+  const existing = registry.profiles[profileName] ?? null;
+  const force = Boolean(options.force);
+  if (existing && !force) throw new Error(`profile already exists: ${profileName}. Use --force to update it`);
+
+  const hadProfiles = Object.keys(registry.profiles).length > 0;
+  const created = !existing;
+  const shouldDefault = Boolean(options.default) || !hadProfiles || existing?.default === true;
+  registry.profiles[profileName] = {
+    ...(existing ?? {}),
+    vault_path: normalizedVaultPath
+  };
+  if (shouldDefault) markDefaultProfile(registry, profileName);
+  const path = await writeProfileRegistry(registry);
+  return profileMutationResult(registry, profileName, path, {
+    created,
+    updated: !created
+  });
 }
 
 export async function setDefaultProfile(name) {

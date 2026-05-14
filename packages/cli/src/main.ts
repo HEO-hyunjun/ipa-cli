@@ -15,6 +15,7 @@ import {
   contractList,
   contractValidate,
   contractValidateOutput,
+  createProfile,
   doctor,
   formatVault,
   harnessDoctor,
@@ -25,6 +26,7 @@ import {
   harnessUninstall,
   inboxAdd,
   inboxTriage,
+  initProfileRegistry,
   linkApply,
   linkPlan,
   listPlugins,
@@ -34,6 +36,7 @@ import {
   moveNote,
   pluginDoctor,
   pluginDryRun,
+  pluginInit,
   rebuildCache,
   refactorVault,
   renameNote,
@@ -51,6 +54,7 @@ import {
   tuneRun,
   tuneTestsetAdd,
   tuneTestsetDraft,
+  tuneTestsetInit,
   tuneTestsetList,
   tuneTestsetShow,
   tuneTestsetValidate,
@@ -89,7 +93,7 @@ const COMMAND_GROUPS = [
       ["engine", "Inspect and run search engine channels"],
       ["tune", "Evaluate and run the tpe-lite optimizer"],
       ["cache", "Rebuild, inspect, and diagnose vault cache"],
-      ["plugin", "List, validate, and dry-run vault plugins"],
+      ["plugin", "Scaffold, list, validate, and dry-run vault plugins"],
       ["contract", "Validate runtime contract fixtures"],
       ["harness", "Install, uninstall, and inspect AI harness hooks"]
     ]
@@ -180,11 +184,13 @@ const COMMAND_HELP = {
     ]
   }),
   harness: formatDetailedHelp({
-    usage: "ipa [OPTIONS] harness status|install|uninstall|doctor|guard",
-    summary: "Install and inspect AI harness skills/hooks.",
+    usage: "ipa [OPTIONS] harness status|init|install|uninstall|doctor|guard",
+    summary: "Install and inspect AI harness skills, hooks, vault prompt blocks, and plugin scaffold.",
     commands: [
       ["ipa harness status", "Show installed target state"],
-      ["ipa harness install codex", "Install Codex skill/hooks and vault prompt block"],
+      ["ipa harness init codex", "Initialize Codex skill/hooks, vault prompt block, and plugin scaffold"],
+      ["ipa harness install codex", "Install Codex skill/hooks, vault prompt block, and plugin scaffold"],
+      ["ipa harness install claude", "Install Claude Code skill/hooks, vault prompt block, and plugin scaffold"],
       ["ipa harness uninstall codex", "Remove Codex harness files"],
       ["ipa harness doctor", "Validate installed harness files"],
       ["ipa harness guard check PATH --action create", "Check inbox-only write policy"]
@@ -209,23 +215,36 @@ const COMMAND_HELP = {
     ]
   }),
   plugin: formatDetailedHelp({
-    usage: "ipa [OPTIONS] plugin list|doctor|validate|dry-run [ARGS...]",
-    summary: "Inspect and test vault-local JS plugins.",
+    usage: "ipa [OPTIONS] plugin init|list|doctor|validate|dry-run [ARGS...]",
+    summary: "Create, inspect, and test vault-local JS plugins.",
     commands: [
+      ["ipa plugin init", "Create .ipa/plugins authoring structure with JS types and disabled examples"],
       ["ipa plugin list", "List enabled plugins"],
       ["ipa plugin doctor", "Validate all plugin contracts"],
       ["ipa plugin validate .ipa/plugins/search/x.js", "Validate one plugin file"],
       ["ipa plugin dry-run search .ipa/plugins/search/x.js --query Alpha", "Run a search plugin without installing changes"],
       ["ipa plugin dry-run rules .ipa/plugins/rules/x.js --note Alpha", "Preview rule issues and fixes"]
+    ],
+    options: [
+      ["init --force", "Overwrite scaffold files that already exist"],
+      ["init --no-examples", "Skip disabled example plugin files"]
     ]
   }),
   profile: formatDetailedHelp({
-    usage: "ipa profile list|current|use NAME",
-    summary: "Inspect and update the machine-local profile registry.",
+    usage: "ipa profile init|new|list|current|use [ARGS...]",
+    summary: "Create, inspect, and update the machine-local profile registry.",
     commands: [
+      ["ipa profile init --vault ~/ipa", "Initialize ~/.config/ipa/profile.yaml with the default ipa profile"],
+      ["ipa profile new work ~/work/IPA --default", "Add or update a named profile and make it default"],
       ["ipa profile list", "List configured profiles"],
       ["ipa profile current", "Show the default profile"],
       ["ipa profile use work", "Mark a profile as default"]
+    ],
+    options: [
+      ["init --name NAME", "Profile name to initialize; default ipa"],
+      ["init --vault PATH", "Vault path to initialize; default ~/ipa"],
+      ["new --default", "Mark the new or updated profile as default"],
+      ["init/new --force", "Update an existing profile instead of failing"]
     ]
   }),
   refactor: formatDetailedHelp({
@@ -383,6 +402,8 @@ function formatTuneHelp() {
       ["ipa tune use FILE", "Activate an existing tune result"],
       ["ipa tune analyze", "Inspect threshold candidates and target scores"],
       ["ipa tune replay [FILE]", "Replay saved trial history against the current vault"],
+      ["ipa tune log", "Show recorded search events"],
+      ["ipa tune testset init", "Create the vault-local testset file and configure test.file"],
       ["ipa tune testset list", "List vault-local testsets"],
       ["ipa tune testset show", "Show the active testset"],
       ["ipa tune testset validate", "Validate testset targets"],
@@ -404,6 +425,10 @@ function formatTuneHelp() {
     "",
     "  test:",
     "    file: .ipa/tune/testsets/testset.json",
+    "",
+    styleSection("Search logging:"),
+    "  Set IPA_SEARCH_LOG=1 when running ipa search to append JSONL events under .ipa/tune/logs/search-events.jsonl.",
+    "  Use `ipa tune log` to inspect them and `ipa tune testset draft --file NAME` to draft test cases.",
     "",
     styleSection("Progress:"),
     "  Long runs print trial progress to stderr: completed/trials, percent, current loss, best loss, elapsed, and ETA.",
@@ -453,10 +478,13 @@ function render(payload) {
   if (payload.optimizer && payload.best) return renderTuneRun(payload);
   if (payload.thresholds && payload.target_scores) return renderTuneAnalyze(payload);
   if (Object.hasOwn(payload, "replayed")) return renderTuneReplay(payload);
+  if (payload.events) return renderTuneLog(payload);
+  if (payload.file && Object.hasOwn(payload, "config_updated") && Object.hasOwn(payload, "created")) return renderKeyValues("Tune testset", payload);
   if (payload.testsets) return renderTableReport("Tune testsets", ["Active", "File"], payload.testsets.map((item) => [payload.active === item ? "yes" : "", item]));
   if (Object.hasOwn(payload, "allowed")) return renderKeyValues("Harness guard", payload);
   if (payload.installed && payload.guard) return renderHarnessStatus(payload);
   if (payload.target && Object.hasOwn(payload, "installed") && (payload.files || payload.removed)) return renderHarnessChange(payload);
+  if (payload.plugin_root && payload.created && payload.skipped) return renderPluginInit(payload);
   if (payload.issues) return renderIssues(payload);
   if (payload.plugins) return renderPlugins(payload);
   if (payload.paths || payload.tree || payload.roots || payload.siblings) return renderTraversal(payload);
@@ -464,10 +492,11 @@ function render(payload) {
   if (payload.channels) return renderChannels(payload.channels);
   if (payload.rules) return renderRules(payload.rules);
   if (payload.refactors) return renderRefactors(payload.refactors);
+  if (payload.profile !== undefined && payload.vault_path && Object.hasOwn(payload, "created")) return renderKeyValues("Profile", payload);
   if (payload.profile !== undefined && payload.vault_path) return renderKeyValues("Active config", payload);
   if (payload.status && payload.checks) return renderDoctor(payload);
   if (payload.suggestions) return renderTableReport("Link suggestions", ["Note", "Target", "Reason"], payload.suggestions.map((item) => [item.note, item.target, item.reason]));
-  if (payload.changes) return renderTableReport("Planned changes", ["Note", "Path", "Target"], payload.changes.map((item) => [item.note ?? "-", item.path ?? "-", item.target ?? item.to ?? "-"]));
+  if (Array.isArray(payload.changes)) return renderTableReport("Planned changes", ["Note", "Path", "Target"], payload.changes.map((item) => [item.note ?? "-", item.path ?? "-", item.target ?? item.to ?? "-"]));
   return JSON.stringify(payload, null, 2);
 }
 
@@ -574,6 +603,17 @@ function renderTuneReplay(payload) {
   return lines.join("\n");
 }
 
+function renderTuneLog(payload) {
+  if (!payload.events?.length) return `${styleTitle("Tune search log")}\n\n${styleWarn("No search events.")}`;
+  return renderTableReport("Tune search log", ["Time", "Type", "Query", "Top result", "Count"], payload.events.map((event) => [
+    event.ts ?? event.time ?? "-",
+    event.event_type ?? event.type ?? "search",
+    event.query ?? event.q ?? "-",
+    event.results?.[0]?.note ?? event.target ?? "-",
+    event.count ?? event.results?.length ?? "-"
+  ]));
+}
+
 function renderIssues(payload) {
   const title = payload.summary?.patches !== undefined ? "Formatter report" : "Issues";
   const lines = [styleTitle(title)];
@@ -600,6 +640,26 @@ function renderIssues(payload) {
 function renderPlugins(payload) {
   if (!payload.plugins.length) return `${styleTitle("Plugins")}\n\n${styleWarn("No enabled plugins.")}`;
   return renderTableReport("Plugins", ["Kind", "Path"], payload.plugins.map((item) => [item.kind, item.path]));
+}
+
+function renderPluginInit(payload) {
+  const lines = [
+    styleTitle("Plugin scaffold"),
+    "",
+    formatRows([
+      ["root", payload.plugin_root],
+      ["examples", payload.examples ? "yes" : "no"]
+    ])
+  ];
+  for (const [label, items] of [
+    ["Created", payload.created],
+    ["Updated", payload.updated],
+    ["Existing", payload.existing],
+    ["Skipped", payload.skipped]
+  ]) {
+    if (items?.length) lines.push("", `${label}:`, ...items.map((item) => `  ${item}`));
+  }
+  return lines.join("\n");
 }
 
 function renderTraversal(payload) {
@@ -726,6 +786,7 @@ function renderHarnessStatus(payload) {
     formatRows([
       ["installed", payload.installed.length ? payload.installed.join(", ") : "-"],
       ["manifest", payload.manifest ?? "-"],
+      ["plugin scaffold", payload.plugin_scaffold?.types ? "yes" : "no"],
       ["guard policy", payload.guard?.policy ?? "-"],
       ["inbox", payload.guard?.inbox_dir ?? "-"],
       ["archive", payload.guard?.archive_dir ?? "-"]
@@ -749,6 +810,12 @@ function renderHarnessChange(payload) {
     `Status: ${payload.installed ? styleGood("installed") : styleWarn("removed")}`
   ];
   if (payload.files?.length) lines.push("", "Vault-local files:", ...payload.files.map((file) => `  ${file}`));
+  if (payload.plugin_init) {
+    const created = payload.plugin_init.created?.length ?? 0;
+    const existing = payload.plugin_init.existing?.length ?? 0;
+    const skipped = payload.plugin_init.skipped?.length ?? 0;
+    lines.push("", `Plugin scaffold: ${created} created, ${existing} existing, ${skipped} skipped`);
+  }
   if (payload.global_files?.length) lines.push("", "Global files:", ...payload.global_files.map((file) => `  ${file}`));
   if (payload.removed?.length) lines.push("", "Removed vault-local files:", ...payload.removed.map((file) => `  ${file}`));
   if (payload.global_removed?.length) lines.push("", "Removed global files:", ...payload.global_removed.map((file) => `  ${file}`));
@@ -1007,6 +1074,30 @@ function buildProgram() {
 
   const profileCommand = setHelp(program.command("profile"), "profile");
   profileCommand
+    .command("init")
+    .option("--name <name>", "Profile name", "ipa")
+    .option("--vault <path>", "Vault path", "~/ipa")
+    .option("--force", "Update an existing initialized profile")
+    .action(async (options) => {
+      print(await initProfileRegistry({
+        name: options.name,
+        vault: program.opts().vault ?? options.vault,
+        force: Boolean(options.force)
+      }), jsonOutput(program));
+    });
+  profileCommand
+    .command("new")
+    .argument("<name>", "Profile name")
+    .argument("<vault>", "Vault path")
+    .option("--default", "Mark this profile as default")
+    .option("--force", "Update the profile if it already exists")
+    .action(async (name, vault, options) => {
+      print(await createProfile(name, vault, {
+        default: Boolean(options.default),
+        force: Boolean(options.force)
+      }), jsonOutput(program));
+    });
+  profileCommand
     .command("list")
     .action(async () => {
       print(await listProfiles(), jsonOutput(program));
@@ -1096,6 +1187,14 @@ function buildProgram() {
     .command("status")
     .action(async () => {
       await withVault(globalOptions(program), async (vault, resolved) => print(await harnessStatus(vault, {
+        profile: resolved.profile
+      }), jsonOutput(program)));
+    });
+  harnessCommand
+    .command("init")
+    .argument("[target]", "Harness target", "codex")
+    .action(async (target) => {
+      await withVault(globalOptions(program), async (vault, resolved) => print(await harnessInstall(vault, target, {
         profile: resolved.profile
       }), jsonOutput(program)));
     });
@@ -1220,6 +1319,16 @@ function buildProgram() {
     });
 
   const pluginCommand = setHelp(program.command("plugin"), "plugin");
+  pluginCommand
+    .command("init")
+    .option("--force", "Overwrite existing scaffold files")
+    .option("--no-examples", "Skip disabled example plugin files")
+    .action(async (options) => {
+      await withVault(globalOptions(program), async (vault) => print(await pluginInit(vault, {
+        force: Boolean(options.force),
+        examples: options.examples
+      }), jsonOutput(program)));
+    });
   pluginCommand.command("list").action(async () => {
     await withVault(globalOptions(program), async (vault) => print(await listPlugins(vault), jsonOutput(program)));
   });
@@ -1318,9 +1427,16 @@ function buildProgram() {
         hit: options.miss ? false : true
       }), jsonOutput(program)));
     });
-  tuneCommand.command("log").action(async () => {
-    await withVault(globalOptions(program), async (vault) => print(await tuneLog(vault), jsonOutput(program)));
-  });
+  tuneCommand
+    .command("log")
+    .option("--limit <number>", "Show only the newest N events")
+    .option("--query <query>", "Filter events by query substring")
+    .action(async (options) => {
+      await withVault(globalOptions(program), async (vault) => print(await tuneLog(vault, {
+        limit: optionNumber(options.limit),
+        query: options.query
+      }), jsonOutput(program)));
+    });
   const testsetCommand = tuneCommand.command("testset");
   testsetCommand.action(async () => {
     await withVault(globalOptions(program), async (vault) => print(await tuneTestsetList(vault), jsonOutput(program)));
@@ -1328,6 +1444,18 @@ function buildProgram() {
   testsetCommand.command("list").action(async () => {
     await withVault(globalOptions(program), async (vault) => print(await tuneTestsetList(vault), jsonOutput(program)));
   });
+  testsetCommand
+    .command("init")
+    .option("--file <file>", "Target testset file")
+    .option("--force", "Overwrite an existing testset file")
+    .option("--activate", "Set this file as test.file even when another testset is active")
+    .action(async (options) => {
+      await withVault(globalOptions(program), async (vault) => print(await tuneTestsetInit(vault, {
+        file: options.file,
+        force: Boolean(options.force),
+        activate: Boolean(options.activate)
+      }), jsonOutput(program)));
+    });
   testsetCommand
     .command("show")
     .argument("[file]", "Testset file")

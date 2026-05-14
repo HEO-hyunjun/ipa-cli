@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { cp, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -35,10 +35,12 @@ import {
   tuneAnalyze,
   tuneEval,
   tuneLabel,
+  tuneLog,
   tuneReplay,
   tuneRun,
   tuneTestsetAdd,
   tuneTestsetDraft,
+  tuneTestsetInit,
   tuneTestsetList,
   tuneTestsetShow,
   tuneTestsetValidate,
@@ -172,6 +174,55 @@ test("search, view, traversal and context work in the JS runtime", async () => {
   assert.ok(context.notes[0].backlinks.some((note) => note.id === "Beta"));
   assert.ok(context.notes[0].siblings.some((note) => note.id === "Beta"));
   assert.deepEqual(context.edges.Alpha, ["🔖 Topic Index"]);
+  assert.ok(context.next_commands.includes('ipa search "Alpha"'));
+});
+
+test("view uses a fresh note cache and falls back after cache stales", async () => {
+  const vault = await fixtureVault();
+  await rebuildCache(vault);
+  const betaPath = join(vault, "00 Inbox", "Beta.md");
+
+  await chmod(betaPath, 0o000);
+  try {
+    const cached = await viewNote(vault, "Alpha", { full: true });
+    assert.match(cached, /연결: ↗ outlinks 0  ↩ backlinks 2  ⇄ siblings 1/);
+  } finally {
+    await chmod(betaPath, 0o600);
+  }
+
+  await writeFile(
+    betaPath,
+    `---\ndate_created: 2026/05/10 (Sun) 00:00:00\ndate_modified: 2026/05/10 (Sun) 00:00:00\nref:\n  - "[[🔖 Topic Index]]"\nobsidianUIMode: preview\ntags:\n  - note\ntype: note\n---\n# Beta\n\nBeta no longer links back.\n`,
+    "utf8"
+  );
+  const staleFallback = await viewNote(vault, "Alpha", { full: true });
+  assert.match(staleFallback, /연결: ↗ outlinks 0  ↩ backlinks 1  ⇄ siblings 1/);
+  const status = await cacheStatus(vault);
+  assert.deepEqual(status.stale, []);
+  assert.equal(status.manifest.rebuild_mode, "incremental");
+  assert.equal(status.manifest.changes.changed, 1);
+});
+
+test("cache rebuild updates changed notes without reparsing unchanged files", async () => {
+  const vault = await fixtureVault();
+  await rebuildCache(vault);
+  const alphaPath = join(vault, "00 Inbox", "Alpha.md");
+  const betaPath = join(vault, "00 Inbox", "Beta.md");
+  await writeFile(
+    betaPath,
+    `---\ndate_created: 2026/05/10 (Sun) 00:00:00\ndate_modified: 2026/05/10 (Sun) 00:00:00\nref:\n  - "[[🔖 Topic Index]]"\nobsidianUIMode: preview\ntags:\n  - note\ntype: note\n---\n# Beta\n\nBeta changed after cache build.\n`,
+    "utf8"
+  );
+
+  await chmod(alphaPath, 0o000);
+  try {
+    const result = await rebuildCache(vault);
+    assert.equal(result.mode, "incremental");
+    assert.deepEqual(result.cache_changes, { added: 0, changed: 1, deleted: 0 });
+    assert.deepEqual((await cacheStatus(vault)).stale, []);
+  } finally {
+    await chmod(alphaPath, 0o600);
+  }
 });
 
 test("note-name search and lookup ignore emoji markers but preserve display names", async () => {
@@ -508,6 +559,12 @@ test("tune analyze, replay and testset commands are functional", async () => {
   assert.equal(added.cases, 4);
   assert.equal((await tuneTestsetShow(vault)).queries, 4);
 
+  await searchVault(vault, "Alpha", { logSearch: true });
+  const log = await tuneLog(vault);
+  assert.equal(log.count, 1);
+  assert.equal(log.events[0].query, "Alpha");
+  assert.equal(log.events[0].results[0].note, "Alpha");
+
   assert.equal((await tuneLabel(vault, { query: "Alpha", target: "Alpha" })).count, 1);
   assert.equal((await tuneLabel(vault)).labels[0].target, "Alpha");
   assert.equal((await tuneTestsetDraft(vault)).cases, 0);
@@ -523,6 +580,18 @@ test("tune defaults require a vault-local testset instead of a sample convention
 
   await assert.rejects(() => tuneEval(vault), /tune testset not configured/);
   await assert.rejects(() => tuneRun(vault, { trials: 1 }), /tune testset not configured/);
+
+  const init = await tuneTestsetInit(vault);
+  assert.equal(init.file, ".ipa/tune/testsets/testset.json");
+  assert.equal(init.created, true);
+  assert.equal(init.config_updated, true);
+  assert.deepEqual(JSON.parse(await readFile(join(vault, ".ipa", "tune", "testsets", "testset.json"), "utf8")), {
+    cases: [],
+    scenario_cases: []
+  });
+  assert.equal((await tuneTestsetList(vault)).active, ".ipa/tune/testsets/testset.json");
+  assert.equal((await tuneTestsetValidate(vault)).status, "ok");
+  assert.equal((await tuneEval(vault)).total, 0);
 });
 
 test("activated tune results are applied to search defaults", async () => {
@@ -555,20 +624,34 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   assert.deepEqual((await harnessStatus(vault, options)).installed, []);
   const install = await harnessInstall(vault, "codex", options);
   assert.equal(install.installed, true);
+  assert.ok(install.plugin_init.created.includes(".ipa/plugins/jsconfig.json"));
+  assert.ok(install.plugin_init.created.includes(".ipa/plugins/types/ipa-plugin.d.ts"));
+  assert.match(await readFile(join(vault, ".ipa", "plugins", "rules", "_example-title-length.js"), "utf8"), /@ts-check/);
   assert.ok(install.global_files.some((file) => file.endsWith(".codex/skills/ipa/SKILL.md")));
-  assert.deepEqual((await harnessStatus(vault, options)).installed, ["codex"]);
+  const status = await harnessStatus(vault, options);
+  assert.deepEqual(status.installed, ["codex"]);
+  assert.equal(status.plugin_scaffold.types, true);
   assert.equal((await harnessDoctor(vault, options)).status, "ok");
   const skill = await readFile(join(home, ".codex", "skills", "ipa", "SKILL.md"), "utf8");
   assert.ok(skill.startsWith("---\nname: ipa\n"), "skill YAML frontmatter must be first");
   assert.match(skill, /ipa context "keyword" --size medium --format markdown/);
-  assert.match(skill, /Use `search` only when the topic changes/);
+  assert.match(skill, /use `search` proactively for discovery/);
+  assert.doesNotMatch(skill, /Use `search` only when/);
   assert.doesNotMatch(skill, /ipa --profile ipa-test search/);
   assert.match(skill, /formatter plan --note "Note A" "Note B"/);
+  assert.match(skill, /formatter apply --note "Note A" "Note B"/);
   assert.match(await readFile(join(home, ".codex", "hooks", "ipa-inbox-guard.mjs"), "utf8"), /shared IPA inbox creation guard/);
-  assert.match(await readFile(join(home, ".codex", "hooks", "ipa-md-write-nudge.mjs"), "utf8"), /note-scoped format plan/);
+  const markdownNudge = await readFile(join(home, ".codex", "hooks", "ipa-md-write-nudge.mjs"), "utf8");
+  assert.match(markdownNudge, /formatter apply --note/);
+  assert.match(markdownNudge, /Do not stop at formatter plan/);
   const promptHook = join(home, ".codex", "hooks", "ipa-user-prompt-nudge.mjs");
   assert.match(await readFile(promptHook, "utf8"), /context "Note Title" --by-note/);
-  assert.match(await readFile(join(vault, "AGENTS.md"), "utf8"), /IPA CLI Harness/);
+  const agentsPrompt = await readFile(join(vault, "AGENTS.md"), "utf8");
+  assert.match(agentsPrompt, /IPA CLI Harness/);
+  assert.match(agentsPrompt, /Vault Operation Workflow/);
+  assert.match(agentsPrompt, /Convention And JS Rule Workflow/);
+  assert.match(agentsPrompt, /plugin dry-run search/);
+  assert.match(agentsPrompt, /ipa config show/);
   const hooks = await readFile(join(home, ".codex", "hooks.json"), "utf8");
   assert.match(hooks, /ipa-inbox-guard\.mjs/);
   assert.match(hooks, /ipa-user-prompt-nudge\.mjs/);
@@ -579,12 +662,18 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   });
   assert.equal(promptNudge.status, 0);
   const promptContext = JSON.parse(promptNudge.stdout).hookSpecificOutput.additionalContext;
-  assert.match(promptContext, /ipa context "keyword" --size small --format markdown/);
-  assert.match(promptContext, /Use search only when the topic changed/);
+  assert.match(promptContext, /ipa context "keyword" --size medium --format markdown/);
+  assert.match(promptContext, /ipa context "Note Title" --by-note --size medium --format markdown/);
+  assert.match(promptContext, /use search to widen discovery/);
+  assert.match(promptContext, /Do not stop after a single markdown context note/);
   assert.match(promptContext, /Do not paste raw file paths/);
   assert.doesNotMatch(promptContext, /Downloads/);
   assert.doesNotMatch(promptContext, /sales_graph/);
   assert.doesNotMatch(promptContext, /Possible related notes/);
+  const promptLog = await tuneLog(vault);
+  assert.equal(promptLog.count, 1);
+  assert.equal(promptLog.events[0].event_type, "prompt");
+  assert.match(promptLog.events[0].prompt, /sales_graph/);
   const guardScript = join(home, ".codex", "hooks", "ipa-inbox-guard.mjs");
   const blocked = spawnSync(process.execPath, [guardScript], {
     input: JSON.stringify({ tool_name: "Write", tool_input: { file_path: join(vault, "02 Archive", "New.md") } }),
@@ -603,6 +692,8 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   });
   assert.equal(nudge.status, 0);
   assert.match(nudge.stdout, /formatter plan --note \\"Alpha\\"/);
+  assert.match(nudge.stdout, /formatter apply --note \\"Alpha\\"/);
+  assert.match(nudge.stdout, /Do not stop at formatter plan/);
 
   const claudeInstall = await harnessInstall(vault, "claude", options);
   assert.equal(claudeInstall.installed, true);

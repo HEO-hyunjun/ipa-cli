@@ -24,6 +24,18 @@ Surface:
 IPA CLI is currently installed from this local JS/TS workspace. The package is
 not published to npm yet.
 
+Recommended local install:
+
+```sh
+scripts/install.sh
+```
+
+The script checks for Node/npm/pnpm, installs workspace dependencies, builds
+`packages/*/dist`, links `ipa` into `~/.local/bin`, and can add that directory
+to your zsh/bash PATH.
+
+Equivalent manual install:
+
 ```sh
 pnpm install           # workspace install
 pnpm run build         # build packages/*/dist
@@ -53,15 +65,11 @@ The CLI entrypoint is `ipa` via `@ipa/cli`
 ## Quickstart
 
 ```sh
-# Register a default profile. `~` is expanded, but absolute paths are easiest
-# to audit across machines.
-mkdir -p ~/.config/ipa
-cat > ~/.config/ipa/profile.yaml <<'YAML'
-profiles:
-  default:
-    vault_path: /Users/mac/Documents/workspace/sync/IPA
-    default: true
-YAML
+# Register a default profile. `~` is expanded at runtime.
+ipa profile init --vault ~/ipa
+
+# Add another profile and make it the default.
+ipa profile new work /Users/mac/Documents/workspace/sync/IPA --default
 
 ipa profile current
 
@@ -89,14 +97,16 @@ ipa tune use 2026-05-04T09-12-44.json
 Optional AI harness install:
 
 ```sh
+ipa harness init codex
 ipa harness install codex
 ipa harness install claude
 ipa harness doctor
 ```
 
-Harness install adds user-global IPA skills/hooks for Codex or Claude, plus
-vault-local `AGENTS.md` / `CLAUDE.md` guidance blocks and `.ipa/harness/*`
-metadata.
+`harness init` is an alias for `harness install`. Harness install/init adds
+user-global IPA skills/hooks for Codex or Claude, vault-local `AGENTS.md` /
+`CLAUDE.md` guidance blocks, `.ipa/harness/*` metadata, and the `.ipa/plugins`
+JS authoring scaffold used for convention/search plugins.
 
 ## Vault-local plugins
 
@@ -233,6 +243,25 @@ copy the directory and read [`examples/sample_profile/README.md`](examples/sampl
 
 ## Authoring
 
+Initialize the vault-local plugin workspace first:
+
+```sh
+ipa plugin init
+```
+
+This creates an IDE-friendly JavaScript authoring scaffold:
+
+```text
+{vault}/.ipa/plugins/
+  jsconfig.json
+  types/ipa-plugin.d.ts
+  rules/_example-title-length.js
+  search/_example-heading-search.js
+```
+
+Example files start with `_`, so IPA ignores them until you rename or copy
+them to a non-underscore filename.
+
 ### Convention rule
 
 Builtin validation is limited to IPA concepts and configured field/folder
@@ -242,6 +271,9 @@ in vault-local rule plugins. A rule can expose `check()` for validator output,
 
 ```js
 // {vault}/.ipa/plugins/rules/short-note-title.js
+// @ts-check
+
+/** @type {import("../types/ipa-plugin").Rule[]} */
 export const rules = [{
   code: "sample.short_note_title",
   severity: "info",
@@ -258,6 +290,9 @@ export const rules = [{
 
 ```js
 // {vault}/.ipa/plugins/search/heading-match.js
+// @ts-check
+
+/** @type {import("../types/ipa-plugin").SearchPlugin} */
 export async function search(query, notes) {
   const q = query.trim().toLowerCase();
   if (!q) return [];
@@ -300,7 +335,8 @@ Useful subcommands:
 | `ipa tune` (run, with optional `--apply`) | Run tuning and save the best result JSON |
 | `ipa tune analyze` | Threshold distribution diagnostics |
 | `ipa tune replay [history.jsonl|result.json]` | Recompute trial losses against the current vault/testset |
-| `ipa tune testset list/show/validate/draft/add` | Inspect, validate, draft, or extend vault-local testsets |
+| `ipa tune log` | Inspect recorded search events |
+| `ipa tune testset init/list/show/validate/draft/add` | Create, inspect, validate, draft, or extend vault-local testsets |
 | `ipa tune label [--query Q --target NOTE]` | Record or list labelled query outcomes |
 | `ipa tune list` | History (newest first), ★ active marker |
 | `ipa tune use <filename>` | Flip the pointer; rollback to a past result |
@@ -312,11 +348,22 @@ vault-local testset declared at `.ipa/config.yaml` `test.file`; the bundled
 `ipa-cli-core` pack is a sample fixture pack and is only used when explicitly
 requested.
 
+For tune-data collection, run searches with logging enabled:
+
+```sh
+IPA_SEARCH_LOG=1 ipa search "keyword"
+ipa tune log
+ipa tune testset draft --file testset.json
+```
+
+When the Codex or Claude harness is installed, the `UserPromptSubmit` hook also
+records user prompt events in the same JSONL log with `event_type: "prompt"`.
+
 ## Harness
 
 `ipa harness` manages both user-global AI harness files and vault-local
 metadata under `.ipa/harness/`. `install <target>` supports `codex` and
-`claude`.
+`claude`; `init <target>` is the same bootstrap command.
 
 For the selected target, install writes:
 
@@ -328,20 +375,33 @@ For the selected target, install writes:
 - vault-local manifest and guard helper under `.ipa/harness/<target>/`
 - vault-local system prompt block in `AGENTS.md` for Codex or `CLAUDE.md`
   for Claude
+- vault-local `.ipa/plugins` scaffold with JS types and disabled rule/search
+  examples
 
 The built-in guard policy is intentionally small: new Markdown files must be
 created under the configured inbox folder, while existing Markdown edits and
 non-Markdown files are allowed. This supports editor/agent hooks without
 hard-coding one user's vault naming convention.
 
-Harness prompts prefer `ipa context "keyword" --size small|medium --format
-markdown` for the initial compact note pack. `ipa view "Note Title" --full`
-is for selected note inspection, and `ipa search "keyword"` is for discovery
-when the topic changes or the current context is insufficient.
+Harness prompts use `ipa context "keyword" --size small|medium --format
+markdown` as the initial compact note pack. Treat that pack as a bootstrap:
+if it is narrow, ambiguous, or only one note, use `ipa search "keyword"` to
+surface adjacent candidates before deciding what the vault says.
+`ipa view "Note Title" --full` is for selected note inspection after the
+likely source notes are identified.
 
-The post-write nudge hook does not format automatically. It reminds the agent
-to run `ipa validator` and a note-scoped
-`ipa formatter plan --note "Edited Note"` after vault Markdown edits.
+The vault-local prompt also describes the operational workflow for profile
+resolution, note discovery, safe writes, convention checks, formatter apply,
+and vault-local JS authoring. For vault-specific convention behavior, create or
+adjust `.ipa/plugins/rules/*.js`, verify it with `ipa plugin validate`,
+`ipa plugin dry-run rules ... --note "Note Title"`, `ipa list-rules`,
+`ipa validator`, and then run the formatter plan/apply loop. For retrieval
+behavior, use `.ipa/plugins/search/*.js` and `ipa plugin dry-run search`.
+
+The post-write nudge hook does not format automatically, but it makes apply the
+expected completion path: run `ipa validator`, inspect the note-scoped
+`ipa formatter plan --note "Edited Note"`, then run the matching
+`ipa formatter apply --note "Edited Note"` when the plan is expected.
 
 ## Vault skill compatibility
 

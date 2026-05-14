@@ -8,6 +8,7 @@
     "ipa": "packages/cli/dist/main.js"
   },
   "scripts": {
+    "install:local": "bash scripts/install.sh",
     "build": "node scripts/build.mjs",
     "lint": "node scripts/lint.mjs",
     "test": "node scripts/build.mjs && node --test packages/core/tests/*.test.mjs packages/cli/tests/*.test.mjs",
