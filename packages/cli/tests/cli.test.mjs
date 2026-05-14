@@ -49,7 +49,7 @@ function runRaw(env, args) {
 }
 
 test("CLI help and key smoke commands run through ipa-test profile", async () => {
-  const { env } = await fixtureProfile();
+  const { vault, env } = await fixtureProfile();
   const help = run(env, ["--help"]);
   assert.match(help, /Usage: ipa/);
   assert.match(help, /Core commands:/);
@@ -63,6 +63,10 @@ test("CLI help and key smoke commands run through ipa-test profile", async () =>
   const rules = run(env, ["--profile", "ipa-test", "list-rules"]);
   assert.match(rules, /validator rules \(15\)/);
   assert.match(rules, /ipa\.link\.wikilink_target_missing/);
+  await writeFile(join(vault, "00 Inbox", "Broken.md"), "# Broken\n", "utf8");
+  const validator = run(env, ["--profile", "ipa-test", "validator"]);
+  assert.match(validator, /Severity\s+Code\s+Note\s+Path\s+Message/);
+  assert.match(validator, /00 Inbox\/Broken\.md/);
   const refactors = run(env, ["--profile", "ipa-test", "list-refactors"]);
   assert.match(refactors, /refactor commands \(7\)/);
   assert.match(refactors, /wikilink-replace\s+본문 wikilink 치환/);
@@ -89,11 +93,25 @@ test("CLI help and key smoke commands run through ipa-test profile", async () =>
   assert.ok(Object.keys(context.edges).length < 6);
   const humanContext = run(env, ["--profile", "ipa-test", "context", "Alpha", "--by-note"]);
   assert.match(humanContext, /Context/);
-  assert.match(humanContext, /Alpha\s+note\s+00 Inbox\/Alpha\.md/);
-  assert.match(humanContext, /backlinks:/);
+  assert.match(humanContext, /Search results/);
+  assert.match(humanContext, /Alpha\s+inbox\s+00 Inbox\/Alpha\.md\s+🔖 Topic Index \[project\]/);
+  assert.match(humanContext, /Ref distribution/);
+  assert.match(humanContext, /Tag distribution/);
+  assert.match(humanContext, /location: inbox/);
+  assert.match(humanContext, /refs: 🔖 Topic Index \[project\]/);
+  assert.match(humanContext, /traversal:/);
+  assert.match(humanContext, /Alpha \[inbox\] -> 🔖 Topic Index \[project\] -> 🏷️ Topic Root \[project\]/);
+  assert.match(humanContext, /overview:/);
+  assert.match(humanContext, /H2 Details/);
+  assert.doesNotMatch(humanContext, /excerpt:/);
+  assert.doesNotMatch(humanContext, /backlinks:/);
+  assert.doesNotMatch(humanContext, /siblings:/);
   assert.match(humanContext, /Next commands:/);
   assert.match(humanContext, /ipa search "Alpha"/);
   assert.doesNotMatch(humanContext, /"edges"/);
+  const largeContext = run(env, ["--profile", "ipa-test", "context", "Alpha", "--by-note", "--size", "large"]);
+  assert.match(largeContext, /body:/);
+  assert.match(largeContext, /Alpha mentions Beta/);
   const doctor = JSON.parse(run(env, ["--profile", "ipa-test", "doctor", "--json"]));
   assert.equal(doctor.status, "ok");
   const tune = run(env, ["--profile", "ipa-test", "tune", "pack", "eval", "ipa-cli-core"]);

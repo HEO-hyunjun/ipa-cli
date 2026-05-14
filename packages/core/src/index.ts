@@ -2885,10 +2885,10 @@ async function walkAll(root) {
 }
 
 const CONTEXT_SIZE_PRESETS = {
-  small: { maxChars: 4000, maxNotes: 2, targetExcerpt: 700, relatedExcerpt: 120, neighborLimit: 3 },
-  medium: { maxChars: 10000, maxNotes: 3, targetExcerpt: 1200, relatedExcerpt: 220, neighborLimit: 5 },
-  large: { maxChars: 25000, maxNotes: 5, targetExcerpt: 2500, relatedExcerpt: 500, neighborLimit: 8 },
-  full: { maxChars: 60000, maxNotes: 5, targetExcerpt: 12000, relatedExcerpt: 1000, neighborLimit: 12 }
+  small: { maxChars: 4000, maxNotes: 2, relatedExcerpt: 120, neighborLimit: 3, contentMode: "overview" },
+  medium: { maxChars: 10000, maxNotes: 3, relatedExcerpt: 220, neighborLimit: 5, contentMode: "overview" },
+  large: { maxChars: 25000, maxNotes: 5, relatedExcerpt: 500, neighborLimit: 8, contentMode: "full" },
+  full: { maxChars: 60000, maxNotes: 5, relatedExcerpt: 1000, neighborLimit: 12, contentMode: "full" }
 };
 
 function contextPreset(options = {}) {
@@ -2898,9 +2898,9 @@ function contextPreset(options = {}) {
     name: CONTEXT_SIZE_PRESETS[key] ? key : "medium",
     maxChars: Number(options.maxChars ?? preset.maxChars),
     maxNotes: Number(options.maxNotes ?? preset.maxNotes),
-    targetExcerpt: preset.targetExcerpt,
     relatedExcerpt: preset.relatedExcerpt,
-    neighborLimit: preset.neighborLimit
+    neighborLimit: preset.neighborLimit,
+    contentMode: preset.contentMode
   };
 }
 
@@ -2913,21 +2913,39 @@ function uniqueNotes(notes) {
   });
 }
 
-function noteRef(note, query, excerptChars = 0) {
+function noteLocationKind(note, mapping = DEFAULT_MAPPING) {
+  if (!note) return "missing";
+  if (isInFolder(note, mapping.inbox_dir)) return "inbox";
+  if (isInFolder(note, mapping.project_dir)) return "project";
+  if (isInFolder(note, mapping.archive_dir)) return "archive";
+  return "other";
+}
+
+function noteLocation(note, mapping = DEFAULT_MAPPING) {
+  if (!note) return { kind: "missing", folder: "", path: "" };
+  return {
+    kind: noteLocationKind(note, mapping),
+    folder: note.folder,
+    path: note.relPath
+  };
+}
+
+function noteRef(note, query, excerptChars = 0, mapping = DEFAULT_MAPPING) {
   const item = {
     id: note.id,
     type: note.type,
-    path: note.relPath
+    path: note.relPath,
+    location: noteLocation(note, mapping)
   };
   if (excerptChars > 0) item.excerpt = excerptText(note.body, excerptChars, query);
   return item;
 }
 
-function noteRefs(items, query, limit, excerptChars) {
+function noteRefs(items, query, limit, excerptChars, mapping = DEFAULT_MAPPING) {
   return uniqueNotes(items)
     .sort((a, b) => a.id.localeCompare(b.id))
     .slice(0, limit)
-    .map((note) => noteRef(note, query, excerptChars));
+    .map((note) => noteRef(note, query, excerptChars, mapping));
 }
 
 function backlinkNotes(note, notes) {
@@ -2944,25 +2962,67 @@ function childNotes(note, notes) {
   return notes.filter((candidate) => candidate.id !== note.id && hasNoteName(candidate.refs, note.id));
 }
 
-function contextNote(note, notes, query, hit, preset) {
+function refDetails(note, notes, mapping = DEFAULT_MAPPING) {
+  return note.refs.map((ref) => {
+    const target = findNote(notes, ref);
+    return {
+      id: ref,
+      type: target?.type ?? "",
+      path: target?.relPath ?? "",
+      location: noteLocation(target, mapping)
+    };
+  });
+}
+
+function noteOverview(note) {
+  return {
+    headings: (note.headings ?? []).map((heading) => ({
+      level: heading.level,
+      title: heading.title,
+      line: heading.line
+    }))
+  };
+}
+
+function traversalPathDetails(paths, notes, mapping = DEFAULT_MAPPING) {
+  return paths.map((path) => path.map((id) => {
+    const target = findNote(notes, id);
+    return {
+      id,
+      type: target?.type ?? "",
+      path: target?.relPath ?? "",
+      location: noteLocation(target, mapping)
+    };
+  }));
+}
+
+function contextNote(note, notes, query, hit, preset, mapping = DEFAULT_MAPPING) {
   const limit = preset.neighborLimit;
   const relatedExcerpt = preset.relatedExcerpt;
-  return {
+  const upward = upwardPaths(note, notes).slice(0, limit);
+  const item = {
     id: note.id,
     path: note.relPath,
     type: note.type,
+    location: noteLocation(note, mapping),
     refs: note.refs,
+    ref_details: refDetails(note, notes, mapping),
     tags: note.tags,
     score: hit?.score ?? null,
     reason: hit?.reason ?? null,
-    upward_paths: upwardPaths(note, notes).slice(0, limit),
-    backlinks: noteRefs(backlinkNotes(note, notes), query, limit, relatedExcerpt),
-    siblings: noteRefs(siblings(note, notes), query, limit, relatedExcerpt),
-    outlinks: noteRefs(outlinkNotes(note, notes), query, limit, relatedExcerpt),
-    children: noteRefs(childNotes(note, notes), query, limit, relatedExcerpt),
-    excerpt: excerptText(note.body, preset.targetExcerpt, query),
-    body: excerptText(note.body, preset.targetExcerpt, query)
+    content_mode: preset.contentMode,
+    upward_paths: upward,
+    traversal: {
+      upward: traversalPathDetails(upward, notes, mapping)
+    },
+    backlinks: noteRefs(backlinkNotes(note, notes), query, limit, relatedExcerpt, mapping),
+    siblings: noteRefs(siblings(note, notes), query, limit, relatedExcerpt, mapping),
+    outlinks: noteRefs(outlinkNotes(note, notes), query, limit, relatedExcerpt, mapping),
+    children: noteRefs(childNotes(note, notes), query, limit, relatedExcerpt, mapping)
   };
+  if (preset.contentMode === "full") item.body = String(note.body ?? "").trimEnd();
+  else item.overview = noteOverview(note);
+  return item;
 }
 
 function excerptText(text, maxChars, query = "") {
@@ -3013,6 +3073,52 @@ function contextCommands(contextNotes, query = "") {
   return commands;
 }
 
+function contextSearchResults(results, notes, mapping = DEFAULT_MAPPING) {
+  return results.map((hit) => {
+    const note = findNote(notes, hit.note);
+    return {
+      note: hit.note,
+      path: note?.relPath ?? hit.path ?? "",
+      type: note?.type || hit.type || "?",
+      refs: note?.refs ?? hit.refs ?? [],
+      ref_details: note ? refDetails(note, notes, mapping) : [],
+      tags: note?.tags ?? [],
+      location: noteLocation(note, mapping),
+      score: hit.score,
+      reasons: hit.reasons
+    };
+  });
+}
+
+function contextRefDistribution(items, notes, mapping = DEFAULT_MAPPING) {
+  const counts = {};
+  for (const note of items) {
+    for (const ref of note.refs ?? []) counts[ref] = (counts[ref] ?? 0) + 1;
+  }
+  return Object.entries(counts)
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([ref, count]) => {
+      const target = findNote(notes, ref);
+      return {
+        ref,
+        count,
+        type: target?.type ?? "",
+        path: target?.relPath ?? "",
+        location: noteLocation(target, mapping)
+      };
+    });
+}
+
+function contextTagDistribution(items) {
+  const counts = {};
+  for (const note of items) {
+    for (const tag of note.tags ?? []) counts[tag] = (counts[tag] ?? 0) + 1;
+  }
+  return Object.entries(counts)
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([tag, count]) => ({ tag, count }));
+}
+
 export async function buildContext(vaultPath, query, options = {}) {
   const { mapping } = await readVaultConfig(vaultPath);
   const notes = await loadNotes(vaultPath, mapping);
@@ -3020,9 +3126,10 @@ export async function buildContext(vaultPath, query, options = {}) {
   const search = options.byNote
     ? { results: [{ note: findNote(notes, query)?.id, score: 1 }].filter((item) => item.note) }
     : await searchVault(vaultPath, query, { maxResults: options.maxResults ?? preset.maxNotes, threshold: 0 });
-  const selected = uniqueNotes(search.results.map((hit) => findNote(notes, hit.note)).filter(Boolean)).slice(0, preset.maxNotes);
+  const resultNotes = uniqueNotes(search.results.map((hit) => findNote(notes, hit.note)).filter(Boolean));
+  const selected = resultNotes.slice(0, preset.maxNotes);
   const contextNotes = selected.map((note) =>
-    contextNote(note, notes, query, search.results.find((hit) => sameNoteName(hit.note, note.id)), preset)
+    contextNote(note, notes, query, search.results.find((hit) => sameNoteName(hit.note, note.id)), preset, mapping)
   );
   const warnings = [];
   if (options.byNote && !selected.length) warnings.push({ code: "context.note_not_found", message: `note not found: ${query}` });
@@ -3036,6 +3143,9 @@ export async function buildContext(vaultPath, query, options = {}) {
       max_notes: preset.maxNotes
     },
     notes: contextNotes,
+    search_results: contextSearchResults(search.results, notes, mapping),
+    ref_distribution: contextRefDistribution(resultNotes, notes, mapping),
+    tag_distribution: contextTagDistribution(resultNotes),
     edges: contextSubgraph(contextNotes, notes),
     sources: selected.map((note) => note.relPath),
     next_commands: contextCommands(contextNotes, query),

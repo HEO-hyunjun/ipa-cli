@@ -170,11 +170,22 @@ test("search, view, traversal and context work in the JS runtime", async () => {
   assert.equal(context.notes[0].id, "Alpha");
   assert.equal(context.mode, "by-note");
   assert.equal(context.size, "medium");
+  assert.equal(context.notes[0].location.kind, "inbox");
+  assert.equal(context.notes[0].ref_details[0].location.kind, "project");
+  assert.ok(context.notes[0].overview.headings.some((heading) => heading.title === "Details"));
+  assert.equal(context.notes[0].excerpt, undefined);
+  assert.ok(context.search_results[0].location.kind === "inbox");
+  assert.ok(context.ref_distribution.some((item) => item.ref === "🔖 Topic Index" && item.location.kind === "project"));
+  assert.ok(context.tag_distribution.some((item) => item.tag === "note"));
   assert.ok(context.notes[0].upward_paths.some((path) => path.join(" -> ") === "Alpha -> 🔖 Topic Index -> 🏷️ Topic Root"));
   assert.ok(context.notes[0].backlinks.some((note) => note.id === "Beta"));
   assert.ok(context.notes[0].siblings.some((note) => note.id === "Beta"));
   assert.deepEqual(context.edges.Alpha, ["🔖 Topic Index"]);
   assert.ok(context.next_commands.includes('ipa search "Alpha"'));
+  const largeContext = await buildContext(vault, "Alpha", { byNote: true, size: "large" });
+  assert.equal(largeContext.notes[0].content_mode, "full");
+  assert.match(largeContext.notes[0].body, /Alpha mentions Beta/);
+  assert.equal(largeContext.notes[0].overview, undefined);
 });
 
 test("view uses a fresh note cache and falls back after cache stales", async () => {

@@ -628,10 +628,11 @@ function renderIssues(payload) {
     lines.push("", styleGood("No issues."));
     return lines.join("\n");
   }
-  lines.push("", table(["Severity", "Code", "Note", "Message"], payload.issues.map((item) => [
+  lines.push("", table(["Severity", "Code", "Note", "Path", "Message"], payload.issues.map((item) => [
     item.severity ?? "info",
     item.code ?? "-",
     item.note ?? "-",
+    item.path ?? "-",
     item.message ?? "-"
   ])));
   return lines.join("\n");
@@ -690,36 +691,73 @@ function renderContext(payload) {
     `Query: ${payload.query}   Mode: ${payload.mode ?? "search"}   Size: ${payload.size ?? "medium"}   Notes: ${payload.notes.length}`,
     ""
   ];
-  const rows = payload.notes.map((note) => [
-    note.id,
+  const searchRows = (payload.search_results?.length ? payload.search_results : payload.notes).map((note) => [
+    note.score === null || note.score === undefined ? "-" : Number(note.score).toFixed(2),
     note.type || "?",
+    note.note ?? note.id,
+    locationLabel(note.location),
     note.path,
-    note.score === null || note.score === undefined ? "-" : Number(note.score).toFixed(2)
+    refLabels(note.ref_details, note.refs).join(", ")
   ]);
-  if (rows.length) lines.push(table(["Note", "Type", "Path", "Score"], rows));
+  if (searchRows.length) lines.push(styleSection("Search results"), table(["Score", "Type", "Note", "Loc", "Path", "Refs"], searchRows));
+  if (payload.ref_distribution?.length) {
+    lines.push("", styleSection("Ref distribution"), table(["Count", "Ref", "Loc", "Path"], payload.ref_distribution.map((item) => [
+      item.count,
+      item.ref,
+      locationLabel(item.location),
+      item.path || "-"
+    ])));
+  }
+  if (payload.tag_distribution?.length) {
+    lines.push("", styleSection("Tag distribution"), table(["Count", "Tag"], payload.tag_distribution.map((item) => [
+      item.count,
+      item.tag
+    ])));
+  }
   for (const note of payload.notes) {
-    lines.push("", `## ${note.id}`, `type: ${note.type || "?"}`, `path: ${note.path}`);
-    if (note.refs?.length) lines.push(`refs: ${note.refs.join(", ")}`);
+    lines.push("", `## ${note.id}`, `type: ${note.type || "?"}`, `location: ${locationLabel(note.location)}`, `path: ${note.path}`);
+    if (note.refs?.length) lines.push(`refs: ${refLabels(note.ref_details, note.refs).join(", ")}`);
     if (note.tags?.length) lines.push(`tags: ${note.tags.join(", ")}`);
     if (note.upward_paths?.length) {
-      lines.push("upward:");
-      for (const path of note.upward_paths) lines.push(`  - ${path.join(" -> ")}`);
+      lines.push("traversal:");
+      const detailed = note.traversal?.upward;
+      const paths = detailed?.length ? detailed : note.upward_paths;
+      for (const path of paths) lines.push(`  - ${formatTraversalPath(path)}`);
     }
-    for (const [label, items] of [
-      ["backlinks", note.backlinks],
-      ["siblings", note.siblings],
-      ["outlinks", note.outlinks],
-      ["children", note.children]
-    ]) {
-      if (!items?.length) continue;
-      lines.push(`${label}:`);
-      for (const item of items) lines.push(`  - ${item.id} [${item.type || "?"}] ${item.path}`);
-    }
-    if (note.excerpt) lines.push("excerpt:", indentBlock(note.excerpt, "  "));
+    if (note.content_mode === "full" && note.body) lines.push("body:", indentBlock(note.body, "  "));
+    else lines.push(...formatOverview(note.overview));
   }
   if (payload.next_commands?.length) lines.push("", "Next commands:", ...payload.next_commands.map((command) => `  ${command}`));
   if (payload.warnings?.length) lines.push("", renderIssues({ issues: payload.warnings }));
   return truncateRenderedContext(lines.join("\n"), payload.budget?.max_chars);
+}
+
+function locationLabel(location) {
+  if (!location) return "-";
+  return location.kind || "-";
+}
+
+function refLabels(details = [], refs = []) {
+  if (details?.length) {
+    return details.map((item) => `${item.id}${item.location?.kind ? ` [${item.location.kind}]` : ""}`);
+  }
+  return (refs ?? []).map((ref) => String(ref));
+}
+
+function formatTraversalPath(path) {
+  return path.map((item) => {
+    if (typeof item === "string") return item;
+    return `${item.id}${item.location?.kind ? ` [${item.location.kind}]` : ""}`;
+  }).join(" -> ");
+}
+
+function formatOverview(overview) {
+  const headings = overview?.headings ?? [];
+  if (!headings.length) return ["overview:", "  (no headings)"];
+  return [
+    "overview:",
+    ...headings.map((heading) => `  - H${heading.level} ${heading.title}${heading.line ? ` (line ${heading.line})` : ""}`)
+  ];
 }
 
 function indentBlock(text, prefix) {
