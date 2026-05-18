@@ -80,7 +80,8 @@ const COMMAND_GROUPS = [
     rows: [
       ["formatter", "Plan or apply formatting fixes"],
       ["refactor", "Rewrite tags, refs, and wikilinks"],
-      ["rename / move", "Rename or move notes"],
+      ["rename", "Rename a note and update links"],
+      ["move", "Move a note and update links"],
       ["inbox", "Add or triage inbox notes"],
       ["link", "Suggest, plan, and apply wikilinks"],
       ["review", "Audit inbox, indexes, tags, and duplicates"]
@@ -95,7 +96,8 @@ const COMMAND_GROUPS = [
       ["cache", "Rebuild, inspect, and diagnose vault cache"],
       ["plugin", "Scaffold, list, validate, and dry-run vault plugins"],
       ["contract", "Validate runtime contract fixtures"],
-      ["harness", "Install, uninstall, and inspect AI harness hooks"]
+      ["harness", "Install, uninstall, and inspect AI harness hooks"],
+      ["list-channels / list-rules / list-refactors", "Inspect builtin registries"]
     ]
   }
 ];
@@ -113,6 +115,10 @@ const COMMAND_HELP = {
       ["ipa cache inspect --note NOTE", "Inspect cache data for one note"],
       ["ipa cache doctor", "Diagnose cache/plugin fingerprint state"],
       ["ipa cache clean", "Remove cache artifacts"]
+    ],
+    options: [
+      ["inspect [NOTE]", "Inspect the cache entry for a note title"],
+      ["inspect --note NOTE", "Pass the note title as an option"]
     ]
   }),
   config: formatDetailedHelp({
@@ -135,6 +141,7 @@ const COMMAND_HELP = {
     summary: "Build a compact note-centered context pack for agent prompts.",
     options: [
       ["--by-note", "Treat QUERY as a note title instead of a search query"],
+      ["--include MODE", "Include extra context; use full for full selected note bodies"],
       ["--size NAME", "Context budget preset: small, medium, large, or full"],
       ["--max-notes N", "Override selected primary note count"],
       ["--max-chars N", "Override the target character budget"],
@@ -154,7 +161,11 @@ const COMMAND_HELP = {
       ["ipa contract list", "List known contracts"],
       ["ipa contract validate FILE", "Validate a contract fixture"],
       ["ipa contract validate-output COMMAND FILE", "Validate command output"],
-      ["ipa contract export-fixtures", "Export current fixture contracts"]
+      ["ipa contract export-fixtures", "Export current fixture contracts"],
+      ["ipa contract export-fixtures --target DIR", "Export fixtures into a target directory"]
+    ],
+    options: [
+      ["export-fixtures --target DIR", "Target directory; default .ipa/fixtures/contracts"]
     ]
   }),
   doctor: formatDetailedHelp({
@@ -181,6 +192,9 @@ const COMMAND_HELP = {
       ["ipa formatter apply", "Apply all formatter patches"],
       ["ipa formatter plan --note \"A\" \"B\"", "Preview patches for selected notes only"],
       ["ipa formatter apply --note \"A\"", "Apply patches for one note"]
+    ],
+    options: [
+      ["plan/apply --note NOTE...", "Restrict formatting to one or more note titles"]
     ]
   }),
   harness: formatDetailedHelp({
@@ -193,7 +207,12 @@ const COMMAND_HELP = {
       ["ipa harness install claude", "Install Claude Code skill/hooks, vault prompt block, and plugin scaffold"],
       ["ipa harness uninstall codex", "Remove Codex harness files"],
       ["ipa harness doctor", "Validate installed harness files"],
+      ["ipa harness guard status", "Show guard policy state"],
       ["ipa harness guard check PATH --action create", "Check inbox-only write policy"]
+    ],
+    options: [
+      ["init/install/uninstall [target]", "Harness target; default codex"],
+      ["guard check --action ACTION", "Write action to evaluate; default is create-like behavior"]
     ]
   }),
   inbox: formatDetailedHelp({
@@ -203,6 +222,14 @@ const COMMAND_HELP = {
       ["ipa inbox add ./draft.md --title \"Title\"", "Import a draft into the configured inbox"],
       ["ipa inbox triage", "Suggest refs/tags for inbox notes"],
       ["ipa inbox triage --apply --note \"Title\"", "Apply triage to one note"]
+    ],
+    options: [
+      ["add --title TITLE", "Inbox note title"],
+      ["add --ref REF", "Add a frontmatter ref; repeatable"],
+      ["add --tag TAG", "Add a frontmatter tag; repeatable"],
+      ["add --force", "Overwrite if the target note already exists"],
+      ["triage --apply", "Apply suggested refs/tags"],
+      ["triage --note NOTE", "Restrict triage to one note"]
     ]
   }),
   link: formatDetailedHelp({
@@ -212,6 +239,11 @@ const COMMAND_HELP = {
       ["ipa link suggest NOTE", "Suggest links for one note"],
       ["ipa link plan --note NOTE", "Write a guarded link plan"],
       ["ipa link apply .ipa/plans/link.json", "Apply a saved plan"]
+    ],
+    options: [
+      ["plan --note NOTE", "Plan links for one note"],
+      ["plan --output PATH", "Plan output path"],
+      ["plan --scope SCOPE", "Accepted for compatibility"]
     ]
   }),
   plugin: formatDetailedHelp({
@@ -227,7 +259,9 @@ const COMMAND_HELP = {
     ],
     options: [
       ["init --force", "Overwrite scaffold files that already exist"],
-      ["init --no-examples", "Skip disabled example plugin files"]
+      ["init --no-examples", "Skip disabled example plugin files"],
+      ["dry-run --query QUERY", "Search query for search plugin dry-runs"],
+      ["dry-run --note NOTE", "Note title for rule plugin dry-runs"]
     ]
   }),
   profile: formatDetailedHelp({
@@ -251,10 +285,20 @@ const COMMAND_HELP = {
     usage: "ipa [OPTIONS] refactor COMMAND [ARGS...] [--apply]",
     summary: "Plan or apply refs, tags, and wikilink rewrites.",
     commands: [
-      ["ipa refactor tag-rename old new", "Preview a tag rename"],
-      ["ipa refactor tag-rename old new --apply", "Apply a tag rename"],
-      ["ipa refactor ref-replace old new --apply", "Replace frontmatter refs"],
-      ["ipa refactor wikilink-replace old new --apply", "Replace body wikilinks"]
+      ["ipa refactor tag-rename OLD NEW", "Rename a frontmatter tag across the vault"],
+      ["ipa refactor tag-remove TAG", "Remove a frontmatter tag across the vault"],
+      ["ipa refactor tag-add TAG", "Add a frontmatter tag to every note"],
+      ["ipa refactor ref-replace OLD NEW", "Replace frontmatter refs across the vault"],
+      ["ipa refactor ref-remove REF", "Remove a frontmatter ref across the vault"],
+      ["ipa refactor ref-add REF", "Add a frontmatter ref to every note"],
+      ["ipa refactor wikilink-replace OLD NEW", "Replace exact body wikilinks across the vault"]
+    ],
+    options: [
+      ["--apply", "Write the planned refactor; omit for preview"]
+    ],
+    notes: [
+      "`refactor` is vault-wide. Preview first; use `ipa note replace` for note-scoped literal edits.",
+      "Run `ipa list-refactors` to inspect every registered refactor recipe."
     ]
   }),
   rename: formatDetailedHelp({
@@ -263,6 +307,9 @@ const COMMAND_HELP = {
     examples: [
       ["ipa rename \"Old\" \"New\"", "Preview rename"],
       ["ipa rename \"Old\" \"New\" --apply", "Apply rename"]
+    ],
+    options: [
+      ["--apply", "Write the rename and link updates; omit for preview"]
     ]
   }),
   move: formatDetailedHelp({
@@ -271,6 +318,9 @@ const COMMAND_HELP = {
     examples: [
       ["ipa move \"Note\" \"02 Archive\"", "Preview move"],
       ["ipa move \"Note\" \"02 Archive\" --apply", "Apply move"]
+    ],
+    options: [
+      ["--apply", "Write the move and link updates; omit for preview"]
     ]
   }),
   review: formatDetailedHelp({
@@ -280,6 +330,10 @@ const COMMAND_HELP = {
       ["ipa review all", "Run all read-only audits"],
       ["ipa review duplicates", "Find duplicate-looking notes"],
       ["ipa review all --suggest-refactor", "Include refactor suggestions"]
+    ],
+    options: [
+      ["--suggest-refactor", "Attach refactor command suggestions where possible"],
+      ["--content", "Include content-level checks"]
     ]
   }),
   search: formatDetailedHelp({
@@ -314,6 +368,9 @@ const COMMAND_HELP = {
     examples: [
       ["ipa validator", "Human-readable issue report"],
       ["ipa validator --json", "Machine-readable issue payload"]
+    ],
+    options: [
+      ["--json", "Print machine-readable JSON"]
     ]
   }),
   view: formatDetailedHelp({
@@ -403,10 +460,13 @@ function formatTuneHelp() {
       ["ipa tune analyze", "Inspect threshold candidates and target scores"],
       ["ipa tune replay [FILE]", "Replay saved trial history against the current vault"],
       ["ipa tune log", "Show recorded search events"],
+      ["ipa tune label --query Q --target NOTE", "Record a search label"],
       ["ipa tune testset init", "Create the vault-local testset file and configure test.file"],
       ["ipa tune testset list", "List vault-local testsets"],
       ["ipa tune testset show", "Show the active testset"],
       ["ipa tune testset validate", "Validate testset targets"],
+      ["ipa tune testset draft --file FILE", "Draft testset cases from logged events"],
+      ["ipa tune testset add --query Q --target NOTE", "Add one labelled test case"],
       ["ipa tune pack eval ipa-cli-core", "Evaluate the built-in sample pack"]
     ]),
     "",
@@ -418,6 +478,24 @@ function formatTuneHelp() {
       ["--apply", "Activate the generated result by writing weights.file"],
       ["--quiet", "Suppress progress output"],
       ["--json", "Print machine-readable JSON; progress is suppressed"]
+    ]),
+    "",
+    styleSection("Subcommand options:"),
+    formatRows([
+      ["analyze --threshold N", "Candidate threshold; repeatable"],
+      ["analyze --cap N", "Candidate max result cap"],
+      ["analyze/replay --pack NAME", "Use a built-in query pack"],
+      ["label --query Q", "Query to label"],
+      ["label --target NOTE", "Expected target note for a hit"],
+      ["label --miss", "Record the query as a miss"],
+      ["log --limit N", "Show only the newest N events"],
+      ["log --query TEXT", "Filter events by query substring"],
+      ["testset init --file FILE", "Target testset file"],
+      ["testset init --force", "Overwrite an existing testset file"],
+      ["testset init --activate", "Set the new file as test.file"],
+      ["testset show/validate [FILE]", "Inspect or validate a specific testset file"],
+      ["testset draft/add --file FILE", "Write cases to a specific testset file"],
+      ["testset add --query Q --target NOTE", "Add one labelled query target"]
     ]),
     "",
     styleSection("Vault setup:"),
@@ -795,13 +873,13 @@ function renderRules(items) {
 
 function renderRefactors(items) {
   const descriptions = {
-    "ref-replace": "ref 교체 (대상 노트의 ref 배열에서 OLD -> NEW)",
+    "ref-replace": "frontmatter ref 교체 (전체 vault)",
     "tag-rename": "태그 이름 변경 (전체 vault)",
-    "tag-remove": "태그 제거",
-    "tag-add": "특정 노트에 태그 추가",
-    "wikilink-replace": "본문 wikilink 치환",
-    "ref-add": "특정 노트에 ref 추가",
-    "ref-remove": "특정 노트에서 ref 제거"
+    "tag-remove": "태그 제거 (전체 vault)",
+    "tag-add": "태그 추가 (전체 vault)",
+    "wikilink-replace": "본문 wikilink 치환 (전체 vault)",
+    "ref-add": "frontmatter ref 추가 (전체 vault)",
+    "ref-remove": "frontmatter ref 제거 (전체 vault)"
   };
   return renderTableReport("refactor commands", ["name", "description"], items.map((item) => [item, descriptions[item] ?? "-"]));
 }
