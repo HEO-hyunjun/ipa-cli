@@ -22,7 +22,9 @@ import {
   pluginDryRun,
   readVaultConfig,
   refactorVault,
+  replaceInNote,
   resolveSettings,
+  rewriteNote,
   rebuildCache,
   reviewVault,
   searchVault,
@@ -252,6 +254,20 @@ test("note-name search and lookup ignore emoji markers but preserve display name
   assert.equal((await validateVault(vault)).status, "ok");
   const down = await traversal(vault, "down", "🔖 Topic Index");
   assert.ok(down.tree.children.some((child) => child.note === "No Emoji Ref"));
+});
+
+test("core note rewrite helpers resolve notes before editing", async () => {
+  const vault = await fixtureVault();
+  const dryRun = await rewriteNote(vault, "Alpha", (document) => document.text.replace("Alpha mentions Beta", "Alpha mentions Gamma"), { apply: false });
+  assert.equal(dryRun.changed, true);
+  assert.equal(dryRun.applied, false);
+  assert.doesNotMatch(await readFile(join(vault, "00 Inbox", "Alpha.md"), "utf8"), /Gamma/);
+
+  const applied = await replaceInNote(vault, "Alpha", "Alpha mentions Beta", "Alpha mentions Gamma");
+  assert.equal(applied.operation, "replace-in-note");
+  assert.equal(applied.matches, 1);
+  assert.equal(applied.applied, true);
+  assert.match(await readFile(join(vault, "00 Inbox", "Alpha.md"), "utf8"), /Alpha mentions Gamma/);
 });
 
 test("indentless YAML sequences parse as lists instead of object refs", async () => {

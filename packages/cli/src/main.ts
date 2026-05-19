@@ -39,6 +39,7 @@ import {
   pluginInit,
   rebuildCache,
   refactorVault,
+  replaceInNote,
   renameNote,
   resolveSettings,
   reviewVault,
@@ -80,6 +81,7 @@ const COMMAND_GROUPS = [
     rows: [
       ["formatter", "Plan or apply formatting fixes"],
       ["refactor", "Rewrite tags, refs, and wikilinks"],
+      ["note", "Core-backed scripted note edits"],
       ["rename", "Rename a note and update links"],
       ["move", "Move a note and update links"],
       ["inbox", "Add or triage inbox notes"],
@@ -321,6 +323,20 @@ const COMMAND_HELP = {
     ],
     options: [
       ["--apply", "Write the move and link updates; omit for preview"]
+    ]
+  }),
+  note: formatDetailedHelp({
+    usage: "ipa [OPTIONS] note replace NOTE --old-file OLD --new-file NEW [--apply]",
+    summary: "Apply core-backed edits to existing notes without raw vault path scans.",
+    commands: [
+      ["ipa note replace \"Note\" --old-file .tmp/old.txt --new-file .tmp/new.txt", "Preview a literal block replacement"],
+      ["ipa note replace \"Note\" --old-file .tmp/old.txt --new-file .tmp/new.txt --apply", "Apply the replacement"]
+    ],
+    options: [
+      ["--old-file PATH", "File containing the exact text to replace"],
+      ["--new-file PATH", "File containing replacement text"],
+      ["--apply", "Write the replacement; omit for preview"],
+      ["--allow-multiple", "Allow replacing more than one matching block"]
     ]
   }),
   review: formatDetailedHelp({
@@ -570,6 +586,7 @@ function render(payload) {
   if (payload.channels) return renderChannels(payload.channels);
   if (payload.rules) return renderRules(payload.rules);
   if (payload.refactors) return renderRefactors(payload.refactors);
+  if (payload.operation === "replace-in-note") return renderKeyValues("Note replace", payload);
   if (payload.profile !== undefined && payload.vault_path && Object.hasOwn(payload, "created")) return renderKeyValues("Profile", payload);
   if (payload.profile !== undefined && payload.vault_path) return renderKeyValues("Active config", payload);
   if (payload.status && payload.checks) return renderDoctor(payload);
@@ -1150,6 +1167,23 @@ function buildProgram() {
     .option("--apply", "Apply the move")
     .action(async (note, target, options) => {
       await withVault(globalOptions(program), async (vault) => print(await moveNote(vault, note, target, Boolean(options.apply)), jsonOutput(program)));
+    });
+
+  const noteCommand = setHelp(program.command("note"), "note");
+  noteCommand
+    .command("replace")
+    .argument("<note>", "Note title")
+    .requiredOption("--old-file <path>", "File containing the exact text to replace")
+    .requiredOption("--new-file <path>", "File containing replacement text")
+    .option("--apply", "Apply the replacement")
+    .option("--allow-multiple", "Allow replacing multiple matches")
+    .action(async (note, options) => {
+      const oldText = await readFile(resolve(options.oldFile), "utf8");
+      const newText = await readFile(resolve(options.newFile), "utf8");
+      await withVault(globalOptions(program), async (vault) => print(await replaceInNote(vault, note, oldText, newText, {
+        apply: Boolean(options.apply),
+        allowMultiple: Boolean(options.allowMultiple)
+      }), jsonOutput(program)));
     });
 
   setHelp(program.command("add"), "inbox")

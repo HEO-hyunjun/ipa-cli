@@ -2303,6 +2303,54 @@ export function findNote(notes, noteName) {
   return scored[0]?.note ?? null;
 }
 
+export async function resolveNote(vaultPath, noteName) {
+  const { mapping } = await readVaultConfig(vaultPath);
+  const notes = await loadNotes(vaultPath, mapping);
+  const note = findNote(notes, noteName);
+  if (!note) throw new Error(`note not found: ${noteName}`);
+  return { note, mapping, notes };
+}
+
+export async function rewriteNote(vaultPath, noteName, rewrite, options = {}) {
+  if (typeof rewrite !== "function") throw new Error("rewriteNote requires a rewrite function");
+  const { note, mapping, notes } = await resolveNote(vaultPath, noteName);
+  const document = IpaNoteDocument.fromNote(note, mapping);
+  const rewritten = await rewrite(document, { vaultPath, note, mapping, notes });
+  const nextText = typeof rewritten === "string"
+    ? rewritten
+    : typeof rewritten?.text === "string"
+      ? rewritten.text
+      : null;
+  if (nextText === null) throw new Error("rewriteNote callback must return markdown text");
+  const changed = nextText !== note.raw;
+  const apply = options.apply !== false;
+  if (changed && apply) await writeFile(note.path, nextText, "utf8");
+  return {
+    operation: "rewrite-note",
+    note: note.id,
+    path: note.relPath,
+    changed,
+    applied: changed && apply,
+    sha256_before: sha256(note.raw),
+    sha256_after: sha256(nextText)
+  };
+}
+
+export async function replaceInNote(vaultPath, noteName, oldText, newText, options = {}) {
+  const target = String(oldText ?? "");
+  if (!target) throw new Error("replaceInNote requires non-empty oldText");
+  let matches = 0;
+  const result = await rewriteNote(vaultPath, noteName, (document) => {
+    matches = document.text.split(target).length - 1;
+    if (!matches) throw new Error(`target text not found in note: ${noteName}`);
+    if (matches > 1 && !options.allowMultiple) {
+      throw new Error(`target text matched ${matches} times in note: ${noteName}`);
+    }
+    return document.text.split(target).join(String(newText ?? ""));
+  }, options);
+  return { ...result, operation: "replace-in-note", matches };
+}
+
 export async function traversal(vaultPath, mode, noteName) {
   const { mapping } = await readVaultConfig(vaultPath);
   const notes = await loadNotes(vaultPath, mapping);
@@ -4716,6 +4764,7 @@ ipa validator                                                   # after editing 
 ipa formatter plan --note "Edited Note"
 ipa formatter apply --note "Edited Note"
 ipa inbox add ./draft.md --title "Title"                        # new notes go through inbox
+ipa note replace "Note Title" --old-file .tmp/old --new-file .tmp/new --apply
 \`\`\`
 
 Rules:

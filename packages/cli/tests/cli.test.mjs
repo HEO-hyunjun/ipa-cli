@@ -77,6 +77,10 @@ test("CLI help and key smoke commands run through ipa-test profile", async () =>
   assert.match(reviewHelp, /--content/);
   const contractHelp = run(env, ["contract", "--help"]);
   assert.match(contractHelp, /export-fixtures --target DIR/);
+  const noteHelp = run(env, ["note", "--help"]);
+  assert.match(noteHelp, /Usage: ipa \[OPTIONS\] note replace/);
+  assert.match(noteHelp, /--old-file PATH/);
+  assert.match(noteHelp, /--allow-multiple/);
   const channels = run(env, ["--profile", "ipa-test", "list-channels"]);
   assert.match(channels, /search channels \(9\)/);
   assert.match(channels, /body_match\s+0\.3630/);
@@ -132,6 +136,17 @@ test("CLI help and key smoke commands run through ipa-test profile", async () =>
   const largeContext = run(env, ["--profile", "ipa-test", "context", "Alpha", "--by-note", "--size", "large"]);
   assert.match(largeContext, /body:/);
   assert.match(largeContext, /Alpha mentions Beta/);
+  const oldFile = join(vault, "..", "old.txt");
+  const newFile = join(vault, "..", "new.txt");
+  await writeFile(oldFile, "Alpha mentions Beta", "utf8");
+  await writeFile(newFile, "Alpha mentions Gamma", "utf8");
+  const replacePreview = run(env, ["--profile", "ipa-test", "note", "replace", "Alpha", "--old-file", oldFile, "--new-file", newFile]);
+  assert.match(replacePreview, /applied\s+false/);
+  assert.doesNotMatch(await readFile(join(vault, "00 Inbox", "Alpha.md"), "utf8"), /Gamma/);
+  const replaceApply = JSON.parse(run(env, ["--profile", "ipa-test", "--json", "note", "replace", "Alpha", "--old-file", oldFile, "--new-file", newFile, "--apply"]));
+  assert.equal(replaceApply.operation, "replace-in-note");
+  assert.equal(replaceApply.matches, 1);
+  assert.match(await readFile(join(vault, "00 Inbox", "Alpha.md"), "utf8"), /Alpha mentions Gamma/);
   const doctor = JSON.parse(run(env, ["--profile", "ipa-test", "doctor", "--json"]));
   assert.equal(doctor.status, "ok");
   const tune = run(env, ["--profile", "ipa-test", "tune", "pack", "eval", "ipa-cli-core"]);
