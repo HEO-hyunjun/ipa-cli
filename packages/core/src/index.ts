@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import {
   appendFile,
@@ -1713,17 +1713,146 @@ function envFlag(name) {
   return value === "1" || value === "true" || value === "yes" || value === "on";
 }
 
-function shouldRecordSearchEvent(options = {}) {
+function hasPromptContext(context) {
+  return Boolean(firstNonEmpty([
+    context?.event_id,
+    context?.prompt_event_id,
+    context?.source_prompt,
+    context?.prompt,
+    context?.query
+  ]));
+}
+
+function shouldRecordSearchEvent(options = {}, promptContext = {}) {
   if (options.logSearch !== undefined) return Boolean(options.logSearch);
-  return envFlag("IPA_SEARCH_LOG") || envFlag("IPA_TUNE_LOG_SEARCH");
+  return envFlag("IPA_SEARCH_LOG") || envFlag("IPA_TUNE_LOG_SEARCH") || hasPromptContext(promptContext);
+}
+
+function tuneSearchLogPath(vaultPath) {
+  return join(vaultPath, ".ipa", "tune", "logs", "search-events.jsonl");
+}
+
+function firstNonEmpty(values) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+function normalizePromptCwd(cwd) {
+  const value = firstNonEmpty([cwd]);
+  if (!value) return null;
+  return resolve(value);
+}
+
+function promptContextKey(value) {
+  return createHash("sha256").update(String(value)).digest("hex").slice(0, 16);
+}
+
+function currentPromptContextPath(vaultPath, key = null) {
+  const name = key ? `current-prompt-${key}.json` : "current-prompt.json";
+  return join(vaultPath, ".ipa", "tune", "logs", name);
+}
+
+function currentPromptContextCandidates(vaultPath, options = {}) {
+  const cwd = normalizePromptCwd(options.logCwd ?? options.cwd);
+  const candidates = [];
+  if (cwd) candidates.push({ path: currentPromptContextPath(vaultPath, promptContextKey(cwd)), scoped: true });
+  candidates.push({ path: currentPromptContextPath(vaultPath), scoped: false });
+  return candidates;
+}
+
+function runtimeSessionId(options = {}) {
+  return firstNonEmpty([
+    options.sessionId,
+    process.env.IPA_SESSION_ID,
+    process.env.CODEX_SESSION_ID,
+    process.env.CLAUDE_SESSION_ID
+  ]);
+}
+
+function promptContextMatchesRuntime(context, options = {}, scoped = false) {
+  if (scoped) return true;
+  const sessionId = runtimeSessionId(options);
+  return Boolean(sessionId && context?.session_id === sessionId);
+}
+
+async function readCurrentPromptContext(path) {
+  if (!existsSync(path)) return {};
+  try {
+    const context = JSON.parse(await readFile(path, "utf8"));
+    const timestamp = Date.parse(context.ts ?? context.created_at ?? "");
+    const ttlMs = Number(context.ttl_seconds ?? 1800) * 1000;
+    if (Number.isFinite(timestamp) && Number.isFinite(ttlMs) && ttlMs > 0 && Date.now() - timestamp > ttlMs) {
+      return {};
+    }
+    return context && typeof context === "object" ? context : {};
+  } catch {
+    return {};
+  }
+}
+
+async function currentPromptContext(vaultPath, options = {}) {
+  for (const candidate of currentPromptContextCandidates(vaultPath, options)) {
+    const context = await readCurrentPromptContext(candidate.path);
+    if (hasPromptContext(context) && promptContextMatchesRuntime(context, options, candidate.scoped)) {
+      return context;
+    }
+  }
+  return {};
 }
 
 async function maybeRecordSearchEvent(vaultPath, result, options = {}) {
-  if (!shouldRecordSearchEvent(options)) return;
-  const path = join(vaultPath, ".ipa", "tune", "logs", "search-events.jsonl");
+  const promptContext = await currentPromptContext(vaultPath, options);
+  if (!shouldRecordSearchEvent(options, promptContext)) return;
+  const path = tuneSearchLogPath(vaultPath);
+  const cwd = firstNonEmpty([options.logCwd, options.cwd, promptContext.cwd]);
+  const agent = firstNonEmpty([
+    options.agent,
+    options.logAgent,
+    process.env.IPA_SEARCH_ACTOR,
+    process.env.IPA_AGENT,
+    promptContext.agent
+  ]);
+  const sessionId = firstNonEmpty([
+    options.sessionId,
+    process.env.IPA_SESSION_ID,
+    process.env.CODEX_SESSION_ID,
+    process.env.CLAUDE_SESSION_ID,
+    promptContext.session_id
+  ]);
+  const promptEventId = firstNonEmpty([
+    options.promptEventId,
+    process.env.IPA_PROMPT_EVENT_ID,
+    promptContext.event_id,
+    promptContext.prompt_event_id
+  ]);
+  const turnId = firstNonEmpty([
+    options.turnId,
+    process.env.IPA_TURN_ID,
+    promptContext.turn_id,
+    promptEventId
+  ]);
+  const sourcePrompt = firstNonEmpty([
+    options.sourcePrompt,
+    process.env.IPA_SOURCE_PROMPT,
+    promptContext.source_prompt,
+    promptContext.prompt,
+    promptContext.query
+  ]);
   const event = {
+    schema_version: 1,
+    event_id: `search_${randomUUID()}`,
+    event_type: "search",
     ts: nowIso(),
     source: options.logSource ?? "search",
+    agent,
+    session_id: sessionId,
+    turn_id: turnId,
+    prompt_event_id: promptEventId,
+    source_prompt: sourcePrompt,
+    generated_query: result.query,
+    cwd,
     query: result.query,
     threshold: result.threshold,
     max_results: result.max_results,
@@ -4758,7 +4887,7 @@ Minimum required moves:
 
 \`\`\`bash
 ipa context "<short keyword>" --size medium --format markdown   # bootstrap
-ipa search "<keyword>"                                          # widen when context is narrow
+ipa search "<keyword>"                                          # widen; harness prompt context records tune evidence
 ipa view "Note Title" --full                                    # read a specific note
 ipa validator                                                   # after editing vault Markdown
 ipa formatter plan --note "Edited Note"
@@ -4771,7 +4900,10 @@ Rules:
 
 - Do not skip the bootstrap, even for short questions, when the topic could live in the vault.
 - Pick short keywords or exact note titles — never paste raw file paths or the full user prompt.
-- A single context note is not authoritative for broad questions (system, process, history, tradeoff). Run \`ipa search\` to widen.
+- The harness records the current prompt context, so plain \`ipa search\` commands can be tied back to the prompt even when the runtime does not propagate env-file exports.
+- A single context note is not authoritative for broad questions (system, process, history, tradeoff). Run \`ipa search\` to widen and record search evidence for tune.
+- The harness Stop hook blocks final responses while edited vault notes still have formatter patches; run \`ipa formatter apply --note ...\` before finishing.
+- For scripted edits to existing notes, prefer \`ipa note replace\` or exported core helpers over hard-coded vault folder scans.
 - See the IPA skill at \`~/.${spec.name}/skills/ipa/SKILL.md\` and the vault-local \`${spec.localPrompt}\` for the full workflow.`;
 }
 
@@ -4829,18 +4961,76 @@ Do not hard-code one user's absolute vault path into vault-local files. Use proj
 
 Use this skill when the user wants to improve IPA search quality, review misses, create search evaluation cases, analyze tune results, or apply tuned weights.
 
+## Rules
+
+- Treat prompt and search logs as evidence, not labels. A prompt event tells you what the user asked; it does not prove the correct note.
+- In harness sessions, prompt context is recorded automatically; use plain \`ipa search "keyword"\` for evidence collection. \`IPA_SEARCH_LOG=1\` remains a compatibility fallback for non-harness searches.
+- Use \`prompt_event_id\`, \`turn_id\`, \`source_prompt\`, and \`generated_query\` to connect prompt/search pairs. If a prompt has no matching search event, treat it as "no query was run" rather than inferring one from nearby timestamps.
+- Do not run the optimizer by default. Present the command and wait unless the user explicitly asks you to execute it.
+- Do not activate a tune result just because it is newest. Activate only a reviewed artifact that improves the target cases without obvious regressions.
+
 ## Workflow
 
-1. Inspect recent search activity with \`ipa tune log --limit 50\` or \`ipa tune log --query "keyword"\`.
-2. Sample candidate cases from logs with \`ipa tune testset draft --file testset.json\`.
-3. Ask the user which note should have been the correct result for ambiguous or failed queries.
-4. Add labelled cases with \`ipa tune testset add --file testset.json --query "user query" --target "Correct Note"\`.
-5. Validate the evaluation set with \`ipa tune testset validate testset.json\`.
-6. Show the user the tune command to run, for example \`ipa tune --trials 200\` or \`ipa tune --trials 500 --quiet\`.
-7. Do not run the optimizer by default. Present the command and wait for the user to run it unless they explicitly ask you to execute it.
-8. After the user runs tuning, collect results with \`ipa tune list\`, \`ipa tune analyze\`, and \`ipa tune replay <result.json>\` when useful.
-9. Summarize weight, threshold, and cap changes; call out likely regressions and whether the result is worth activating.
-10. Apply only the chosen artifact with \`ipa tune use <result.json>\`, then verify with \`ipa tune eval\` and focused \`ipa search "keyword"\` checks.
+1. Confirm the active tune surface before changing anything:
+   - Run \`ipa config show\` when vault/profile selection might matter.
+   - Run \`ipa tune testset list\` to see the configured \`.ipa/config.yaml\` \`test.file\`.
+   - Run \`ipa tune testset show\` or \`ipa tune testset show <file>\` to inspect the current cases and query count.
+   - If no vault-local testset exists, initialize one with \`ipa tune testset init --file testset.json\`. Do not use the sample \`ipa-cli-core\` pack unless the user explicitly asks for a fixture/demo pack.
+2. Gather evidence from recent activity:
+   - Inspect recent events with \`ipa tune log --limit 50\`.
+   - Narrow noisy logs with \`ipa tune log --query "keyword"\`.
+   - If the log only has prompt events or lacks result lists, rerun focused \`ipa search "keyword"\` checks before drafting labels.
+   - Preserve the user's natural query text when it is the query being evaluated; do not replace it with an internal summary unless you are creating a separate variant case.
+3. Draft or fetch candidate test cases:
+   - Use \`ipa tune testset draft --file testset.json\` to convert logged events that already contain explicit targets into a draft file.
+   - Expect \`draft\` to produce zero cases when logs contain only prompts/search results without a \`target\`, \`note\`, \`selected\`, or \`clicked\` field.
+   - After drafting, run \`ipa tune testset show testset.json\` and review every row. Do not bulk-accept draft rows without checking the query and target.
+4. Confirm labels with the user before adding cases:
+   - Show the original request/context, exact search query, observed top results, and the proposed target note.
+   - Ask which note should be the correct target when the query failed, was ambiguous, or came from a prompt event.
+   - Do not infer a label from an "obvious" top result. No explicit confirmation means no \`testset add\`.
+5. Add confirmed cases deliberately:
+   - Use \`ipa tune testset add --file testset.json --query "user query" --target "Correct Note"\` for each confirmed regression case.
+   - Use the exact note title accepted by IPA search/view, not a raw path.
+   - If the user wants an audit trail, also record \`ipa tune label --query "user query" --target "Correct Note"\`; this does not replace adding the case to the testset.
+   - Keep scenario or multi-target cases as manual JSON edits only when needed, then validate immediately.
+6. Validate and baseline before tuning:
+   - Run \`ipa tune testset validate testset.json\` and resolve missing targets or malformed cases first.
+   - Run \`ipa tune eval\` to establish baseline loss, miss count, average rank, and the active pack path.
+   - For important misses, run focused \`ipa search "keyword"\` checks so the user can see the current behavior.
+7. Propose the tune run:
+   - Recommend a command such as \`ipa tune --trials 200\` for a small/medium testset or \`ipa tune --trials 500 --quiet\` for a broader one.
+   - Use \`--apply\` only when the user explicitly wants the new result activated immediately.
+   - Otherwise, present the command and wait for the user to run it.
+8. Review tune artifacts after a run:
+   - Run \`ipa tune list\` to identify the newest result and the active marker.
+   - Run \`ipa tune analyze\` to inspect threshold/cap behavior and score distribution.
+   - Run \`ipa tune replay <result.json>\` when comparing a saved artifact against the current vault/testset.
+   - Summarize weight, threshold, cap, loss, hit/miss, and average-rank changes. Call out likely regressions.
+9. Activate only a reviewed result:
+   - Use \`ipa tune use <result.json>\` only for the artifact the user chose.
+   - Run \`ipa tune eval\` after activation to confirm the active weights behave as expected.
+   - Re-run focused \`ipa search "keyword"\` checks for the original problem queries and any regression-sensitive queries.
+10. Close the loop:
+   - Report what was added to the testset, which result was reviewed or activated, and which searches verify the behavior.
+   - If the result is weak, recommend more representative labels instead of simply increasing trial count.
+
+## Label Confirmation Protocol
+
+Before adding any testset case, present candidates in this form:
+
+\`\`\`text
+Original request/context: ...
+Search query: ...
+Observed results:
+1. Note A
+2. Note B
+3. Note C
+
+Which note should be the correct target for this query?
+\`\`\`
+
+If the user has not answered this question, do not run \`ipa tune testset add\` for that case. This applies even when the top result looks correct.
 
 Treat tuning as an evaluation loop, not a one-off command. Prefer better labels and representative cases over simply increasing trial count.`
   }
@@ -4886,6 +5076,27 @@ async function writeJsonObject(path, value) {
 
 function hookCommand(path) {
   return `node ${shellQuote(path)}`;
+}
+
+function sessionEnvScript(options = {}) {
+  const env = { IPA_SEARCH_LOG: "1", ...(options.env ?? {}) };
+  return `#!/usr/bin/env node
+// ${HARNESS_MARKER}: IPA session environment defaults.
+import { appendFileSync } from "node:fs";
+
+const envFiles = [...new Set([process.env.CLAUDE_ENV_FILE, process.env.CODEX_ENV_FILE].filter(Boolean))];
+const env = ${JSON.stringify(env)};
+
+function shellEscape(value) {
+  return \`'\${String(value).replace(/'/g, \`'"'"'\`)}'\`;
+}
+
+for (const envFile of envFiles) {
+  for (const [name, value] of Object.entries(env)) {
+    appendFileSync(envFile, \`export \${name}=\${shellEscape(value)}\\n\`, "utf8");
+  }
+}
+`;
 }
 
 function hookHasCommand(config, event, command) {
@@ -5005,7 +5216,7 @@ ${prefix} view "Note Title" --full
 ${prefix} search "keyword"
 \`\`\`
 
-Start IPA/vault tasks with \`context\` to gather a compact note-centered pack, then use \`search\` proactively for discovery. Do not treat a one-note or narrow context pack as complete when the user asks about a broader topic, history, architecture, tradeoff, or process. Use \`view --full\` for selected notes after search has surfaced the likely candidates.
+The harness records the current prompt context so plain \`${prefix} search "keyword"\` calls are logged as tune evidence even when the runtime does not propagate env-file exports. Start IPA/vault tasks with \`context\` to gather a compact note-centered pack, then use \`search\` proactively for discovery. Do not treat a one-note or narrow context pack as complete when the user asks about a broader topic, history, architecture, tradeoff, or process. Use \`view --full\` for selected notes after search has surfaced the likely candidates.
 
 ## Vault Convention And Plugins
 
@@ -5040,6 +5251,27 @@ ${prefix} formatter apply --note "Edited Note"
 For multiple edited notes, pass the note titles after one \`--note\`, for example:
 \`${prefix} formatter plan --note "Note A" "Note B"\` then
 \`${prefix} formatter apply --note "Note A" "Note B"\`.
+
+Harness sessions track edited vault notes and the Stop hook blocks final responses if \`${prefix} formatter plan --note ...\` still reports patches. Run the matching \`${prefix} formatter apply --note ...\` before finishing.
+
+## Core-Backed Scripted Edits
+
+For exact replacements in an existing note, prefer the core-backed CLI instead of scanning vault folders with Node \`fs\`:
+
+\`\`\`bash
+${prefix} note replace "Note Title" --old-file .tmp/old-block.txt --new-file .tmp/new-block.txt
+${prefix} note replace "Note Title" --old-file .tmp/old-block.txt --new-file .tmp/new-block.txt --apply
+\`\`\`
+
+For more complex one-off scripts inside the \`ipa-cli\` workspace, import core helpers and let IPA resolve the note:
+
+\`\`\`js
+import { replaceInNote, rewriteNote } from "./packages/core/dist/index.js";
+
+await replaceInNote(vaultPath, "Note Title", oldBlock, newBlock);
+\`\`\`
+
+Do not hard-code vault folders such as \`/Users/.../02 Archive\`, scan directories manually, or bypass IPA note lookup when a core helper can resolve the note by title.
 `;
 }
 
@@ -5071,12 +5303,12 @@ ${prefix} plugin validate .ipa/plugins/rules/_example-title-length.js
 ${prefix} plugin dry-run rules .ipa/plugins/rules/_example-title-length.js --note "Edited Note"
 \`\`\`
 
-Start IPA/vault work with \`${prefix} context "keyword" --size medium --format markdown\`. Treat that context as a bootstrap, not final authority: if it returns only one note, mostly structural metadata, or an ambiguous result, run \`${prefix} search "keyword"\` with one or more focused keywords before deciding what the vault says. Use \`view --full\` only after choosing the likely source notes.
+The harness records the current prompt context so plain \`${prefix} search "keyword"\` calls are logged as tune evidence even when the runtime does not propagate env-file exports. Start IPA/vault work with \`${prefix} context "keyword" --size medium --format markdown\`. Treat that context as a bootstrap, not final authority: if it returns only one note, mostly structural metadata, or an ambiguous result, run \`${prefix} search "keyword"\` with one or more focused keywords before deciding what the vault says. Use \`view --full\` only after choosing the likely source notes.
 
 ## Vault Operation Workflow
 
 - Resolve the active vault/profile with \`${prefix} config show\` when behavior depends on the profile.
-- Use \`${prefix} context\` as a bootstrap, \`${prefix} search\` for discovery, \`${prefix} view --full\` for selected sources, and \`${prefix} traversal\` for ref/root/sibling structure.
+- Use \`${prefix} context\` as a bootstrap, \`${prefix} search\` for logged discovery, \`${prefix} view --full\` for selected sources, and \`${prefix} traversal\` for ref/root/sibling structure.
 - Create new Markdown notes under the configured inbox, or import drafts with \`${prefix} inbox add <file>\`. Existing Markdown notes may be edited in place.
 - After editing vault Markdown, run lint/validation, inspect the note-scoped formatter plan, then run the matching formatter apply when the plan contains only expected changes. Do not stop at plan-only formatting.
 
@@ -5089,6 +5321,10 @@ Start IPA/vault work with \`${prefix} context "keyword" --size medium --format m
 - Verify plugin work with \`${prefix} plugin validate\`, \`${prefix} plugin dry-run rules ... --note "Note Title"\` or \`${prefix} plugin dry-run search ... --query "keyword"\`, \`${prefix} list-rules\`, \`${prefix} validator\`, and \`${prefix} formatter plan/apply --note ...\`.
 
 Formatter commands accept multiple notes as \`${prefix} formatter plan --note "Note A" "Note B"\` and \`${prefix} formatter apply --note "Note A" "Note B"\`.
+
+The harness records edited vault notes and blocks final responses until the note-scoped formatter plan has no remaining patches. Do not bypass this by ending after a plan-only check.
+
+For scripted edits to existing notes, prefer \`${prefix} note replace "Note Title" --old-file .tmp/old-block.txt --new-file .tmp/new-block.txt --apply\` or core helpers such as \`replaceInNote\`/\`rewriteNote\` from \`./packages/core/dist/index.js\` inside the \`ipa-cli\` workspace. Do not hard-code archive/inbox paths or scan vault folders manually.
 
 ## Vault-Local Helper Skills
 
@@ -5206,10 +5442,12 @@ if (!allowed) {
 function userPromptNudgeScript(vaultPath, options = {}) {
   return `#!/usr/bin/env node
 // ${HARNESS_MARKER}: IPA UserPromptSubmit context nudge.
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 
 const vaultPath = ${JSON.stringify(vaultPath)};
+const agent = ${JSON.stringify(options.agent ?? "unknown")};
 const prefix = "ipa";
 
 function inputJson() {
@@ -5225,6 +5463,19 @@ function firstString(values) {
     if (typeof value === "string" && value.trim()) return value;
   }
   return null;
+}
+
+function normalizeCwd(cwd) {
+  const value = firstString([cwd]);
+  if (!value) return null;
+  return resolve(value);
+}
+
+function promptContextPathForCwd(cwd) {
+  const normalized = normalizeCwd(cwd);
+  if (!normalized) return null;
+  const key = createHash("sha256").update(normalized).digest("hex").slice(0, 16);
+  return join(vaultPath, ".ipa", "tune", "logs", \`current-prompt-\${key}.json\`);
 }
 
 function recordPromptEvent(input) {
@@ -5239,16 +5490,52 @@ function recordPromptEvent(input) {
   ]);
   if (!prompt) return;
   const path = join(vaultPath, ".ipa", "tune", "logs", "search-events.jsonl");
+  const ts = new Date().toISOString();
+  const eventId = firstString([input.event_id, input.eventId, input.prompt_event_id, input.promptEventId]) || \`prompt_\${randomUUID()}\`;
+  const sessionId = firstString([
+    input.session_id,
+    input.sessionId,
+    input.conversation_id,
+    input.conversationId,
+    input.transcript_path,
+    input.transcriptPath,
+    process.env.IPA_SESSION_ID,
+    process.env.CODEX_SESSION_ID,
+    process.env.CLAUDE_SESSION_ID,
+    process.env.TERM_SESSION_ID
+  ]) || \`\${agent}:unknown\`;
+  const turnId = firstString([input.turn_id, input.turnId, input.turnID]) || eventId;
+  const cwd = normalizeCwd(firstString([
+    input.cwd,
+    input.project_dir,
+    input.projectDir,
+    input.workspace_root,
+    input.workspaceRoot
+  ]));
   const event = {
-    ts: new Date().toISOString(),
+    schema_version: 1,
+    event_id: eventId,
     event_type: "prompt",
+    ts,
     source: "harness",
+    agent,
+    session_id: sessionId,
+    turn_id: turnId,
     query: prompt,
     prompt,
+    source_prompt: prompt,
+    generated_query: null,
+    cwd,
     prompt_length: prompt.length
   };
+  const currentPath = join(vaultPath, ".ipa", "tune", "logs", "current-prompt.json");
+  const workspaceCurrentPath = promptContextPathForCwd(cwd);
   mkdirSync(dirname(path), { recursive: true });
   appendFileSync(path, JSON.stringify(event) + "\\n", "utf8");
+  writeFileSync(currentPath, JSON.stringify({ ...event, ttl_seconds: 1800 }, null, 2) + "\\n", "utf8");
+  if (workspaceCurrentPath) {
+    writeFileSync(workspaceCurrentPath, JSON.stringify({ ...event, ttl_seconds: 1800 }, null, 2) + "\\n", "utf8");
+  }
 }
 
 const input = inputJson();
@@ -5261,16 +5548,18 @@ const lines = [
   "",
   "Required workflow:",
   \`1. Bootstrap: \${prefix} context "keyword" --size medium --format markdown\`,
-  \`2. If the pack is narrow, ambiguous, or one-note, widen with \${prefix} search "keyword"\`,
+  \`2. If the pack is narrow, ambiguous, or one-note, widen with \${prefix} search "keyword" so tune gets search-result evidence\`,
   \`3. Open a specific note with \${prefix} view "Note Title" --full\`,
   \`4. Known note shortcut: \${prefix} context "Note Title" --by-note --size medium --format markdown\`,
   \`5. After editing vault Markdown: \${prefix} validator then \${prefix} formatter plan --note "Title" then \${prefix} formatter apply --note "Title"\`,
   \`6. New notes enter via \${prefix} inbox add so the configured inbox is respected.\`,
+  \`7. Existing note block replacements should use \${prefix} note replace or exported core helpers, not manual fs directory scans.\`,
+  \`8. The Stop hook blocks final responses while edited vault notes still have formatter patches; run \${prefix} formatter apply before finishing.\`,
   "",
   "Do NOT:",
   "- Skip the bootstrap when the task touches the vault — even quick questions count.",
-  "- Use plain ipa commands; project-local .ipa-profile/.ipa-config can select the vault, but always run ipa rather than reading vault files directly.",
-  "- Do not stop after a single markdown context note when the user asks about a system, process, history, tradeoff, or broad topic; use search to widen discovery.",
+  "- Do not bypass ipa with raw vault file reads/writes; project-local .ipa-profile/.ipa-config can select the vault.",
+  "- Do not stop after a single markdown context note when the user asks about a system, process, history, tradeoff, or broad topic; use logged search to widen discovery.",
   "- Do not paste raw file paths or the full user prompt into context/search. Pick short keywords or exact note titles.",
   "",
   "Continue from existing conversation context only when it already covers the topic and likely related notes."
@@ -5285,14 +5574,16 @@ process.stdout.write(JSON.stringify({
 `;
 }
 
-function markdownWriteNudgeScript(vaultPath, options = {}) {
+function markdownWriteNudgeScript(vaultPath, mapping, options = {}) {
   return `#!/usr/bin/env node
 // ${HARNESS_MARKER}: prompt nudge after IPA vault Markdown edits.
-import { readFileSync } from "node:fs";
-import { relative, resolve, sep } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join, relative, resolve, sep } from "node:path";
 
 const vaultPath = ${JSON.stringify(vaultPath)};
+const noteRoots = ${JSON.stringify([mapping.inbox_dir, mapping.project_dir, mapping.archive_dir].filter(Boolean))};
 const prefix = "ipa";
+const pendingPath = join(vaultPath, ".ipa", "harness", "formatter-pending.json");
 
 function inputJson() {
   try {
@@ -5309,6 +5600,25 @@ function firstString(values) {
   return null;
 }
 
+function inNoteRoot(rel) {
+  return noteRoots.some((root) => rel === root || rel.startsWith(root.replace(/\\/+$/, "") + "/"));
+}
+
+function readPending() {
+  if (!existsSync(pendingPath)) return { version: 1, notes: [] };
+  try {
+    const parsed = JSON.parse(readFileSync(pendingPath, "utf8"));
+    return { version: 1, notes: Array.isArray(parsed.notes) ? parsed.notes : [] };
+  } catch {
+    return { version: 1, notes: [] };
+  }
+}
+
+function writePending(pending) {
+  mkdirSync(dirname(pendingPath), { recursive: true });
+  writeFileSync(pendingPath, JSON.stringify(pending, null, 2) + "\\n", "utf8");
+}
+
 const input = inputJson();
 const toolInput = input.tool_input ?? input.toolInput ?? input.input ?? {};
 const filePath = firstString([toolInput.file_path, toolInput.path, input.file_path, input.path]);
@@ -5319,7 +5629,13 @@ const rel = relative(vaultPath, absolute);
 if (rel === "" || rel.startsWith("..") || rel.startsWith("/") || !rel.toLowerCase().endsWith(".md")) process.exit(0);
 
 const note = rel.split(sep).join("/");
+if (!inNoteRoot(note)) process.exit(0);
 const noteTitle = note.split("/").pop().replace(/\\.md$/i, "");
+const pending = readPending();
+pending.notes = pending.notes.filter((item) => item.path !== note && item.title !== noteTitle);
+pending.notes.push({ title: noteTitle, path: note, updated_at: new Date().toISOString() });
+pending.updated_at = new Date().toISOString();
+writePending(pending);
 const noteArg = JSON.stringify(noteTitle);
 const message = [
   \`[IPA CLI] Vault Markdown changed: \${note}\`,
@@ -5340,20 +5656,125 @@ process.stdout.write(JSON.stringify({
 `;
 }
 
+function formatterGateScript(vaultPath, options = {}) {
+  return `#!/usr/bin/env node
+// ${HARNESS_MARKER}: block final response until pending IPA formatter patches are applied.
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { join } from "node:path";
+
+const vaultPath = ${JSON.stringify(vaultPath)};
+const pendingPath = join(vaultPath, ".ipa", "harness", "formatter-pending.json");
+const prefix = "ipa";
+
+function readPending() {
+  if (!existsSync(pendingPath)) return { version: 1, notes: [] };
+  try {
+    const parsed = JSON.parse(readFileSync(pendingPath, "utf8"));
+    return { version: 1, notes: Array.isArray(parsed.notes) ? parsed.notes : [] };
+  } catch {
+    return { version: 1, notes: [] };
+  }
+}
+
+function clearPending() {
+  try {
+    unlinkSync(pendingPath);
+  } catch {
+    writeFileSync(pendingPath, JSON.stringify({ version: 1, notes: [] }, null, 2) + "\\n", "utf8");
+  }
+}
+
+function shellArg(value) {
+  return JSON.stringify(String(value));
+}
+
+function block(message) {
+  process.stderr.write(message + "\\n");
+  process.stdout.write(JSON.stringify({
+    decision: "block",
+    reason: message,
+    hookSpecificOutput: {
+      hookEventName: "Stop",
+      additionalContext: message
+    }
+  }) + "\\n");
+  process.exit(2);
+}
+
+const pending = readPending();
+const notes = pending.notes
+  .filter((item) => typeof item.title === "string" && item.title.trim())
+  .map((item) => item.title.trim());
+const uniqueNotes = [...new Set(notes)];
+if (!uniqueNotes.length) process.exit(0);
+
+const plan = spawnSync("ipa", ["--vault", vaultPath, "--json", "formatter", "plan", "--note", ...uniqueNotes], {
+  encoding: "utf8",
+  timeout: 15000
+});
+
+const noteArgs = uniqueNotes.map(shellArg).join(" ");
+const commands = [
+  \`\${prefix} validator\`,
+  \`\${prefix} formatter plan --note \${noteArgs}\`,
+  \`\${prefix} formatter apply --note \${noteArgs}\`
+].join("\\n");
+
+if (plan.status !== 0) {
+  block([
+    "[IPA CLI] Formatter gate could not verify pending vault Markdown edits.",
+    plan.stderr.trim() || plan.stdout.trim() || "formatter plan failed",
+    "Run:",
+    commands
+  ].join("\\n"));
+}
+
+let parsed = null;
+try {
+  parsed = JSON.parse(plan.stdout);
+} catch {
+  block([
+    "[IPA CLI] Formatter gate could not parse formatter plan output.",
+    "Run:",
+    commands
+  ].join("\\n"));
+}
+
+const patchCount = Number(parsed?.summary?.patches ?? parsed?.patches?.length ?? 0);
+if (patchCount > 0) {
+  block([
+    \`[IPA CLI] Formatter gate blocked final response: \${patchCount} formatter patch(es) remain for edited vault note(s).\`,
+    "Run:",
+    commands,
+    "Do not stop at formatter plan; run formatter apply after reviewing the plan."
+  ].join("\\n"));
+}
+
+clearPending();
+`;
+}
+
 async function installGlobalHarness(vaultPath, spec, mapping, options = {}) {
   const files = [];
+  const envPath = join(spec.hooksDir, "ipa-session-env.mjs");
   const guardPath = join(spec.hooksDir, "ipa-inbox-guard.mjs");
   const promptPath = join(spec.hooksDir, "ipa-user-prompt-nudge.mjs");
   const writeNudgePath = join(spec.hooksDir, "ipa-md-write-nudge.mjs");
+  const formatterGatePath = join(spec.hooksDir, "ipa-formatter-gate.mjs");
   await writeManagedFile(spec.skillFile, harnessSkillContent(vaultPath, spec, options), files);
+  await writeManagedFile(envPath, sessionEnvScript(), files);
   await writeManagedFile(guardPath, inboxGuardScript(vaultPath, mapping.inbox_dir), files);
-  await writeManagedFile(promptPath, userPromptNudgeScript(vaultPath, options), files);
-  await writeManagedFile(writeNudgePath, markdownWriteNudgeScript(vaultPath, options), files);
+  await writeManagedFile(promptPath, userPromptNudgeScript(vaultPath, { ...options, agent: spec.name }), files);
+  await writeManagedFile(writeNudgePath, markdownWriteNudgeScript(vaultPath, mapping, options), files);
+  await writeManagedFile(formatterGatePath, formatterGateScript(vaultPath, options), files);
 
   const config = await readJsonObject(spec.hooksConfig);
+  addHookCommand(config, "SessionStart", null, hookCommand(envPath), "Setting IPA search logging environment...", 5);
   addHookCommand(config, "PreToolUse", "Write|Edit|MultiEdit", hookCommand(guardPath), "Checking IPA inbox write policy...", 5);
   addHookCommand(config, "PostToolUse", "Write|Edit|MultiEdit", hookCommand(writeNudgePath), "Reminding IPA lint/format checks...", 5);
   addHookCommand(config, "UserPromptSubmit", null, hookCommand(promptPath), null, 5);
+  addHookCommand(config, "Stop", null, hookCommand(formatterGatePath), "Checking IPA formatter apply gate...", 20);
   await writeJsonObject(spec.hooksConfig, config);
   files.push(spec.hooksConfig);
   await upsertManagedBlock(spec.globalPromptFile, globalPromptContent(spec));
@@ -5364,9 +5785,11 @@ async function installGlobalHarness(vaultPath, spec, mapping, options = {}) {
 async function uninstallGlobalHarness(spec) {
   const removed = [];
   const scripts = [
+    join(spec.hooksDir, "ipa-session-env.mjs"),
     join(spec.hooksDir, "ipa-inbox-guard.mjs"),
     join(spec.hooksDir, "ipa-user-prompt-nudge.mjs"),
-    join(spec.hooksDir, "ipa-md-write-nudge.mjs")
+    join(spec.hooksDir, "ipa-md-write-nudge.mjs"),
+    join(spec.hooksDir, "ipa-formatter-gate.mjs")
   ];
   for (const path of [spec.skillFile, ...scripts]) await removeManagedFile(path, removed);
   if (existsSync(spec.hooksConfig)) {
@@ -5413,9 +5836,11 @@ export async function harnessStatus(vaultPath, options = {}) {
     const spec = harnessTargetSpec(target, options);
     global[target] = {
       skill: hasManagedFile(spec.skillFile),
+      session_env_hook: hasManagedFile(join(spec.hooksDir, "ipa-session-env.mjs")),
       guard_hook: hasManagedFile(join(spec.hooksDir, "ipa-inbox-guard.mjs")),
       prompt_hook: hasManagedFile(join(spec.hooksDir, "ipa-user-prompt-nudge.mjs")),
       markdown_nudge_hook: hasManagedFile(join(spec.hooksDir, "ipa-md-write-nudge.mjs")),
+      formatter_gate_hook: hasManagedFile(join(spec.hooksDir, "ipa-formatter-gate.mjs")),
       hooks_config: existsSync(spec.hooksConfig),
       prompt: hasManagedFile(spec.globalPromptFile),
       local_skills: vaultLocalSkillStatus(vaultPath, spec)
@@ -5448,7 +5873,10 @@ export async function harnessInstall(vaultPath, target = "codex", options = {}) 
       home: `~/.${name}`,
       skill: `~/.${name}/skills/ipa/SKILL.md`,
       hooks_config: name === "claude" ? "~/.claude/settings.json" : "~/.codex/hooks.json",
-      prompt: `~/.${name}/${spec.localPrompt}`
+      prompt: `~/.${name}/${spec.localPrompt}`,
+      environment: {
+        IPA_SEARCH_LOG: "1"
+      }
     },
     local_skills: {
       root: vaultLocalSkillRootRel(spec),
@@ -5461,6 +5889,12 @@ export async function harnessInstall(vaultPath, target = "codex", options = {}) 
       search: ".ipa/plugins/search/*.js"
     },
     hooks: {
+      session_start_env: {
+        environment: {
+          IPA_SEARCH_LOG: "1"
+        },
+        policy: "enable search-event logging for plain ipa search commands in agent sessions"
+      },
       guard: {
         command: "ipa harness guard check <vault-relative-path>",
         policy: "new markdown files must be created under the configured inbox folder"
@@ -5470,6 +5904,9 @@ export async function harnessInstall(vaultPath, target = "codex", options = {}) 
       },
       markdown_write_nudge: {
         policy: "nudge the agent to run validator, note-scoped formatter plan, and matching formatter apply after vault Markdown edits"
+      },
+      formatter_gate: {
+        policy: "block final response while edited vault notes still have formatter patches"
       }
     }
   };
@@ -5536,9 +5973,11 @@ export async function harnessDoctor(vaultPath, options = {}) {
       issues.push({ severity: "warn", code: "harness.global_skill_missing", target, message: `missing managed IPA skill at ~/.${target}/skills/ipa/SKILL.md` });
     }
     for (const [code, file] of [
+      ["harness.global_session_env_hook_missing", join(spec.hooksDir, "ipa-session-env.mjs")],
       ["harness.global_guard_hook_missing", join(spec.hooksDir, "ipa-inbox-guard.mjs")],
       ["harness.global_prompt_hook_missing", join(spec.hooksDir, "ipa-user-prompt-nudge.mjs")],
-      ["harness.global_markdown_nudge_missing", join(spec.hooksDir, "ipa-md-write-nudge.mjs")]
+      ["harness.global_markdown_nudge_missing", join(spec.hooksDir, "ipa-md-write-nudge.mjs")],
+      ["harness.global_formatter_gate_missing", join(spec.hooksDir, "ipa-formatter-gate.mjs")]
     ]) {
       if (!hasManagedFile(file)) issues.push({ severity: "warn", code, target, message: `missing managed hook ${basename(file)}` });
     }

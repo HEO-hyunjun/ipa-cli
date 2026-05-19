@@ -1,6 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { chmod, cp, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -629,11 +631,64 @@ test("tune analyze, replay and testset commands are functional", async () => {
   assert.equal(added.cases, 4);
   assert.equal((await tuneTestsetShow(vault)).queries, 4);
 
-  await searchVault(vault, "Alpha", { logSearch: true });
-  const log = await tuneLog(vault);
-  assert.equal(log.count, 1);
-  assert.equal(log.events[0].query, "Alpha");
-  assert.equal(log.events[0].results[0].note, "Alpha");
+  await mkdir(join(vault, ".ipa", "tune", "logs"), { recursive: true });
+  const searchCwd = join(vault, "..", "workspace-a");
+  const searchCwdKey = createHash("sha256").update(searchCwd).digest("hex").slice(0, 16);
+  await writeFile(
+    join(vault, ".ipa", "tune", "logs", "current-prompt.json"),
+    JSON.stringify({
+      event_id: "prompt_other_session",
+      event_type: "prompt",
+      ts: new Date().toISOString(),
+      agent: "codex",
+      session_id: "other_session",
+      turn_id: "other_turn",
+      source_prompt: "Wrong prompt from another session",
+      prompt: "Wrong prompt from another session",
+      ttl_seconds: 1800
+    }, null, 2),
+    "utf8"
+  );
+  await writeFile(
+    join(vault, ".ipa", "tune", "logs", `current-prompt-${searchCwdKey}.json`),
+    JSON.stringify({
+      event_id: "prompt_test",
+      event_type: "prompt",
+      ts: new Date().toISOString(),
+      agent: "codex",
+      session_id: "session_test",
+      turn_id: "turn_test",
+      source_prompt: "Find the Alpha note",
+      prompt: "Find the Alpha note",
+      cwd: searchCwd,
+      ttl_seconds: 1800
+    }, null, 2),
+    "utf8"
+  );
+  const previousSearchLog = process.env.IPA_SEARCH_LOG;
+  const previousTuneLogSearch = process.env.IPA_TUNE_LOG_SEARCH;
+  delete process.env.IPA_SEARCH_LOG;
+  delete process.env.IPA_TUNE_LOG_SEARCH;
+  try {
+    await searchVault(vault, "Alpha", { logCwd: searchCwd });
+    const log = await tuneLog(vault);
+    assert.equal(log.count, 1);
+    assert.equal(log.events[0].event_type, "search");
+    assert.equal(log.events[0].query, "Alpha");
+    assert.equal(log.events[0].generated_query, "Alpha");
+    assert.equal(log.events[0].source_prompt, "Find the Alpha note");
+    assert.equal(log.events[0].prompt_event_id, "prompt_test");
+    assert.equal(log.events[0].agent, "codex");
+    assert.equal(log.events[0].session_id, "session_test");
+    assert.equal(log.events[0].turn_id, "turn_test");
+    assert.equal(log.events[0].cwd, searchCwd);
+    assert.equal(log.events[0].results[0].note, "Alpha");
+  } finally {
+    if (previousSearchLog === undefined) delete process.env.IPA_SEARCH_LOG;
+    else process.env.IPA_SEARCH_LOG = previousSearchLog;
+    if (previousTuneLogSearch === undefined) delete process.env.IPA_TUNE_LOG_SEARCH;
+    else process.env.IPA_TUNE_LOG_SEARCH = previousTuneLogSearch;
+  }
 
   assert.equal((await tuneLabel(vault, { query: "Alpha", target: "Alpha" })).count, 1);
   assert.equal((await tuneLabel(vault)).labels[0].target, "Alpha");
@@ -701,22 +756,39 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   assert.ok(install.plugin_init.created.includes(".ipa/plugins/types/ipa-plugin.d.ts"));
   assert.match(await readFile(join(vault, ".ipa", "plugins", "rules", "_example-title-length.js"), "utf8"), /@ts-check/);
   assert.ok(install.global_files.some((file) => file.endsWith(".codex/skills/ipa/SKILL.md")));
+  assert.ok(install.global_files.some((file) => file.endsWith(".codex/hooks/ipa-session-env.mjs")));
+  assert.ok(install.global_files.some((file) => file.endsWith(".codex/hooks/ipa-formatter-gate.mjs")));
   const status = await harnessStatus(vault, options);
   assert.deepEqual(status.installed, ["codex"]);
+  assert.equal(status.global.codex.session_env_hook, true);
+  assert.equal(status.global.codex.formatter_gate_hook, true);
   assert.equal(status.plugin_scaffold.types, true);
   assert.equal((await harnessDoctor(vault, options)).status, "ok");
   const skill = await readFile(join(home, ".codex", "skills", "ipa", "SKILL.md"), "utf8");
   assert.ok(skill.startsWith("---\nname: ipa\n"), "skill YAML frontmatter must be first");
   assert.match(skill, /ipa context "keyword" --size medium --format markdown/);
-  assert.match(skill, /use `search` proactively for discovery/);
+  assert.match(skill, /ipa search "keyword"/);
+  assert.match(skill, /current prompt context/);
+  assert.doesNotMatch(skill, /IPA_SEARCH_LOG=1 ipa search "keyword"/);
   assert.doesNotMatch(skill, /Use `search` only when/);
   assert.doesNotMatch(skill, /ipa --profile ipa-test search/);
   assert.match(skill, /formatter plan --note "Note A" "Note B"/);
   assert.match(skill, /formatter apply --note "Note A" "Note B"/);
+  assert.match(skill, /Core-Backed Scripted Edits/);
+  assert.match(skill, /ipa note replace "Note Title"/);
   assert.match(await readFile(join(home, ".codex", "hooks", "ipa-inbox-guard.mjs"), "utf8"), /shared IPA inbox creation guard/);
   const markdownNudge = await readFile(join(home, ".codex", "hooks", "ipa-md-write-nudge.mjs"), "utf8");
   assert.match(markdownNudge, /formatter apply --note/);
   assert.match(markdownNudge, /Do not stop at formatter plan/);
+  const sessionEnvHook = join(home, ".codex", "hooks", "ipa-session-env.mjs");
+  const envFile = join(home, "codex-session.env");
+  const sessionEnv = spawnSync(process.execPath, [sessionEnvHook], {
+    input: "{}",
+    env: { ...process.env, CODEX_ENV_FILE: envFile },
+    encoding: "utf8"
+  });
+  assert.equal(sessionEnv.status, 0);
+  assert.match(await readFile(envFile, "utf8"), /export IPA_SEARCH_LOG='1'/);
   const promptHook = join(home, ".codex", "hooks", "ipa-user-prompt-nudge.mjs");
   assert.match(await readFile(promptHook, "utf8"), /context "Note Title" --by-note/);
   const agentsPrompt = await readFile(join(vault, "AGENTS.md"), "utf8");
@@ -727,6 +799,7 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   assert.match(agentsPrompt, /\.agents\/skills/);
   assert.match(agentsPrompt, /plugin dry-run search/);
   assert.match(agentsPrompt, /ipa config show/);
+  assert.match(agentsPrompt, /ipa note replace "Note Title"/);
   const ruleSkill = await readFile(join(vault, ".agents", "skills", "ipa-rule", "SKILL.md"), "utf8");
   assert.match(ruleSkill, /name: ipa-rule/);
   assert.match(ruleSkill, /Use this skill whenever the user mentions IPA rules/);
@@ -738,29 +811,55 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   const tuneSkill = await readFile(join(vault, ".agents", "skills", "ipa-tune", "SKILL.md"), "utf8");
   assert.match(tuneSkill, /Use this skill whenever the user wants better IPA search results/);
   assert.match(tuneSkill, /ipa tune log --limit 50/);
+  assert.match(tuneSkill, /ipa tune testset list/);
+  assert.match(tuneSkill, /prompt context is recorded automatically/);
+  assert.doesNotMatch(tuneSkill, /IPA_SEARCH_LOG=1 ipa search "keyword"/);
+  assert.match(tuneSkill, /Label Confirmation Protocol/);
   assert.match(tuneSkill, /Do not run the optimizer by default/);
   const hooks = await readFile(join(home, ".codex", "hooks.json"), "utf8");
+  assert.match(hooks, /ipa-session-env\.mjs/);
+  assert.match(hooks, /SessionStart/);
   assert.match(hooks, /ipa-inbox-guard\.mjs/);
   assert.match(hooks, /ipa-user-prompt-nudge\.mjs/);
   assert.match(hooks, /ipa-md-write-nudge\.mjs/);
+  assert.match(hooks, /ipa-formatter-gate\.mjs/);
+  assert.match(hooks, /Stop/);
+  const promptCwd = join(home, "workspace");
   const promptNudge = spawnSync(process.execPath, [promptHook], {
-    input: JSON.stringify({ prompt: "/Users/mac/Downloads/sales_graph\\ \\(1\\).mmd /Users/mac/Downloads/sales_graph_mapping\\ \\(1\\).yaml" }),
+    input: JSON.stringify({
+      cwd: promptCwd,
+      prompt: "/Users/mac/Downloads/sales_graph\\ \\(1\\).mmd /Users/mac/Downloads/sales_graph_mapping\\ \\(1\\).yaml"
+    }),
     encoding: "utf8"
   });
   assert.equal(promptNudge.status, 0);
   const promptContext = JSON.parse(promptNudge.stdout).hookSpecificOutput.additionalContext;
   assert.match(promptContext, /ipa context "keyword" --size medium --format markdown/);
   assert.match(promptContext, /ipa context "Note Title" --by-note --size medium --format markdown/);
-  assert.match(promptContext, /use search to widen discovery/);
+  assert.match(promptContext, /logged search to widen discovery/);
+  assert.doesNotMatch(promptContext, /IPA_SEARCH_LOG=1 ipa search "keyword"/);
   assert.match(promptContext, /Do not stop after a single markdown context note/);
   assert.match(promptContext, /Do not paste raw file paths/);
+  assert.match(promptContext, /note replace/);
   assert.doesNotMatch(promptContext, /Downloads/);
   assert.doesNotMatch(promptContext, /sales_graph/);
   assert.doesNotMatch(promptContext, /Possible related notes/);
   const promptLog = await tuneLog(vault);
   assert.equal(promptLog.count, 1);
   assert.equal(promptLog.events[0].event_type, "prompt");
+  assert.equal(promptLog.events[0].agent, "codex");
+  assert.ok(promptLog.events[0].event_id.startsWith("prompt_"));
+  assert.equal(promptLog.events[0].turn_id, promptLog.events[0].event_id);
+  assert.equal(promptLog.events[0].source_prompt, promptLog.events[0].prompt);
+  assert.equal(promptLog.events[0].generated_query, null);
+  assert.equal(promptLog.events[0].cwd, promptCwd);
   assert.match(promptLog.events[0].prompt, /sales_graph/);
+  const currentPrompt = JSON.parse(await readFile(join(vault, ".ipa", "tune", "logs", "current-prompt.json"), "utf8"));
+  assert.equal(currentPrompt.event_id, promptLog.events[0].event_id);
+  assert.equal(currentPrompt.ttl_seconds, 1800);
+  const promptCwdKey = createHash("sha256").update(promptCwd).digest("hex").slice(0, 16);
+  const scopedPrompt = JSON.parse(await readFile(join(vault, ".ipa", "tune", "logs", `current-prompt-${promptCwdKey}.json`), "utf8"));
+  assert.equal(scopedPrompt.event_id, promptLog.events[0].event_id);
   const guardScript = join(home, ".codex", "hooks", "ipa-inbox-guard.mjs");
   const blocked = spawnSync(process.execPath, [guardScript], {
     input: JSON.stringify({ tool_name: "Write", tool_input: { file_path: join(vault, "02 Archive", "New.md") } }),
@@ -783,6 +882,35 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   assert.match(nudge.stdout, /formatter plan --note \\"Alpha\\"/);
   assert.match(nudge.stdout, /formatter apply --note \\"Alpha\\"/);
   assert.match(nudge.stdout, /Do not stop at formatter plan/);
+  const pendingPath = join(vault, ".ipa", "harness", "formatter-pending.json");
+  assert.match(await readFile(pendingPath, "utf8"), /Alpha/);
+
+  await writeFile(
+    join(vault, "00 Inbox", "Needs Format.md"),
+    `---\ndate_modified: 2026/05/10 (Sun) 00:00:00\nref: ["[[🔖 Topic Index]]"]\ntags: [format]\n---\n# Needs Format\n\nBody\n`,
+    "utf8"
+  );
+  const needsFormatNudge = spawnSync(process.execPath, [join(home, ".codex", "hooks", "ipa-md-write-nudge.mjs")], {
+    input: JSON.stringify({ tool_name: "Edit", tool_input: { file_path: join(vault, "00 Inbox", "Needs Format.md") } }),
+    encoding: "utf8"
+  });
+  assert.equal(needsFormatNudge.status, 0);
+  const formatterGate = join(home, ".codex", "hooks", "ipa-formatter-gate.mjs");
+  const blockedFormatter = spawnSync(process.execPath, [formatterGate], {
+    input: "{}",
+    encoding: "utf8"
+  });
+  assert.equal(blockedFormatter.status, 2);
+  assert.match(blockedFormatter.stderr, /Formatter gate blocked final response/);
+  assert.match(blockedFormatter.stdout, /formatter apply --note/);
+
+  await formatVault(vault, true, { notes: ["Alpha", "Needs Format"] });
+  const passedFormatter = spawnSync(process.execPath, [formatterGate], {
+    input: "{}",
+    encoding: "utf8"
+  });
+  assert.equal(passedFormatter.status, 0);
+  assert.equal(existsSync(pendingPath), false);
 
   const claudeInstall = await harnessInstall(vault, "claude", options);
   assert.equal(claudeInstall.installed, true);
@@ -791,7 +919,9 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   assert.ok(claudeInstall.files.includes(".claude/skills/ipa-tune/SKILL.md"));
   assert.match(await readFile(join(home, ".claude", "skills", "ipa", "SKILL.md"), "utf8"), /IPA CLI Skill/);
   assert.match(await readFile(join(vault, "CLAUDE.md"), "utf8"), /IPA CLI Harness/);
-  assert.match(await readFile(join(vault, ".claude", "skills", "ipa-tune", "SKILL.md"), "utf8"), /name: ipa-tune/);
+  const claudeTuneSkill = await readFile(join(vault, ".claude", "skills", "ipa-tune", "SKILL.md"), "utf8");
+  assert.match(claudeTuneSkill, /name: ipa-tune/);
+  assert.match(claudeTuneSkill, /Label Confirmation Protocol/);
 
   assert.equal((await harnessGuardCheck(vault, "00 Inbox/New.md")).allowed, true);
   const denied = await harnessGuardCheck(vault, "02 Archive/New.md");

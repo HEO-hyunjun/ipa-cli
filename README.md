@@ -357,7 +357,13 @@ ipa tune testset draft --file testset.json
 ```
 
 When the Codex or Claude harness is installed, the `UserPromptSubmit` hook also
-records user prompt events in the same JSONL log with `event_type: "prompt"`.
+records user prompt events in the same JSONL log with `event_type: "prompt"`,
+and writes the current prompt context under `.ipa/tune/logs/`. Subsequent plain
+`ipa search "keyword"` commands are logged automatically from that prompt
+context, even when the agent runtime does not propagate session env-file
+exports. Logged `ipa search` events include `agent`, `session_id`, `turn_id`,
+`prompt_event_id`, `source_prompt`, and `generated_query`. If an agent does not
+run a search for a prompt, only the prompt event remains.
 
 ## Harness
 
@@ -369,9 +375,12 @@ For the selected target, install writes:
 
 - user-global IPA CLI skill: `~/.codex/skills/ipa/SKILL.md` or
   `~/.claude/skills/ipa/SKILL.md`
+- user-global `SessionStart` environment hook that exports `IPA_SEARCH_LOG=1`
 - user-global inbox creation guard hook
 - user-global `UserPromptSubmit` IPA context-first nudge hook
 - user-global post-write Markdown lint/format nudge hook
+- user-global `Stop` formatter gate that blocks final responses while edited
+  vault notes still have formatter patches
 - vault-local manifest and guard helper under `.ipa/harness/<target>/`
 - vault-local system prompt block in `AGENTS.md` for Codex or `CLAUDE.md`
   for Claude
@@ -389,9 +398,16 @@ hard-coding one user's vault naming convention.
 Harness prompts use `ipa context "keyword" --size small|medium --format
 markdown` as the initial compact note pack. Treat that pack as a bootstrap:
 if it is narrow, ambiguous, or only one note, use `ipa search "keyword"` to
-surface adjacent candidates before deciding what the vault says.
+surface adjacent candidates before deciding what the vault says. In harness
+sessions, that search is logged from the current prompt context; `IPA_SEARCH_LOG=1`
+remains supported for explicit non-harness logging.
 `ipa view "Note Title" --full` is for selected note inspection after the
 likely source notes are identified.
+
+When a vault note is edited through the harness, the post-write hook records the
+note under `.ipa/harness/formatter-pending.json`. The `Stop` hook reruns
+`ipa formatter plan --note ...`; if patches remain, it blocks the final response
+until the matching `ipa formatter apply --note ...` has been run.
 
 The vault-local prompt also describes the operational workflow for profile
 resolution, note discovery, safe writes, convention checks, formatter apply,

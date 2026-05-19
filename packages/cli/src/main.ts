@@ -700,10 +700,13 @@ function renderTuneReplay(payload) {
 
 function renderTuneLog(payload) {
   if (!payload.events?.length) return `${styleTitle("Tune search log")}\n\n${styleWarn("No search events.")}`;
-  return renderTableReport("Tune search log", ["Time", "Type", "Query", "Top result", "Count"], payload.events.map((event) => [
+  return renderTableReport("Tune search log", ["Time", "Agent", "Turn", "Type", "Prompt", "Query", "Top result", "Count"], payload.events.map((event) => [
     event.ts ?? event.time ?? "-",
+    event.agent ?? "-",
+    event.turn_id ?? event.prompt_event_id ?? "-",
     event.event_type ?? event.type ?? "search",
-    event.query ?? event.q ?? "-",
+    event.source_prompt ?? event.prompt ?? (event.event_type === "prompt" ? event.query : "-") ?? "-",
+    event.generated_query ?? (event.event_type === "prompt" ? "-" : event.query ?? event.q ?? "-"),
     event.results?.[0]?.note ?? event.target ?? "-",
     event.count ?? event.results?.length ?? "-"
   ]));
@@ -1086,7 +1089,8 @@ function buildProgram() {
       await withVault(globalOptions(program), async (vault) => print(await searchVault(vault, queryParts.join(" "), {
         threshold: optionNumber(options.threshold),
         maxResults: optionNumber(options.max),
-        showAll: Boolean(options.all)
+        showAll: Boolean(options.all),
+        logCwd: process.cwd()
       }), jsonOutput(program)));
     });
 
