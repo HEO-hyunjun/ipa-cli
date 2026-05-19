@@ -229,6 +229,46 @@ export function readFrontmatter(text) {
   };
 }
 
+function isValidExcalidrawData(data) {
+  return Boolean(
+    data &&
+    typeof data === "object" &&
+    data.type === "excalidraw" &&
+    (!data.elements || Array.isArray(data.elements)) &&
+    (!data.appState || (typeof data.appState === "object" && !Array.isArray(data.appState)))
+  );
+}
+
+function isExcalidrawJsonDocument(text) {
+  const trimmed = String(text ?? "").trim();
+  if (!trimmed.startsWith("{")) return false;
+  try {
+    return isValidExcalidrawData(JSON.parse(trimmed));
+  } catch {
+    return false;
+  }
+}
+
+function hasExcalidrawMarkdownSections(body) {
+  const normalized = String(body ?? "").replace(/\r\n/g, "\n");
+  return /^#\s+Excalidraw Data\s*$/im.test(normalized) &&
+    /^##\s+Drawing\s*$/im.test(normalized);
+}
+
+function isExcalidrawMarkdownPath(relPath) {
+  return toPosix(String(relPath ?? "")).toLowerCase().endsWith(".excalidraw.md");
+}
+
+export function isExcalidrawMarkdownFile(relPath, raw) {
+  const text = String(raw ?? "").replace(/\r\n/g, "\n");
+  const { frontmatter, body } = readFrontmatter(text);
+  return isExcalidrawMarkdownPath(relPath) ||
+    Object.hasOwn(frontmatter, "excalidraw-plugin") ||
+    Object.hasOwn(frontmatter, "excalidraw") ||
+    hasExcalidrawMarkdownSections(body) ||
+    isExcalidrawJsonDocument(body);
+}
+
 export function writeFrontmatter(frontmatter, body) {
   return `---\n${dumpYaml(frontmatter)}\n---\n${body.replace(/^\n+/, "")}`;
 }
@@ -893,14 +933,10 @@ export class IpaNoteDocument extends MarkdownDocument {
 }
 
 export async function loadNotes(vaultPath, mapping = DEFAULT_MAPPING) {
-  const excludes = asList(mapping.exclude);
-  const files = await walkFiles(vaultPath, (path, relPath) =>
-    extname(path).toLowerCase() === ".md" && !isExcludedPath(relPath, excludes)
-  );
+  const files = await activeMarkdownFiles(vaultPath, mapping);
   const notes = [];
-  for (const path of files.sort()) {
-    const raw = await readFile(path, "utf8");
-    notes.push(noteFromFile(vaultPath, path, raw, mapping));
+  for (const file of files) {
+    notes.push(noteFromFile(vaultPath, file.path, file.raw, mapping));
   }
   return notes;
 }
@@ -936,15 +972,58 @@ async function activeMarkdownFileStats(vaultPath, mapping = DEFAULT_MAPPING) {
   );
   const rows = [];
   for (const path of files.sort()) {
+    const relPath = toPosix(relative(vaultPath, path));
+    if (isExcalidrawMarkdownPath(relPath)) continue;
+    try {
+      const raw = await readFile(path, "utf8");
+      if (isExcalidrawMarkdownFile(relPath, raw)) continue;
+    } catch {
+      // Cache diff can rely on stat metadata for unchanged unreadable files.
+    }
     const fileStat = await stat(path);
     rows.push({
       path,
-      relPath: toPosix(relative(vaultPath, path)),
+      relPath,
       byteSize: fileStat.size,
       mtimeMs: fileStat.mtimeMs
     });
   }
   return rows;
+}
+
+async function activeMarkdownFiles(vaultPath, mapping = DEFAULT_MAPPING) {
+  const excludes = asList(mapping.exclude);
+  const files = await walkFiles(vaultPath, (path, relPath) =>
+    extname(path).toLowerCase() === ".md" && !isExcludedPath(relPath, excludes)
+  );
+  const rows = [];
+  for (const path of files.sort()) {
+    const relPath = toPosix(relative(vaultPath, path));
+    const raw = await readFile(path, "utf8");
+    if (isExcalidrawMarkdownFile(relPath, raw)) continue;
+    rows.push({
+      path,
+      relPath,
+      raw
+    });
+  }
+  return rows;
+}
+
+async function excludedMarkdownFiles(vaultPath, mapping = DEFAULT_MAPPING) {
+  const excludes = asList(mapping.exclude);
+  const files = await walkFiles(vaultPath, (path, relPath) =>
+    extname(path).toLowerCase() === ".md" && isExcludedPath(relPath, excludes)
+  );
+  const maybeActive = await walkFiles(vaultPath, (path, relPath) =>
+    extname(path).toLowerCase() === ".md" && !isExcludedPath(relPath, excludes)
+  );
+  for (const path of maybeActive.sort()) {
+    const relPath = toPosix(relative(vaultPath, path));
+    const raw = await readFile(path, "utf8");
+    if (isExcalidrawMarkdownFile(relPath, raw)) files.push(path);
+  }
+  return files.sort();
 }
 
 function cacheFileEntry(note, fileStat = null) {
@@ -2592,19 +2671,12 @@ export async function validateVault(vaultPath) {
 }
 
 async function loadActiveMarkdownTitles(vaultPath, mapping) {
-  const excludes = asList(mapping.exclude);
-  const files = await walkFiles(vaultPath, (path, relPath) =>
-    extname(path).toLowerCase() === ".md" && !isExcludedPath(relPath, excludes)
-  );
-  return markdownTitleSet(files);
+  const files = await activeMarkdownFiles(vaultPath, mapping);
+  return markdownTitleSet(files.map((file) => file.path));
 }
 
 async function loadExcludedMarkdownTitles(vaultPath, mapping) {
-  const excludes = asList(mapping.exclude);
-  const files = await walkFiles(vaultPath, (path, relPath) =>
-    extname(path).toLowerCase() === ".md" && isExcludedPath(relPath, excludes)
-  );
-  return markdownTitleSet(files);
+  return markdownTitleSet(await excludedMarkdownFiles(vaultPath, mapping));
 }
 
 async function loadAttachmentTitles(vaultPath, mapping) {

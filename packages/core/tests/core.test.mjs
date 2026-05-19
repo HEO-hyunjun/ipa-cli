@@ -11,6 +11,7 @@ import {
   formatVault,
   inboxAdd,
   IpaNoteDocument,
+  isExcalidrawMarkdownFile,
   loadNotes,
   MarkdownDocument,
   linkApply,
@@ -324,6 +325,48 @@ test("configured file excludes and code fences keep validator focused on notes",
   const validation = await validateVault(vault);
   assert.equal(validation.status, "ok");
   assert.equal(validation.issues.some((item) => item.message.includes("Excluded Target") || item.message.includes("Home")), false);
+});
+
+test("excalidraw markdown scenes are excluded from active note operations", async () => {
+  const vault = await fixtureVault();
+  const sketchPath = join(vault, "00 Inbox", "Sketch.excalidraw.md");
+  const embeddedPath = join(vault, "00 Inbox", "Embedded Drawing.md");
+  const rawScenePath = join(vault, "00 Inbox", "Raw Scene.md");
+  await writeFile(
+    sketchPath,
+    `---\nexcalidraw-plugin: parsed\ntags: [excalidraw]\n---\n==⚠ Switch to EXCALIDRAW VIEW. ⚠==\n\n# Excalidraw Data\n## Text Elements\nhello ^abc\n\n## Drawing\n~~~compressed-json\nabc\n~~~\n`,
+    "utf8"
+  );
+  await writeFile(
+    embeddedPath,
+    `---\ndate_created: 2026/05/10 (Sun) 00:00:00\ndate_modified: 2026/05/10 (Sun) 00:00:00\ntype: note\nref: ["[[Sketch.excalidraw]]"]\ntags: [note]\n---\n# Embedded Drawing\n\n[[Sketch.excalidraw]]\n`,
+    "utf8"
+  );
+  await writeFile(
+    rawScenePath,
+    `{"type":"excalidraw","version":2,"source":"https://github.com/excalidraw/excalidraw","elements":[],"appState":{}}\n`,
+    "utf8"
+  );
+
+  assert.equal(isExcalidrawMarkdownFile("00 Inbox/Sketch.excalidraw.md", await readFile(sketchPath, "utf8")), true);
+  assert.equal(isExcalidrawMarkdownFile("00 Inbox/Raw Scene.md", await readFile(rawScenePath, "utf8")), true);
+  assert.equal(isExcalidrawMarkdownFile("00 Inbox/Embedded Drawing.md", await readFile(embeddedPath, "utf8")), false);
+
+  const { mapping } = await readVaultConfig(vault);
+  const notes = await loadNotes(vault, mapping);
+  assert.equal(notes.some((note) => note.id === "Sketch.excalidraw"), false);
+  assert.equal(notes.some((note) => note.id === "Raw Scene"), false);
+  assert.equal(notes.some((note) => note.id === "Embedded Drawing"), true);
+
+  const search = await searchVault(vault, "Sketch", { threshold: 0, maxResults: 20 });
+  assert.equal(search.results.some((row) => row.note === "Sketch.excalidraw"), false);
+  const validation = await validateVault(vault);
+  assert.equal(validation.issues.some((issue) => issue.path?.endsWith("Sketch.excalidraw.md")), false);
+  assert.equal(validation.issues.some((issue) => issue.message?.includes("Sketch.excalidraw")), false);
+  const cache = await rebuildCache(vault, { full: true });
+  assert.equal(cache.files.some((file) => file.path.includes("Sketch.excalidraw.md")), false);
+  assert.equal(cache.files.some((file) => file.path.includes("Raw Scene.md")), false);
+  await assert.rejects(() => formatVault(vault, false, { note: "Sketch.excalidraw" }), /note not found/);
 });
 
 test("empty-frontmatter inbox markdown is reported as raw capture without failing validation", async () => {
