@@ -5542,27 +5542,11 @@ const input = inputJson();
 recordPromptEvent(input);
 
 const lines = [
-  "[IPA CLI — MANDATORY before answering]",
-  "If the user's request mentions IPA, harness, vault, a note, inbox, search, validation, formatting, or anything that could live in the IPA vault, you MUST run an \`ipa\` command BEFORE you answer. This rule is non-optional and applies on the very first turn.",
-  "Triggers (not exhaustive): IPA, harness, install, vault, 노트, 인박스, inbox, validator, formatter, plugin, ipa context, ipa search.",
-  "",
-  "Required workflow:",
-  \`1. Bootstrap: \${prefix} context "keyword" --size medium --format markdown\`,
-  \`2. If the pack is narrow, ambiguous, or one-note, widen with \${prefix} search "keyword" so tune gets search-result evidence\`,
-  \`3. Open a specific note with \${prefix} view "Note Title" --full\`,
-  \`4. Known note shortcut: \${prefix} context "Note Title" --by-note --size medium --format markdown\`,
-  \`5. After editing vault Markdown: \${prefix} validator then \${prefix} formatter plan --note "Title" then \${prefix} formatter apply --note "Title"\`,
-  \`6. New notes enter via \${prefix} inbox add so the configured inbox is respected.\`,
-  \`7. Existing note block replacements should use \${prefix} note replace or exported core helpers, not manual fs directory scans.\`,
-  \`8. The Stop hook blocks final responses while edited vault notes still have formatter patches; run \${prefix} formatter apply before finishing.\`,
-  "",
-  "Do NOT:",
-  "- Skip the bootstrap when the task touches the vault — even quick questions count.",
-  "- Do not bypass ipa with raw vault file reads/writes; project-local .ipa-profile/.ipa-config can select the vault.",
-  "- Do not stop after a single markdown context note when the user asks about a system, process, history, tradeoff, or broad topic; use logged search to widen discovery.",
-  "- Do not paste raw file paths or the full user prompt into context/search. Pick short keywords or exact note titles.",
-  "",
-  "Continue from existing conversation context only when it already covers the topic and likely related notes."
+  "[IPA CLI nudge]",
+  "For IPA/vault/note/search/formatter turns, use ipa before answering. Full rules are in the managed AGENTS/CLAUDE IPA block.",
+  \`Start: \${prefix} context "keyword" --size medium --format markdown; if narrow, \${prefix} search "keyword"; inspect with \${prefix} view "Note Title" --full.\`,
+  \`Use short keywords or exact titles, not raw paths/full prompts. New notes: \${prefix} inbox add. Existing scripted edits: \${prefix} note replace.\`,
+  \`After vault Markdown edits: \${prefix} validator; \${prefix} formatter plan --note "Title"; \${prefix} formatter apply --note "Title".\`
 ];
 
 process.stdout.write(JSON.stringify({
