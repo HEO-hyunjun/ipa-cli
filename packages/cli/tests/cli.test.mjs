@@ -147,6 +147,13 @@ test("CLI help and key smoke commands run through ipa-test profile", async () =>
   assert.equal(replaceApply.operation, "replace-in-note");
   assert.equal(replaceApply.matches, 1);
   assert.match(await readFile(join(vault, "00 Inbox", "Alpha.md"), "utf8"), /Alpha mentions Gamma/);
+  const oldMetaFile = join(vault, "..", "old-meta.txt");
+  const newMetaFile = join(vault, "..", "new-meta.txt");
+  await writeFile(oldMetaFile, "date_created: 2026/05/10 (Sun) 00:00:00", "utf8");
+  await writeFile(newMetaFile, "date_created: 2026/05/11 (Mon) 00:00:00", "utf8");
+  const replaceFrontmatter = JSON.parse(run(env, ["--profile", "ipa-test", "--json", "note", "replace", "Alpha", "--old-file", oldMetaFile, "--new-file", newMetaFile, "--apply"]));
+  assert.equal(replaceFrontmatter.matches, 1);
+  assert.match(await readFile(join(vault, "00 Inbox", "Alpha.md"), "utf8"), /date_created: 2026\/05\/11 \(Mon\) 00:00:00/);
   const doctor = JSON.parse(run(env, ["--profile", "ipa-test", "doctor", "--json"]));
   assert.equal(doctor.status, "ok");
   const tune = run(env, ["--profile", "ipa-test", "tune", "pack", "eval", "ipa-cli-core"]);

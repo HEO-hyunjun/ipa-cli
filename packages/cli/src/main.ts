@@ -327,13 +327,13 @@ const COMMAND_HELP = {
   }),
   note: formatDetailedHelp({
     usage: "ipa [OPTIONS] note replace NOTE --old-file OLD --new-file NEW [--apply]",
-    summary: "Apply core-backed edits to existing notes without raw vault path scans.",
+    summary: "Apply core-backed edits to existing notes, including frontmatter, without raw vault path scans.",
     commands: [
       ["ipa note replace \"Note\" --old-file .tmp/old.txt --new-file .tmp/new.txt", "Preview a literal block replacement"],
       ["ipa note replace \"Note\" --old-file .tmp/old.txt --new-file .tmp/new.txt --apply", "Apply the replacement"]
     ],
     options: [
-      ["--old-file PATH", "File containing the exact text to replace"],
+      ["--old-file PATH", "File containing the exact raw note text to replace"],
       ["--new-file PATH", "File containing replacement text"],
       ["--apply", "Write the replacement; omit for preview"],
       ["--allow-multiple", "Allow replacing more than one matching block"]

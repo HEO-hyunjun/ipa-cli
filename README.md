@@ -449,7 +449,7 @@ old in-package parity oracle has been removed.
 | `validator`        | `@ipa/core.validateVault`            | Validator engine plus formatter-aware issue reporting.                 |
 | `search`           | `@ipa/core.searchVault`              | Weighted builtin and vault-local JS plugin search.                     |
 | `refactor`         | `@ipa/core.refactorVault`            | Parse-layer scan/filter plus frontmatter/body mutation.                |
-| `note replace`     | `@ipa/core.replaceInNote`            | Core note lookup plus literal block replacement for scripted edits.    |
+| `note replace`     | `@ipa/core.replaceInNote`            | Core note lookup plus raw-note replacement, including frontmatter.     |
 
 Compatibility is guarded by JS fixtures under
 `packages/test-vaults/fixtures/` and the CLI/core regression tests.

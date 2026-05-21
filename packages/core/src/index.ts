@@ -4903,7 +4903,7 @@ Rules:
 - The harness records the current prompt context, so plain \`ipa search\` commands can be tied back to the prompt even when the runtime does not propagate env-file exports.
 - A single context note is not authoritative for broad questions (system, process, history, tradeoff). Run \`ipa search\` to widen and record search evidence for tune.
 - The harness Stop hook blocks final responses while edited vault notes still have formatter patches; run \`ipa formatter apply --note ...\` before finishing.
-- For scripted edits to existing notes, prefer \`ipa note replace\` or exported core helpers over hard-coded vault folder scans.
+- For scripted edits to existing notes, including frontmatter line fixes, prefer \`ipa note replace\` or exported core helpers over hard-coded vault folder scans.
 - See the IPA skill at \`~/.${spec.name}/skills/ipa/SKILL.md\` and the vault-local \`${spec.localPrompt}\` for the full workflow.`;
 }
 
@@ -5256,7 +5256,7 @@ Harness sessions track edited vault notes and the Stop hook blocks final respons
 
 ## Core-Backed Scripted Edits
 
-For exact replacements in an existing note, prefer the core-backed CLI instead of scanning vault folders with Node \`fs\`:
+For exact replacements anywhere in an existing note, including YAML frontmatter, prefer the core-backed CLI instead of scanning vault folders with Node \`fs\`:
 
 \`\`\`bash
 ${prefix} note replace "Note Title" --old-file .tmp/old-block.txt --new-file .tmp/new-block.txt
@@ -5324,7 +5324,7 @@ Formatter commands accept multiple notes as \`${prefix} formatter plan --note "N
 
 The harness records edited vault notes and blocks final responses until the note-scoped formatter plan has no remaining patches. Do not bypass this by ending after a plan-only check.
 
-For scripted edits to existing notes, prefer \`${prefix} note replace "Note Title" --old-file .tmp/old-block.txt --new-file .tmp/new-block.txt --apply\` or core helpers such as \`replaceInNote\`/\`rewriteNote\` from \`./packages/core/dist/index.js\` inside the \`ipa-cli\` workspace. Do not hard-code archive/inbox paths or scan vault folders manually.
+For scripted edits to existing notes, including frontmatter line fixes, prefer \`${prefix} note replace "Note Title" --old-file .tmp/old-block.txt --new-file .tmp/new-block.txt --apply\` or core helpers such as \`replaceInNote\`/\`rewriteNote\` from \`./packages/core/dist/index.js\` inside the \`ipa-cli\` workspace. Do not hard-code archive/inbox paths or scan vault folders manually.
 
 ## Vault-Local Helper Skills
 
@@ -5545,7 +5545,7 @@ const lines = [
   "[IPA CLI nudge]",
   "For IPA/vault/note/search/formatter turns, use ipa before answering. Full rules are in the managed AGENTS/CLAUDE IPA block.",
   \`Start: \${prefix} context "keyword" --size medium --format markdown; if narrow, \${prefix} search "keyword"; inspect with \${prefix} view "Note Title" --full.\`,
-  \`Use short keywords or exact titles, not raw paths/full prompts. New notes: \${prefix} inbox add. Existing scripted edits: \${prefix} note replace.\`,
+  \`Use short keywords or exact titles, not raw paths/full prompts. New notes: \${prefix} inbox add. Existing scripted edits/frontmatter fixes: \${prefix} note replace.\`,
   \`After vault Markdown edits: \${prefix} validator; \${prefix} formatter plan --note "Title"; \${prefix} formatter apply --note "Title".\`
 ];
 

@@ -270,6 +270,15 @@ test("core note rewrite helpers resolve notes before editing", async () => {
   assert.equal(applied.matches, 1);
   assert.equal(applied.applied, true);
   assert.match(await readFile(join(vault, "00 Inbox", "Alpha.md"), "utf8"), /Alpha mentions Gamma/);
+
+  const frontmatterApplied = await replaceInNote(
+    vault,
+    "Alpha",
+    "date_created: 2026/05/10 (Sun) 00:00:00",
+    "date_created: 2026/05/11 (Mon) 00:00:00"
+  );
+  assert.equal(frontmatterApplied.matches, 1);
+  assert.match(await readFile(join(vault, "00 Inbox", "Alpha.md"), "utf8"), /date_created: 2026\/05\/11 \(Mon\) 00:00:00/);
 });
 
 test("indentless YAML sequences parse as lists instead of object refs", async () => {
@@ -776,6 +785,7 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   assert.match(skill, /formatter apply --note "Note A" "Note B"/);
   assert.match(skill, /Core-Backed Scripted Edits/);
   assert.match(skill, /ipa note replace "Note Title"/);
+  assert.match(skill, /including YAML frontmatter/);
   assert.match(await readFile(join(home, ".codex", "hooks", "ipa-inbox-guard.mjs"), "utf8"), /shared IPA inbox creation guard/);
   const markdownNudge = await readFile(join(home, ".codex", "hooks", "ipa-md-write-nudge.mjs"), "utf8");
   assert.match(markdownNudge, /formatter apply --note/);
@@ -843,6 +853,7 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   assert.doesNotMatch(promptContext, /IPA_SEARCH_LOG=1 ipa search "keyword"/);
   assert.match(promptContext, /not raw paths\/full prompts/);
   assert.match(promptContext, /note replace/);
+  assert.match(promptContext, /frontmatter fixes/);
   assert.match(promptContext, /formatter apply --note/);
   assert.doesNotMatch(promptContext, /Required workflow/);
   assert.doesNotMatch(promptContext, /Triggers \(not exhaustive\)/);
