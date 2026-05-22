@@ -150,6 +150,114 @@ test("link plan records a content hash and apply rejects stale files", async () 
   await assert.rejects(() => linkApply(vault, ".ipa/plans/link.json"), /hash guard failed/);
 });
 
+test("link plan uses semantic search queries and ignores collapsed transcript noise", async () => {
+  const vault = await fixtureVault();
+  await mkdir(join(vault, "02 Archive"), { recursive: true });
+  await writeFile(
+    join(vault, "01 Project", "🔖 빅스데이터 회의.md"),
+    `---
+date_created: 2026/05/22 (Fri) 00:00:00
+date_modified: 2026/05/22 (Fri) 00:00:00
+ref: []
+tags: []
+type: index
+---
+# 빅스데이터 회의
+`,
+    "utf8"
+  );
+  await writeFile(
+    join(vault, "01 Project", "🔖 커피.md"),
+    `---
+date_created: 2026/05/22 (Fri) 00:00:00
+date_modified: 2026/05/22 (Fri) 00:00:00
+ref: []
+tags: [hobby]
+type: index
+---
+# 커피
+커피 관련 메모를 모아두는 index.
+`,
+    "utf8"
+  );
+  await writeFile(
+    join(vault, "00 Inbox", "260522 스크럼.md"),
+    `---
+date_created: 2026/05/22 (Fri) 09:31:47
+date_modified: 2026/05/22 (Fri) 10:38:19
+ref: ["[[🔖 빅스데이터 회의]]"]
+tags: []
+type: note
+---
+## 요약
+
+- Entity Mapping은 도메인 선택 채팅을 위해 Spring/gRPC 호출부와 OPA 권한 세팅을 진행한다.
+- DeployKit/build 파일만 전제로 두지 말고 BIX 빌드와 로컬 개발 환경을 함께 확인한다.
+- 신규 노트북 2대 배정은 장비 도착 후 결정한다.
+
+> [!note]- 전사문
+> 회의 시작 전에 커피 이야기를 했다.
+> 이 잡담은 링크 후보가 되면 안 된다.
+`,
+    "utf8"
+  );
+  await writeFile(
+    join(vault, "02 Archive", "260521 스프린트 회고.md"),
+    `---
+date_created: 2026/05/21 (Thu) 09:30:58
+date_modified: 2026/05/21 (Thu) 11:07:15
+ref: ["[[🔖 빅스데이터 회의]]"]
+tags: [bigxdata/sprint]
+type: note
+---
+## 개발 장비
+
+Gateway/OPA/MariaDB/FastAPI/JVM Parser를 함께 띄우면 16GB RAM으로는 부족하므로 팀 노트북은 최소 32GB RAM을 목표로 한다.
+`,
+    "utf8"
+  );
+  await writeFile(
+    join(vault, "02 Archive", "AI-1354 도메인 선택 기반 Cypher query 제어 구현 결과.md"),
+    `---
+date_created: 2026/05/18 (Mon) 00:00:00
+date_modified: 2026/05/18 (Mon) 00:00:00
+ref: []
+tags: [multi_domain]
+type: note
+---
+## 회고
+
+도메인 선택 기반 Cypher query 제어는 OPA/Query Gateway와 연결되어야 하며 target domain contract와 guardrail decision을 audit으로 남긴다.
+`,
+    "utf8"
+  );
+  await writeFile(
+    join(vault, "02 Archive", "agentworks-deploy-kit 사용법 - BIX 빌드와 WAR 배포의 함정.md"),
+    `---
+date_created: 2026/04/27 (Mon) 16:08:00
+date_modified: 2026/05/19 (Tue) 11:01:55
+ref: []
+tags: [bigxdata/deploy_kit, bigxdata/bix_build]
+type: note
+---
+## BIX 빌드
+
+agentworks-deploy-kit에서 DeployKit, BIX 빌드, WAR 배포, 로컬 개발 환경 문제를 함께 다룬다.
+`,
+    "utf8"
+  );
+
+  const plan = await linkPlan(vault, { note: "260522 스크럼" });
+  const targets = plan.changes.map((change) => change.target);
+  assert.ok(targets.includes("260521 스프린트 회고"));
+  assert.ok(targets.includes("AI-1354 도메인 선택 기반 Cypher query 제어 구현 결과"));
+  assert.ok(targets.includes("agentworks-deploy-kit 사용법 - BIX 빌드와 WAR 배포의 함정"));
+  assert.ok(!targets.includes("🔖 커피"));
+  const semantic = plan.changes.find((change) => change.target === "AI-1354 도메인 선택 기반 Cypher query 제어 구현 결과");
+  assert.equal(semantic.reason, "semantic_search_match");
+  assert.match(semantic.source_query, /opa|도메인/);
+});
+
 test("search, view, traversal and context work in the JS runtime", async () => {
   const vault = await fixtureVault();
   const search = await searchVault(vault, "Alpha", { threshold: 0, maxResults: 3 });

@@ -44,6 +44,7 @@ import {
   resolveSettings,
   reviewVault,
   searchVault,
+  suggestLinks,
   setDefaultProfile,
   traversal,
   tuneAnalyze,
@@ -590,7 +591,7 @@ function render(payload) {
   if (payload.profile !== undefined && payload.vault_path && Object.hasOwn(payload, "created")) return renderKeyValues("Profile", payload);
   if (payload.profile !== undefined && payload.vault_path) return renderKeyValues("Active config", payload);
   if (payload.status && payload.checks) return renderDoctor(payload);
-  if (payload.suggestions) return renderTableReport("Link suggestions", ["Note", "Target", "Reason"], payload.suggestions.map((item) => [item.note, item.target, item.reason]));
+  if (payload.suggestions) return renderTableReport("Link suggestions", ["Suggestion", "Score"], payload.suggestions.map((item) => [item.target, item.score ?? "-"]));
   if (Array.isArray(payload.changes)) return renderTableReport("Planned changes", ["Note", "Path", "Target"], payload.changes.map((item) => [item.note ?? "-", item.path ?? "-", item.target ?? item.to ?? "-"]));
   return JSON.stringify(payload, null, 2);
 }
@@ -1417,7 +1418,7 @@ function buildProgram() {
     .command("suggest")
     .argument("<note>", "Note title")
     .action(async (note) => {
-      await withVault(globalOptions(program), async (vault) => print(await linkPlan(vault, { note }), jsonOutput(program)));
+      await withVault(globalOptions(program), async (vault) => print(await suggestLinks(vault, note), jsonOutput(program)));
     });
   linkCommand
     .command("plan")

@@ -3561,20 +3561,259 @@ async function pluginFingerprint(vaultPath) {
   return hash.digest("hex");
 }
 
+const LINK_SUGGEST_MAX_PER_NOTE = 30;
+const LINK_SUGGEST_QUERY_LIMIT = 24;
+const LINK_SUGGEST_QUERY_TERMS = 10;
+const LINK_SUGGEST_SEARCH_RESULTS_PER_QUERY = 10;
+const LINK_SUGGEST_MIN_SEMANTIC_RANK = 0.015;
+const LINK_SUGGEST_QUERY_STOPWORDS = new Set([
+  "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "in", "into", "is", "it", "of", "on", "or", "the", "to", "with",
+  "true", "false", "null", "undefined", "todo", "action", "item", "items",
+  "참여자", "요약", "액션", "아이템", "전사문", "교정", "내역"
+]);
+
+function stripLinkSuggestionSource(body) {
+  const out = [];
+  let inCodeBlock = false;
+  let skipCollapsedCallout = false;
+  for (const line of String(body ?? "").split("\n")) {
+    if (isCodeFence(line)) {
+      inCodeBlock = !inCodeBlock;
+      continue;
+    }
+    if (inCodeBlock) continue;
+    if (/^>\s*\[![^\]]+\]-/.test(line)) {
+      skipCollapsedCallout = true;
+      continue;
+    }
+    if (skipCollapsedCallout) {
+      if (/^>/.test(line) || !line.trim()) continue;
+      skipCollapsedCallout = false;
+    }
+    const trimmed = line.trim();
+    if (/^!\[\[/.test(trimmed)) continue;
+    out.push(line.replace(/\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]/g, (_, target, alias) => alias || target));
+  }
+  return out.join("\n");
+}
+
+function usefulLinkSuggestionQueryToken(token) {
+  const value = String(token ?? "").toLowerCase();
+  if (!value || value.length < 2) return false;
+  if (LINK_SUGGEST_QUERY_STOPWORDS.has(value)) return false;
+  if (/^\d+$/.test(value)) return false;
+  if (/^speaker[_-]?\d+$/.test(value)) return false;
+  return true;
+}
+
+function linkSuggestionTokenList(text) {
+  return tokenize(text)
+    .map((token) => token.toLowerCase())
+    .filter(usefulLinkSuggestionQueryToken);
+}
+
+function buildLinkSuggestionIdf(notes) {
+  const documentFrequency = new Map();
+  for (const note of notes) {
+    const text = searchableTitle([
+      note.id,
+      ...(note.aliases ?? []),
+      ...(note.refs ?? []),
+      ...(note.tags ?? []),
+      ...(note.headings ?? []).map((heading) => heading.title),
+      stripLinkSuggestionSource(note.body)
+    ].filter(Boolean).join("\n"));
+    for (const token of new Set(linkSuggestionTokenList(text))) {
+      documentFrequency.set(token, (documentFrequency.get(token) ?? 0) + 1);
+    }
+  }
+  const idf = new Map();
+  for (const [token, count] of documentFrequency.entries()) {
+    idf.set(token, Math.log(1 + notes.length / (1 + count)));
+  }
+  return idf;
+}
+
+function ignoredLinkSuggestionHeading(title) {
+  const value = searchableKey(title);
+  return value.includes("전사문") || value.includes("교정") || value.includes("참여자") || value.includes("transcript");
+}
+
+function addLinkSuggestionBlock(blocks, headingStack, text) {
+  if (headingStack.some(ignoredLinkSuggestionHeading)) return;
+  const cleaned = searchableTitle(text);
+  if (cleaned.length < 12) return;
+  const heading = headingStack.slice(-2).join(" ");
+  const queryText = searchableTitle([heading, cleaned].filter(Boolean).join(" "));
+  blocks.push({ text: queryText, excerpt: cleaned.slice(0, 160) });
+}
+
+function linkSuggestionBlocks(note) {
+  const blocks = [];
+  const headingStack = [];
+  let paragraph = [];
+  const flushParagraph = () => {
+    if (!paragraph.length) return;
+    addLinkSuggestionBlock(blocks, headingStack, paragraph.join(" "));
+    paragraph = [];
+  };
+  for (const rawLine of stripLinkSuggestionSource(note.body).split("\n")) {
+    const line = rawLine.trim();
+    if (!line) {
+      flushParagraph();
+      continue;
+    }
+    const headingMatch = /^(#{1,6})\s+(.+)$/.exec(line);
+    if (headingMatch) {
+      flushParagraph();
+      const depth = headingMatch[1].length;
+      headingStack.length = depth - 1;
+      headingStack[depth - 1] = headingMatch[2].replace(/#+$/, "").trim();
+      continue;
+    }
+    const listMatch = /^(?:[-*+]\s+(?:\[[ xX]\]\s*)?|\d+\.\s+)(.+)$/.exec(line);
+    if (listMatch) {
+      flushParagraph();
+      addLinkSuggestionBlock(blocks, headingStack, listMatch[1]);
+      continue;
+    }
+    if (/^\|.*\|$/.test(line) && !/^\|?\s*:?-{3,}:?/.test(line)) {
+      flushParagraph();
+      addLinkSuggestionBlock(blocks, headingStack, line.replace(/\|/g, " "));
+      continue;
+    }
+    paragraph.push(line);
+  }
+  flushParagraph();
+  return blocks;
+}
+
+function linkSuggestionQueryScore(tokens, idf) {
+  return tokens.length ? tokens.reduce((sum, token) => sum + (idf.get(token) ?? 0), 0) / tokens.length : 0;
+}
+
+function linkSuggestionQueriesFromBlock(block, idf) {
+  const tokens = linkSuggestionTokenList(block.text);
+  if (tokens.length < 2) return [];
+  const counts = new Map();
+  for (const token of tokens) counts.set(token, (counts.get(token) ?? 0) + 1);
+  const selected = new Set([...counts.entries()]
+    .map(([token, count]) => ({ token, score: (idf.get(token) ?? 0) * (1 + Math.log(count)) }))
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score || a.token.localeCompare(b.token))
+    .slice(0, LINK_SUGGEST_QUERY_TERMS)
+    .map((item) => item.token));
+  const out = [];
+  if (selected.size >= 2) {
+    const ordered = [];
+    for (const token of tokens) {
+      if (selected.has(token) && !ordered.includes(token)) ordered.push(token);
+    }
+    out.push({ query: ordered.join(" "), score: linkSuggestionQueryScore(ordered, idf), excerpt: block.excerpt });
+  }
+  const orderedFull = [];
+  for (const token of tokens) {
+    if (!orderedFull.includes(token)) orderedFull.push(token);
+    if (orderedFull.length >= 18) break;
+  }
+  if (orderedFull.length >= 2) {
+    out.push({ query: orderedFull.join(" "), score: linkSuggestionQueryScore(orderedFull, idf) * 0.9, excerpt: block.excerpt });
+  }
+  const codeLike = [];
+  for (const token of tokens) {
+    if (!/[a-z]/i.test(token)) continue;
+    if (!codeLike.includes(token)) codeLike.push(token);
+    if (codeLike.length >= 8) break;
+  }
+  if (codeLike.length >= 2) {
+    out.push({ query: codeLike.join(" "), score: linkSuggestionQueryScore(codeLike, idf) * 1.1, excerpt: block.excerpt });
+  }
+  return out.filter((item) => item.score > 0);
+}
+
+function extractLinkSuggestionQueries(note, idf) {
+  const seen = new Set();
+  return linkSuggestionBlocks(note)
+    .flatMap((block) => linkSuggestionQueriesFromBlock(block, idf))
+    .sort((a, b) => b.score - a.score || a.query.localeCompare(b.query))
+    .filter((item) => {
+      if (seen.has(item.query)) return false;
+      seen.add(item.query);
+      return true;
+    })
+    .slice(0, LINK_SUGGEST_QUERY_LIMIT);
+}
+
+function existingLinkTargets(note) {
+  return [...note.links, ...note.refs];
+}
+
+function rootOverlap(left, right, rootSets) {
+  const leftRoots = rootSets.get(left.id) ?? new Set();
+  const rightRoots = rootSets.get(right.id) ?? new Set();
+  return [...leftRoots].some((root) => rightRoots.has(root));
+}
+
+function semanticLinkContextBoost(source, target, rootSets) {
+  let boost = 1;
+  if (shareNoteNames(source.refs, target.refs)) boost += 0.25;
+  if (rootOverlap(source, target, rootSets)) boost += 0.15;
+  if (source.tags.some((tag) => target.tags.includes(tag))) boost += 0.1;
+  return boost;
+}
+
+function addRankedLinkSuggestion(byTarget, target, suggestion) {
+  const current = byTarget.get(target.id);
+  if (!current || suggestion.rank > current.rank) byTarget.set(target.id, { ...suggestion, target: target.id });
+}
+
+function linkSuggestionScore(rank) {
+  return Number(rank.toFixed(4));
+}
+
 export async function suggestLinks(vaultPath, noteName = null) {
-  const { mapping } = await readVaultConfig(vaultPath);
-  const notes = await loadNotes(vaultPath, mapping);
+  const context = await prepareSearchContext(vaultPath);
+  const { notes } = context;
   const selected = noteName ? [findNote(notes, noteName)].filter(Boolean) : notes;
+  const idf = noteName ? buildLinkSuggestionIdf(notes) : null;
+  const rootSets = noteName ? buildRootSets(notes) : new Map();
   const suggestions = [];
   for (const note of selected) {
-    const bodyKey = searchableTitle(note.body).toLowerCase();
+    const byTarget = new Map();
+    const sourceBody = stripLinkSuggestionSource(note.body);
+    const bodyKey = searchableTitle(sourceBody).toLowerCase();
+    const existingTargets = existingLinkTargets(note);
     for (const other of notes) {
-      if (other.id === note.id || hasNoteName(note.links, other.id)) continue;
+      if (other.id === note.id || hasNoteName(existingTargets, other.id)) continue;
       const otherKey = searchableKey(other.id);
-      if (note.body.includes(other.id) || (otherKey && bodyKey.includes(otherKey))) {
-        suggestions.push({ note: note.id, target: other.id, reason: "plain_text_title_match" });
+      if (sourceBody.includes(other.id) || (otherKey && bodyKey.includes(otherKey))) {
+        addRankedLinkSuggestion(byTarget, other, { note: note.id, reason: "plain_text_title_match", rank: 1 });
       }
     }
+    if (noteName && idf) {
+      for (const query of extractLinkSuggestionQueries(note, idf)) {
+        const result = await searchWithContext(context, query.query, { threshold: 0, maxResults: LINK_SUGGEST_SEARCH_RESULTS_PER_QUERY });
+        result.results.forEach((hit, index) => {
+          const target = findNote(notes, hit.note);
+          if (!target || target.id === note.id || hasNoteName(existingTargets, target.id)) return;
+          if (target.type === "index" || target.type === "root" || target.id.startsWith("🔖")) return;
+          if ((hit.score ?? 0) <= 0) return;
+          const rank = (hit.score ?? 0) * query.score * semanticLinkContextBoost(note, target, rootSets) / (index + 1);
+          if (rank < LINK_SUGGEST_MIN_SEMANTIC_RANK) return;
+          addRankedLinkSuggestion(byTarget, target, {
+            note: note.id,
+            reason: "semantic_search_match",
+            rank,
+            source_query: query.query,
+            source_excerpt: query.excerpt
+          });
+        });
+      }
+    }
+    suggestions.push(...[...byTarget.values()]
+      .sort((a, b) => b.rank - a.rank || a.target.localeCompare(b.target))
+      .slice(0, LINK_SUGGEST_MAX_PER_NOTE)
+      .map(({ rank, ...item }) => ({ ...item, score: linkSuggestionScore(rank) })));
   }
   return { suggestions };
 }
@@ -3595,7 +3834,10 @@ export async function linkPlan(vaultPath, options = {}) {
         sha256: note ? sha256(note.raw) : null,
         target: item.target,
         replacement: `[[${item.target}]]`,
-        reason: item.reason
+        reason: item.reason,
+        ...(item.score !== undefined ? { score: item.score } : {}),
+        ...(item.source_query ? { source_query: item.source_query } : {}),
+        ...(item.source_excerpt ? { source_excerpt: item.source_excerpt } : {})
       };
     })
   };

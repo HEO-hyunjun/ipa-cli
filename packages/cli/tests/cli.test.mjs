@@ -110,6 +110,14 @@ test("CLI help and key smoke commands run through ipa-test profile", async () =>
   assert.match(down, /📄 Alpha/);
   const root = run(env, ["--profile", "ipa-test", "traversal", "--root", "Alpha"]);
   assert.match(root, /Root\(s\) for 'Alpha':/);
+  const linkSuggest = run(env, ["--profile", "ipa-test", "link", "suggest", "Alpha"]);
+  assert.match(linkSuggest, /Link suggestions/);
+  assert.match(linkSuggest, /Suggestion\s+Score/);
+  assert.match(linkSuggest, /Beta\s+1/);
+  assert.doesNotMatch(linkSuggest, /Note\s+Path/);
+  const linkSuggestJson = JSON.parse(run(env, ["--profile", "ipa-test", "--json", "link", "suggest", "Alpha"]));
+  assert.equal(linkSuggestJson.suggestions[0].target, "Beta");
+  assert.equal(linkSuggestJson.suggestions[0].score, 1);
   const context = JSON.parse(run(env, ["--profile", "ipa-test", "context", "Alpha", "--by-note", "--format", "json"]));
   assert.equal(context.notes[0].id, "Alpha");
   assert.equal(context.mode, "by-note");
