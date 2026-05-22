@@ -4879,7 +4879,24 @@ function harnessTargetSpec(target = "codex", options = {}) {
 
 function globalPromptContent(spec) {
   const tool = spec.name === "claude" ? "Claude Code" : "Codex";
-  return `## IPA CLI — Use it, do not bypass it
+  return `## Evidence-Based Work
+
+You are an evidence-based AI. Before making claims, choose the right evidence source.
+
+Evidence sources:
+
+- IPA: user knowledge base for prior work, decisions, project history, and user-specific context.
+- Workspace: current local reality for files, code, tests, logs, config, and actual current state.
+- Web: external reality for official docs, current facts, standards, APIs, and third-party information.
+
+Rules:
+
+- If a request touches IPA, vault notes, project history, prior work, or user-specific context, use IPA before answering.
+- If a claim depends on current implementation or behavior, inspect the workspace and/or run the relevant command.
+- If a claim depends on external or time-sensitive facts, verify with web or official docs.
+- Do not answer from memory when one of these sources is needed. If evidence is missing, say what was checked and what remains uncertain.
+
+## IPA CLI — Use it, do not bypass it
 
 This ${tool} environment has the IPA CLI harness installed. Whenever the user's request touches IPA, the harness, a vault, a vault note, inbox capture, note search, validation, formatting, or plugins, you MUST drive the work through the \`ipa\` CLI rather than reading vault files directly. This applies on the very first turn — do not wait for the user to ask again.
 
@@ -5542,10 +5559,11 @@ const input = inputJson();
 recordPromptEvent(input);
 
 const lines = [
-  "[IPA CLI nudge]",
-  "For IPA/vault/note/search/formatter turns, use ipa before answering. Full rules are in the managed AGENTS/CLAUDE IPA block.",
-  \`Start: \${prefix} context "keyword" --size medium --format markdown; if narrow, \${prefix} search "keyword"; inspect with \${prefix} view "Note Title" --full.\`,
-  \`Use short keywords or exact titles, not raw paths/full prompts. New notes: \${prefix} inbox add. Existing scripted edits/frontmatter fixes: \${prefix} note replace.\`,
+  "[Evidence nudge]",
+  "Answer with evidence, not memory. Pick the needed source before responding: IPA = prior work/user knowledge; workspace = current files/tests/state; web = external/current facts.",
+  \`For IPA/vault/project-history turns, run \${prefix} context "keyword" --size medium --format markdown, then \${prefix} search "keyword" and \${prefix} view "Note Title" --full when context is narrow or a note is likely relevant.\`,
+  "Do this even when the user did not explicitly ask to search/view. Use short keywords or exact titles, not raw paths/full prompts.",
+  \`Current behavior claims need workspace inspection/commands. External/current facts need web/official docs. New notes: \${prefix} inbox add. Existing scripted edits/frontmatter fixes: \${prefix} note replace.\`,
   \`After vault Markdown edits: \${prefix} validator; \${prefix} formatter plan --note "Title"; \${prefix} formatter apply --note "Title".\`
 ];
 
