@@ -24,7 +24,38 @@ Surface:
 IPA CLI is currently installed from this local JS/TS workspace. The package is
 not published to npm yet.
 
-Recommended local install:
+### Prerequisites
+
+- Bash-compatible shell on macOS or Linux.
+- Node.js and npm.
+- pnpm, or Corepack so the installer can activate the pinned pnpm version from
+  `package.json`. If neither pnpm nor Corepack is available, the installer can
+  install pnpm globally with npm when run with `--yes`.
+- curl and tar for the no-clone GitHub archive install below.
+
+### Install from GitHub without cloning
+
+This downloads the GitHub source archive into a persistent local source
+directory, then runs the normal workspace installer from there. The source
+directory is kept because the installed `ipa` command links to the built
+workspace entrypoint.
+
+```sh
+IPA_SRC_DIR="${IPA_SRC_DIR:-$HOME/.local/share/ipa-cli}"
+mkdir -p "$IPA_SRC_DIR"
+curl -fsSL https://github.com/HEO-hyunjun/ipa-cli/archive/refs/heads/main.tar.gz \
+  | tar -xz --strip-components=1 -C "$IPA_SRC_DIR"
+bash "$IPA_SRC_DIR/scripts/install.sh" --yes
+```
+
+To skip shell rc PATH changes:
+
+```sh
+IPA_SRC_DIR="${IPA_SRC_DIR:-$HOME/.local/share/ipa-cli}"
+bash "$IPA_SRC_DIR/scripts/install.sh" --yes --no-rc
+```
+
+### Local workspace install
 
 ```sh
 scripts/install.sh
@@ -57,6 +88,13 @@ Verify the command:
 ```sh
 which ipa
 ipa --help
+```
+
+If `ipa` is not found in the current shell after installation, reload your shell
+config, for example:
+
+```sh
+source ~/.zshrc
 ```
 
 The CLI entrypoint is `ipa` via `@ipa/cli`
