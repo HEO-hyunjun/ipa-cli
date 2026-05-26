@@ -5119,6 +5119,18 @@ function harnessTargetSpec(target = "codex", options = {}) {
   };
 }
 
+function ipaCommandSelection(prefix = "ipa") {
+  return `## IPA Command Selection
+
+- Broad prior context or user-specific background: \`${prefix} context "keyword" --size medium --format markdown\`, then \`${prefix} search "keyword"\`.
+- Exact note content: \`${prefix} view "Note Title" --full\`.
+- Related notes, previous meeting comparison, or wikilink candidates for one note: \`${prefix} link suggest "Note Title"\`.
+- Ref/root/sibling graph structure: \`${prefix} traversal --up|--down|--siblings "Note Title"\`.
+- Safe note creation/editing: \`${prefix} inbox add ...\` / \`${prefix} note replace ...\`.
+- Unsure command or syntax: \`${prefix} help\` or \`${prefix} <command> --help\`.
+`;
+}
+
 function globalPromptContent(spec) {
   const tool = spec.name === "claude" ? "Claude Code" : "Codex";
   return `## Evidence-Based Work
@@ -5148,6 +5160,7 @@ Minimum required moves:
 ipa context "<short keyword>" --size medium --format markdown   # bootstrap
 ipa search "<keyword>"                                          # widen; harness prompt context records tune evidence
 ipa view "Note Title" --full                                    # read a specific note
+ipa link suggest "Note Title"                                  # find related notes/link candidates
 ipa validator                                                   # after editing vault Markdown
 ipa formatter plan --note "Edited Note"
 ipa formatter apply --note "Edited Note"
@@ -5155,6 +5168,7 @@ ipa inbox add ./draft.md --title "Title"                        # new notes go t
 ipa note replace "Note Title" --old-file .tmp/old --new-file .tmp/new --apply
 \`\`\`
 
+${ipaCommandSelection("ipa")}
 Rules:
 
 - Do not skip the bootstrap, even for short questions, when the topic could live in the vault.
@@ -5471,10 +5485,12 @@ Use this skill when a task mentions IPA, a vault note, inbox capture, note searc
 
 \`\`\`bash
 ${prefix} context "keyword" --size medium --format markdown
-${prefix} view "Note Title" --full
 ${prefix} search "keyword"
+${prefix} view "Note Title" --full
+${prefix} link suggest "Note Title"
 \`\`\`
 
+${ipaCommandSelection(prefix)}
 The harness records the current prompt context so plain \`${prefix} search "keyword"\` calls are logged as tune evidence even when the runtime does not propagate env-file exports. Start IPA/vault tasks with \`context\` to gather a compact note-centered pack, then use \`search\` proactively for discovery. Do not treat a one-note or narrow context pack as complete when the user asks about a broader topic, history, architecture, tradeoff, or process. Use \`view --full\` for selected notes after search has surfaced the likely candidates.
 
 ## Vault Convention And Plugins
@@ -5551,8 +5567,9 @@ Use the IPA CLI for vault-aware operations:
 
 \`\`\`bash
 ${prefix} context "keyword" --size medium --format markdown
-${prefix} view "Note Title" --full
 ${prefix} search "keyword"
+${prefix} view "Note Title" --full
+${prefix} link suggest "Note Title"
 ${prefix} validator
 ${prefix} formatter plan --note "Edited Note"
 ${prefix} formatter apply --note "Edited Note"
@@ -5562,12 +5579,13 @@ ${prefix} plugin validate .ipa/plugins/rules/_example-title-length.js
 ${prefix} plugin dry-run rules .ipa/plugins/rules/_example-title-length.js --note "Edited Note"
 \`\`\`
 
+${ipaCommandSelection(prefix)}
 The harness records the current prompt context so plain \`${prefix} search "keyword"\` calls are logged as tune evidence even when the runtime does not propagate env-file exports. Start IPA/vault work with \`${prefix} context "keyword" --size medium --format markdown\`. Treat that context as a bootstrap, not final authority: if it returns only one note, mostly structural metadata, or an ambiguous result, run \`${prefix} search "keyword"\` with one or more focused keywords before deciding what the vault says. Use \`view --full\` only after choosing the likely source notes.
 
 ## Vault Operation Workflow
 
 - Resolve the active vault/profile with \`${prefix} config show\` when behavior depends on the profile.
-- Use \`${prefix} context\` as a bootstrap, \`${prefix} search\` for logged discovery, \`${prefix} view --full\` for selected sources, and \`${prefix} traversal\` for ref/root/sibling structure.
+- Use \`${prefix} context\` as a bootstrap, \`${prefix} search\` for logged discovery, \`${prefix} view --full\` for selected sources, \`${prefix} link suggest\` for one-note related/link candidates, and \`${prefix} traversal\` for ref/root/sibling structure.
 - Create new Markdown notes under the configured inbox, or import drafts with \`${prefix} inbox add <file>\`. Existing Markdown notes may be edited in place.
 - After editing vault Markdown, run lint/validation, inspect the note-scoped formatter plan, then run the matching formatter apply when the plan contains only expected changes. Do not stop at plan-only formatting.
 
@@ -5805,6 +5823,7 @@ const lines = [
   "Answer with evidence, not memory. Pick the needed source before responding: IPA = prior work/user knowledge; workspace = current files/tests/state; web = external/current facts.",
   \`For IPA/vault/project-history turns, run \${prefix} context "keyword" --size medium --format markdown, then \${prefix} search "keyword" and \${prefix} view "Note Title" --full when context is narrow or a note is likely relevant.\`,
   "Do this even when the user did not explicitly ask to search/view. Use short keywords or exact titles, not raw paths/full prompts.",
+  \`For one-note related-note, previous-meeting, comparison, or wikilink-candidate tasks, run \${prefix} link suggest "Note Title". If unsure about IPA syntax, run \${prefix} help or \${prefix} <command> --help.\`,
   \`Current behavior claims need workspace inspection/commands. External/current facts need web/official docs. New notes: \${prefix} inbox add. Existing scripted edits/frontmatter fixes: \${prefix} note replace.\`,
   \`After vault Markdown edits: \${prefix} validator; \${prefix} formatter plan --note "Title"; \${prefix} formatter apply --note "Title".\`
 ];

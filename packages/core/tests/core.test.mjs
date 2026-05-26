@@ -885,6 +885,9 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   assert.ok(skill.startsWith("---\nname: ipa\n"), "skill YAML frontmatter must be first");
   assert.match(skill, /ipa context "keyword" --size medium --format markdown/);
   assert.match(skill, /ipa search "keyword"/);
+  assert.match(skill, /IPA Command Selection/);
+  assert.match(skill, /ipa link suggest "Note Title"/);
+  assert.match(skill, /ipa <command> --help/);
   assert.match(skill, /current prompt context/);
   assert.doesNotMatch(skill, /IPA_SEARCH_LOG=1 ipa search "keyword"/);
   assert.doesNotMatch(skill, /Use `search` only when/);
@@ -900,6 +903,8 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   assert.match(globalPrompt, /Workspace: current local reality/);
   assert.match(globalPrompt, /Web: external reality/);
   assert.match(globalPrompt, /Do not answer from memory/);
+  assert.match(globalPrompt, /IPA Command Selection/);
+  assert.match(globalPrompt, /ipa link suggest "Note Title"/);
   assert.match(await readFile(join(home, ".codex", "hooks", "ipa-inbox-guard.mjs"), "utf8"), /shared IPA inbox creation guard/);
   const markdownNudge = await readFile(join(home, ".codex", "hooks", "ipa-md-write-nudge.mjs"), "utf8");
   assert.match(markdownNudge, /formatter apply --note/);
@@ -916,10 +921,15 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   const promptHook = join(home, ".codex", "hooks", "ipa-user-prompt-nudge.mjs");
   const promptHookSource = await readFile(promptHook, "utf8");
   assert.match(promptHookSource, /\[Evidence nudge\]/);
+  assert.match(promptHookSource, /link suggest "Note Title"/);
+  assert.match(promptHookSource, /\$\{prefix\} <command> --help/);
   assert.doesNotMatch(promptHookSource, /Required workflow/);
   const agentsPrompt = await readFile(join(vault, "AGENTS.md"), "utf8");
   assert.match(agentsPrompt, /IPA CLI Harness/);
   assert.match(agentsPrompt, /Vault Operation Workflow/);
+  assert.match(agentsPrompt, /IPA Command Selection/);
+  assert.match(agentsPrompt, /ipa link suggest "Note Title"/);
+  assert.match(agentsPrompt, /ipa <command> --help/);
   assert.match(agentsPrompt, /Convention And JS Rule Workflow/);
   assert.match(agentsPrompt, /Vault-Local Helper Skills/);
   assert.match(agentsPrompt, /\.agents\/skills/);
