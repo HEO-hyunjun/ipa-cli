@@ -37,7 +37,7 @@ declare module "@ipa/core" {
   export function suggestLinks(vaultPath: string, noteName?: string | null): Promise<any>;
 
   // Validation / format
-  export function validateVault(vaultPath: string): Promise<any>;
+  export function validateVault(vaultPath: string, notes?: any[] | null): Promise<any>;
   export function formatVault(
     vaultPath: string,
     apply?: boolean,

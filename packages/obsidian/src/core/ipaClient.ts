@@ -15,7 +15,9 @@ export class IpaClient {
   // load instead of re-parsing the whole vault each call. Invalidated on vault
   // changes (wired in main.ts).
   private notesCache: any[] | null = null;
+  private fullNotesCache: any[] | null = null;
   private searchContext: any = null;
+  private validationCache: any = null;
 
   async loadNotesCached(): Promise<any[]> {
     if (!this.notesCache) {
@@ -27,9 +29,24 @@ export class IpaClient {
     return this.notesCache;
   }
 
+  // Full notes (with body + frontmatter) loaded once and shared by validation,
+  // format, and search — the surfaces that need note bodies, which the summary
+  // cache (loadNotesForView) omits. Without this, one Validate re-parsed the
+  // whole vault up to three times (validateVault + formatVault + formatVault's
+  // inner validateVault).
+  async loadFullNotesCached(): Promise<any[]> {
+    if (!this.fullNotesCache) {
+      const { mapping } = await core.readVaultConfig(this.vault);
+      this.fullNotesCache = await core.loadNotes(this.vault, mapping);
+    }
+    return this.fullNotesCache;
+  }
+
   invalidateNotes(): void {
     this.notesCache = null;
+    this.fullNotesCache = null;
     this.searchContext = null;
+    this.validationCache = null;
   }
 
   // Read surfaces
@@ -42,8 +59,8 @@ export class IpaClient {
   async searchCached(query: string, options: Record<string, unknown> = {}): Promise<any> {
     if (!this.searchContext) {
       // search scores note bodies, which the cache summary omits, so prepare
-      // loads full notes once; later queries reuse this context.
-      this.searchContext = await core.prepareSearchContext(this.vault);
+      // reuses the shared full-note load; later queries reuse this context.
+      this.searchContext = await core.prepareSearchContext(this.vault, await this.loadFullNotesCached());
     }
     return core.searchWithContext(this.searchContext, query, options);
   }
@@ -52,7 +69,7 @@ export class IpaClient {
   async warmSearch(): Promise<void> {
     if (this.searchContext) return;
     try {
-      this.searchContext = await core.prepareSearchContext(this.vault);
+      this.searchContext = await core.prepareSearchContext(this.vault, await this.loadFullNotesCached());
     } catch {
       // ignore warm-up failures; the next real search surfaces any error
     }
@@ -74,16 +91,35 @@ export class IpaClient {
     return core.suggestLinks(this.vault, note);
   }
 
-  // Validation / format
-  validate(): Promise<any> {
-    return core.validateVault(this.vault);
+  // Validation / format. Both reuse the cached full-note load, so a Validate that
+  // runs validate() then formatPlan() parses the vault once instead of 3x.
+  //
+  // The full checkNote pass dominates cost, so validate() is also cached:
+  // switching the active note re-runs validate() but doesn't change note
+  // contents, so the vault-wide issue set is reused until a vault edit
+  // invalidates it. That makes the common "click between notes" flow instant.
+  async validate(): Promise<any> {
+    if (!this.validationCache) {
+      this.validationCache = await core.validateVault(this.vault, await this.loadFullNotesCached());
+    }
+    return this.validationCache;
   }
 
   // Plan only. Applying patches goes through Obsidian's Vault API (see
   // core/applyFixes.ts) so the editor and cache stay in sync — never via
   // core.formatVault(apply=true), which writes with Node fs and bypasses Obsidian.
-  formatPlan(notes?: string[]): Promise<any> {
-    return core.formatVault(this.vault, false, notes ? { notes } : {});
+  // patchesOnly skips formatVault's internal validateVault (a second full
+  // checkNote pass) because callers here read patches, not issues.
+  async formatPlan(notes?: string[]): Promise<any> {
+    return core.formatVault(this.vault, false, {
+      ...(notes ? { notes } : {}),
+      loadedNotes: await this.loadFullNotesCached(),
+      patchesOnly: true,
+      // Run apply-gated rules (e.g. date_modified) at plan time: Obsidian applies
+      // patches via vault.process, so fs apply stays false but rules need apply
+      // context to produce their patch.
+      ruleApply: true
+    });
   }
 
   // IPA Flow / write

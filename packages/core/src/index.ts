@@ -1415,6 +1415,8 @@ export function scoreNote(note, query, notes, weights = {}, mapping = DEFAULT_MA
 function prepareSearchNotes(notes, mapping = DEFAULT_MAPPING) {
   const projectDir = mapping.project_dir ?? DEFAULT_MAPPING.project_dir;
   const noteById = new Map(notes.map((note) => [note.id, note]));
+  const lookup = makeNoteLookup(notes);
+  const inProjectDir = (folder) => folder === projectDir || folder.startsWith(`${projectDir}/`);
   const prepared = notes.map((note) => {
     const names = [note.id, ...note.aliases];
     const searchNames = names.map(searchableTitle).filter(Boolean);
@@ -1428,22 +1430,31 @@ function prepareSearchNotes(notes, mapping = DEFAULT_MAPPING) {
       bodyLower: bodySearch.toLowerCase(),
       bodyTokenSet: new Set(tokenize(`${searchNames.join(" ")} ${bodySearch}`)),
       keywordText: searchableTitle(`${note.refs.join(" ")} ${note.tags.join(" ")} ${note.aliases.join(" ")} ${note.body}`).toLowerCase(),
-      isProject: note.folder === projectDir || note.folder.startsWith(`${projectDir}/`),
-      hasProjectContext: note.folder === projectDir ||
-        note.folder.startsWith(`${projectDir}/`) ||
+      isProject: inProjectDir(note.folder),
+      hasProjectContext: inProjectDir(note.folder) ||
         note.refs.some((ref) => {
-          const target = findNote(notes, ref);
-          return target && (target.folder === projectDir || target.folder.startsWith(`${projectDir}/`));
+          const target = lookup(ref);
+          return target && inProjectDir(target.folder);
         }),
       childBodyLowers: []
     };
   });
+  // Map each index/root note to its children via an inverted ref index instead
+  // of filtering all prepared notes for every index note (was O(index * n)).
+  const isIndexLike = (note) => note.type === "index" || note.type === "root" || note.id.startsWith("🔖");
+  const childrenByRefKey = new Map();
   for (const item of prepared) {
-    if (item.note.type !== "index" && item.note.type !== "root" && !item.note.id.startsWith("🔖")) continue;
-    item.childBodyLowers = prepared
-      .filter((candidate) => candidate.note.type !== "index" && candidate.note.type !== "root" && !candidate.note.id.startsWith("🔖"))
-      .filter((candidate) => hasNoteName(candidate.note.refs, item.note.id))
-      .map((candidate) => candidate.bodyLower);
+    if (isIndexLike(item.note)) continue;
+    for (const refKey of new Set(item.note.refs.map((ref) => searchableKey(ref)))) {
+      let list = childrenByRefKey.get(refKey);
+      if (!list) { list = []; childrenByRefKey.set(refKey, list); }
+      list.push(item);
+    }
+  }
+  for (const item of prepared) {
+    if (!isIndexLike(item.note)) continue;
+    const children = childrenByRefKey.get(searchableKey(item.note.id)) ?? [];
+    item.childBodyLowers = children.map((candidate) => candidate.bodyLower);
   }
   prepared.notes = notes;
   prepared.noteById = noteById;
@@ -1636,7 +1647,37 @@ function allSearchChannels(config, pluginChannels = []) {
   ];
 }
 
-function buildRootSets(notes) {
+// Exact note lookup (id / id-lower / alias-lower) as O(1) maps, with the same
+// fuzzy fallback as findNote. Reused across root/related index building so those
+// passes don't call findNote (a full O(n) scan) inside per-note loops.
+function makeNoteLookup(notes) {
+  const byId = new Map();
+  const byIdLower = new Map();
+  const byAliasLower = new Map();
+  for (const note of notes) {
+    if (!byId.has(note.id)) byId.set(note.id, note);
+    const idLower = note.id.toLowerCase();
+    if (!byIdLower.has(idLower)) byIdLower.set(idLower, note);
+    for (const alias of note.aliases) {
+      const aliasLower = String(alias).toLowerCase();
+      if (!byAliasLower.has(aliasLower)) byAliasLower.set(aliasLower, note);
+    }
+  }
+  return (noteName) => {
+    const normalized = normalizeTitle(noteName);
+    const query = normalized.toLowerCase();
+    const exact = byId.get(normalized) ?? byIdLower.get(query) ?? byAliasLower.get(query);
+    if (exact) return exact;
+    const scored = notes
+      .map((note) => ({ note, score: noteNameScore(note, normalized) }))
+      .filter((item) => item.score >= 0.65)
+      .sort((a, b) => b.score - a.score || a.note.id.localeCompare(b.note.id));
+    return scored[0]?.note ?? null;
+  };
+}
+
+function buildRootSets(notes, lookup = null) {
+  const find = lookup ?? makeNoteLookup(notes);
   const rootSets = new Map();
   const visit = (note, seen = new Set()) => {
     if (!note || seen.has(note.id)) return new Set();
@@ -1649,7 +1690,7 @@ function buildRootSets(notes) {
     }
     const roots = new Set();
     for (const ref of note.refs) {
-      const target = findNote(notes, ref);
+      const target = find(ref);
       for (const root of visit(target, seen)) roots.add(root);
     }
     rootSets.set(note.id, roots);
@@ -1660,19 +1701,58 @@ function buildRootSets(notes) {
 }
 
 function buildRelatedCandidateIndex(notes) {
-  const rootSets = buildRootSets(notes);
+  const lookup = makeNoteLookup(notes);
+  const rootSets = buildRootSets(notes, lookup);
+  const key = (value) => searchableKey(value);
+
+  // Inverted indexes so each seed only visits candidates that actually share a
+  // feature, instead of scanning all notes (was O(n^2)). Grouping by
+  // searchableKey exactly reproduces sameNoteName/shareNoteNames/hasNoteName.
+  const refKeyToNotes = new Map();
+  const rootToNotes = new Map();
+  const tagToNotes = new Map();
+  const linkKeyToNotes = new Map();
+  const idKeyToNotes = new Map();
+  const add = (map, mapKey, id) => {
+    let set = map.get(mapKey);
+    if (!set) { set = new Set(); map.set(mapKey, set); }
+    set.add(id);
+  };
+  for (const note of notes) {
+    for (const ref of note.refs) add(refKeyToNotes, key(ref), note.id);
+    for (const root of rootSets.get(note.id) ?? []) add(rootToNotes, root, note.id);
+    for (const tag of note.tags) add(tagToNotes, tag, note.id);
+    for (const link of note.links) add(linkKeyToNotes, key(link), note.id);
+    add(idKeyToNotes, key(note.id), note.id);
+  }
+
   const bySeed = new Map();
   for (const seed of notes) {
-    const seedRoots = rootSets.get(seed.id) ?? new Set();
+    const scores = new Map();
+    const bump = (id, delta) => {
+      if (id === seed.id) return;
+      scores.set(id, (scores.get(id) ?? 0) + delta);
+    };
+    // +3 when refs share a name (boolean, like shareNoteNames)
+    const refCandidates = new Set();
+    for (const ref of seed.refs) for (const id of refKeyToNotes.get(key(ref)) ?? []) refCandidates.add(id);
+    for (const id of refCandidates) bump(id, 3);
+    // +2 when root sets intersect (boolean)
+    const rootCandidates = new Set();
+    for (const root of rootSets.get(seed.id) ?? []) for (const id of rootToNotes.get(root) ?? []) rootCandidates.add(id);
+    for (const id of rootCandidates) bump(id, 2);
+    // +1 per shared tag (count, matching seed.tags.filter(...).length)
+    for (const tag of seed.tags) for (const id of tagToNotes.get(tag) ?? []) bump(id, 1);
+    // +2 when either note links to the other (boolean)
+    const linkCandidates = new Set();
+    for (const id of linkKeyToNotes.get(key(seed.id)) ?? []) linkCandidates.add(id);
+    for (const link of seed.links) for (const id of idKeyToNotes.get(key(link)) ?? []) linkCandidates.add(id);
+    for (const id of linkCandidates) bump(id, 2);
+
+    // Emit in notes order so the result matches the previous nested-loop output.
     const related = [];
     for (const candidate of notes) {
-      if (candidate.id === seed.id) continue;
-      let score = 0;
-      if (shareNoteNames(seed.refs, candidate.refs)) score += 3;
-      const candidateRoots = rootSets.get(candidate.id) ?? new Set();
-      if ([...seedRoots].some((root) => candidateRoots.has(root))) score += 2;
-      score += seed.tags.filter((tag) => candidate.tags.includes(tag)).length;
-      if (hasNoteName(candidate.links, seed.id) || hasNoteName(seed.links, candidate.id)) score += 2;
+      const score = scores.get(candidate.id);
       if (score > 0) related.push({ note: candidate.id, score });
     }
     bySeed.set(seed.id, related);
@@ -2836,9 +2916,9 @@ function normalizeRuleIssues(output, rule, note = null) {
     }));
 }
 
-export async function validateVault(vaultPath) {
+export async function validateVault(vaultPath, notes = null) {
   const { config, mapping } = await readVaultConfig(vaultPath);
-  const notes = await loadNotes(vaultPath, mapping);
+  if (!notes) notes = await loadNotes(vaultPath, mapping);
   const ctx = {
     config,
     mapping,
@@ -3021,7 +3101,7 @@ async function ruleFixPatches(notes, ctx, rules) {
 
 export async function formatVault(vaultPath, apply = false, options = {}) {
   const { config, mapping } = await readVaultConfig(vaultPath);
-  const allNotes = await loadNotes(vaultPath, mapping);
+  const allNotes = options.loadedNotes ?? await loadNotes(vaultPath, mapping);
   const rules = await activeRulesForVault(vaultPath, config);
   const requested = asList(options.notes ?? options.note);
   const targets = [];
@@ -3032,7 +3112,7 @@ export async function formatVault(vaultPath, apply = false, options = {}) {
   }
   const targetIds = new Set(targets.map((note) => note.id));
   const notes = targets.length ? targets : allNotes;
-  const validation = await validateVault(vaultPath);
+  const validation = options.patchesOnly ? { issues: [] } : await validateVault(vaultPath, allNotes);
   const issues = targetIds.size
     ? validation.issues.filter((item) => targetIds.has(item.note) || notes.some((note) => note.relPath === item.path))
     : validation.issues;
@@ -3042,7 +3122,10 @@ export async function formatVault(vaultPath, apply = false, options = {}) {
     notes: allNotes,
     mapping,
     vaultPath,
-    apply,
+    // apply-gated rules (e.g. date_modified) need apply context to emit a patch.
+    // ruleApply lets a host run them at plan time even when fs apply is off —
+    // Obsidian writes patches via its Vault API, not core's fs writer.
+    apply: options.ruleApply ?? apply,
     MarkdownDocument,
     IpaNoteDocument,
     options: {
