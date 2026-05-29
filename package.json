@@ -9,12 +9,18 @@
   },
   "scripts": {
     "install:local": "bash scripts/install.sh",
-    "build": "node scripts/build.mjs",
+    "build": "node scripts/build.mjs && node scripts/build-obsidian.mjs",
+    "build:core": "node scripts/build.mjs",
+    "build:obsidian": "node scripts/build-obsidian.mjs",
+    "dev:obsidian": "node scripts/build-obsidian.mjs --watch --copy-dev",
     "lint": "node scripts/lint.mjs",
     "test": "node scripts/build.mjs && node --test packages/core/tests/*.test.mjs packages/cli/tests/*.test.mjs",
     "test:contracts": "node scripts/build.mjs && node --test packages/core/tests/contracts.test.mjs",
     "test:cli": "node scripts/build.mjs && node --test packages/cli/tests/cli.test.mjs",
     "smoke": "node scripts/build.mjs && node scripts/smoke.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
   },
   "workspaces": [
     "packages/*"

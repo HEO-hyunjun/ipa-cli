@@ -2,7 +2,12 @@ import { readFile } from "node:fs/promises";
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 
-const roots = ["packages/core/src", "packages/cli/src", "packages/builtin-rules/src"];
+const roots = [
+  "packages/core/src",
+  "packages/cli/src",
+  "packages/builtin-rules/src",
+  "packages/obsidian/src"
+];
 const issues = [];
 
 function walk(dir) {

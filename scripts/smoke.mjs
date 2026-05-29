@@ -1,4 +1,5 @@
-import { cp, mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -131,3 +132,34 @@ for (const args of commands) {
 }
 
 console.log(`smoke ok (${commands.length} commands)`);
+
+// Obsidian plugin build smoke: bundle the plugin and verify the release assets.
+const obsidianBuild = spawnSync(process.execPath, [join(root, "scripts", "build-obsidian.mjs")], {
+  cwd: root,
+  env: process.env,
+  encoding: "utf8"
+});
+if (obsidianBuild.status !== 0) {
+  console.error("obsidian build failed");
+  console.error(obsidianBuild.stdout);
+  console.error(obsidianBuild.stderr);
+  process.exit(obsidianBuild.status ?? 1);
+}
+const obsidianDist = join(root, "packages", "obsidian", "dist");
+for (const file of ["main.js", "manifest.json", "styles.css", "versions.json"]) {
+  if (!existsSync(join(obsidianDist, file))) {
+    console.error(`obsidian dist missing: ${file}`);
+    process.exit(1);
+  }
+}
+const obsidianMain = await readFile(join(obsidianDist, "main.js"), "utf8");
+if (!obsidianMain.includes("module.exports")) {
+  console.error("obsidian main.js missing module.exports");
+  process.exit(1);
+}
+const obsidianManifest = JSON.parse(await readFile(join(obsidianDist, "manifest.json"), "utf8"));
+if (obsidianManifest.id !== "ipa-obsidian") {
+  console.error("obsidian manifest id mismatch");
+  process.exit(1);
+}
+console.log("obsidian build ok");
