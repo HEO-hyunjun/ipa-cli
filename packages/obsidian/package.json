@@ -1,0 +1,15 @@
+{
+  "name": "@ipa/obsidian",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "IPA Obsidian plugin: search, traversal, validation, apply, and IPA Flow.",
+  "dependencies": {
+    "@ipa/core": "workspace:*",
+    "@ipa/builtin-rules": "workspace:*"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "obsidian": "^1.4.0"
+  }
+}

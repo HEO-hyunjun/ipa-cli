@@ -1,0 +1,269 @@
+/* IPA Obsidian plugin styles. Uses Obsidian theme variables so the panels
+   inherit the active light/dark theme instead of hardcoding a palette. */
+
+.ipa-view {
+  padding: 0 var(--size-4-3) var(--size-4-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-2);
+  height: 100%;
+  overflow-y: auto;
+}
+
+.ipa-view__header {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-2);
+  position: sticky;
+  top: 0;
+  background-color: var(--background-secondary);
+  padding: var(--size-4-2) 0;
+  z-index: 1;
+}
+
+.ipa-view__title {
+  font-size: var(--font-ui-small);
+  font-weight: var(--font-semibold);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.ipa-search__input {
+  width: 100%;
+}
+
+.ipa-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-2-1);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.ipa-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-2-1);
+  padding: var(--size-4-2);
+  border-radius: var(--radius-m);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background-color var(--anim-duration-fast) ease;
+}
+
+.ipa-item:hover {
+  background-color: var(--background-modifier-hover);
+}
+
+.ipa-item:focus-visible {
+  outline: none;
+  border-color: var(--interactive-accent);
+}
+
+.ipa-item__title {
+  font-size: var(--font-ui-small);
+  font-weight: var(--font-medium);
+  color: var(--text-normal);
+}
+
+.ipa-item__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--size-4-2);
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+
+.ipa-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 var(--size-2-2);
+  border-radius: var(--radius-s);
+  background-color: var(--background-modifier-border);
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+
+.ipa-badge--type {
+  background-color: var(--background-modifier-border-hover);
+}
+
+.ipa-badge--score {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Traversal */
+.ipa-tabs {
+  display: flex;
+  gap: var(--size-2-1);
+  flex-wrap: wrap;
+}
+
+.ipa-tab {
+  padding: var(--size-2-1) var(--size-4-2);
+  border-radius: var(--radius-s);
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  cursor: pointer;
+  background: transparent;
+  border: none;
+}
+
+.ipa-tab.is-active {
+  background-color: var(--background-modifier-active-hover);
+  color: var(--text-normal);
+}
+
+.ipa-path {
+  font-size: var(--font-ui-small);
+  color: var(--text-muted);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--size-2-1);
+}
+
+/* Match the path node text to the list item title so every clickable note
+   link looks the same. */
+.ipa-path__node {
+  color: var(--text-normal);
+  font-weight: var(--font-medium);
+  cursor: pointer;
+}
+
+.ipa-path__node:hover {
+  color: var(--text-accent);
+  text-decoration: underline;
+}
+
+.ipa-path__sep {
+  opacity: 0.5;
+}
+
+/* Validation */
+.ipa-issue {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-2-1);
+  padding: var(--size-4-2);
+  border-radius: var(--radius-m);
+  border-left: 3px solid var(--background-modifier-border);
+}
+
+.ipa-issue--error {
+  border-left-color: var(--text-error);
+}
+
+.ipa-issue--warn {
+  border-left-color: var(--text-warning);
+}
+
+.ipa-issue--info {
+  border-left-color: var(--text-accent);
+}
+
+.ipa-issue__head {
+  display: flex;
+  gap: var(--size-4-2);
+  align-items: baseline;
+}
+
+.ipa-issue__code {
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+
+.ipa-issue__fixable {
+  color: var(--text-success);
+  font-size: var(--font-ui-smaller);
+}
+
+.ipa-empty {
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  padding: var(--size-4-4) var(--size-4-2);
+  text-align: center;
+}
+
+.ipa-error-banner {
+  color: var(--text-error);
+  background-color: var(--background-modifier-error);
+  border-radius: var(--radius-s);
+  padding: var(--size-4-2);
+  font-size: var(--font-ui-smaller);
+  white-space: pre-wrap;
+}
+
+.ipa-toolbar {
+  display: flex;
+  gap: var(--size-4-2);
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+/* Traversal sections (up / down / siblings / root / backlinks shown together,
+   each collapsible) */
+.ipa-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-2-1);
+  margin-bottom: var(--size-4-3);
+}
+
+.ipa-section__header {
+  display: flex;
+  align-items: center;
+  gap: var(--size-2-1);
+  border-bottom: 1px solid var(--background-modifier-border);
+  padding-bottom: var(--size-2-1);
+  cursor: pointer;
+  list-style: none;
+}
+
+.ipa-section__header::-webkit-details-marker {
+  display: none;
+}
+
+.ipa-section__header::before {
+  content: "▾";
+  width: 1em;
+  color: var(--text-faint);
+  font-size: 0.8em;
+}
+
+.ipa-section:not([open]) > .ipa-section__header::before {
+  content: "▸";
+}
+
+.ipa-section__header .ipa-view__title {
+  flex: 1;
+}
+
+.ipa-section__count {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.ipa-section__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-2-1);
+  padding-top: var(--size-2-1);
+}
+
+.ipa-more {
+  align-self: flex-start;
+  color: var(--text-accent);
+  cursor: pointer;
+  font-size: var(--font-ui-smaller);
+  text-decoration: underline;
+  padding-top: var(--size-2-1);
+}
+
+.ipa-more:hover {
+  color: var(--text-accent-hover);
+}
