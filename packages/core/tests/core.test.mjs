@@ -863,6 +863,10 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   const vault = await fixtureVault();
   const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
   const options = { homeDir: home, profile: "ipa-test" };
+  // Hook scripts now resolve the vault via `ipa config show`, which reads env +
+  // the global profile registry. Point that resolution at this test's vault so
+  // the spawned hooks operate on the fixture instead of the developer's vault.
+  const hookEnv = { ...process.env, IPA_VAULT_PATH: vault };
   assert.deepEqual((await harnessStatus(vault, options)).installed, []);
   const install = await harnessInstall(vault, "codex", options);
   assert.equal(install.installed, true);
@@ -966,6 +970,7 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
       cwd: promptCwd,
       prompt: "/Users/mac/Downloads/sales_graph\\ \\(1\\).mmd /Users/mac/Downloads/sales_graph_mapping\\ \\(1\\).yaml"
     }),
+    env: hookEnv,
     encoding: "utf8"
   });
   assert.equal(promptNudge.status, 0);
@@ -1010,17 +1015,20 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   const guardScript = join(home, ".codex", "hooks", "ipa-inbox-guard.mjs");
   const blocked = spawnSync(process.execPath, [guardScript], {
     input: JSON.stringify({ tool_name: "Write", tool_input: { file_path: join(vault, "02 Archive", "New.md") } }),
+    env: hookEnv,
     encoding: "utf8"
   });
   assert.equal(blocked.status, 2);
   assert.match(blocked.stderr, /IPA guard blocked/);
   const allowed = spawnSync(process.execPath, [guardScript], {
     input: JSON.stringify({ tool_name: "Write", tool_input: { file_path: join(vault, "00 Inbox", "New.md") } }),
+    env: hookEnv,
     encoding: "utf8"
   });
   assert.equal(allowed.status, 0);
   const nudge = spawnSync(process.execPath, [join(home, ".codex", "hooks", "ipa-md-write-nudge.mjs")], {
     input: JSON.stringify({ tool_name: "Edit", tool_input: { file_path: join(vault, "00 Inbox", "Alpha.md") } }),
+    env: hookEnv,
     encoding: "utf8"
   });
   assert.equal(nudge.status, 0);
@@ -1039,12 +1047,14 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   );
   const needsFormatNudge = spawnSync(process.execPath, [join(home, ".codex", "hooks", "ipa-md-write-nudge.mjs")], {
     input: JSON.stringify({ tool_name: "Edit", tool_input: { file_path: join(vault, "00 Inbox", "Needs Format.md") } }),
+    env: hookEnv,
     encoding: "utf8"
   });
   assert.equal(needsFormatNudge.status, 0);
   const formatterGate = join(home, ".codex", "hooks", "ipa-formatter-gate.mjs");
   const blockedFormatter = spawnSync(process.execPath, [formatterGate], {
     input: "{}",
+    env: hookEnv,
     encoding: "utf8"
   });
   assert.equal(blockedFormatter.status, 2);
@@ -1054,6 +1064,7 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   await formatVault(vault, true, { notes: ["Alpha", "Needs Format"] });
   const passedFormatter = spawnSync(process.execPath, [formatterGate], {
     input: "{}",
+    env: hookEnv,
     encoding: "utf8"
   });
   assert.equal(passedFormatter.status, 0);
@@ -1081,6 +1092,82 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   assert.ok(uninstall.removed.includes(".agents/skills/ipa-rule/SKILL.md"));
   await harnessUninstall(vault, "claude", options);
   assert.deepEqual((await harnessStatus(vault, options)).installed, []);
+});
+
+test("harness install registers home-relative ~ hook paths and migrates legacy/duplicate/other-machine entries", async () => {
+  const vault = await fixtureVault();
+  const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
+  const options = { homeDir: home, profile: "ipa-test" };
+  const settingsPath = join(home, ".claude", "settings.json");
+
+  // Pre-seed settings.json the way a synced/multi-machine setup would look:
+  // a legacy absolute path for THIS machine, an other-machine absolute path,
+  // a duplicate, plus unrelated non-IPA hooks that must survive.
+  await mkdir(dirname(settingsPath), { recursive: true });
+  await writeFile(settingsPath, JSON.stringify({
+    hooks: {
+      UserPromptSubmit: [
+        { hooks: [{ type: "command", command: `node '${join(home, ".claude", "hooks", "ipa-user-prompt-nudge.mjs")}'` }] },
+        { hooks: [{ type: "command", command: "node '/Users/other-machine/.claude/hooks/ipa-user-prompt-nudge.mjs'" }] },
+        { hooks: [{ type: "command", command: "~/.claude/hooks/companion-nudge.sh" }] }
+      ],
+      PostToolUse: [
+        { matcher: "Edit|Write", hooks: [{ type: "command", command: "~/.claude/hooks/ruff-lint.sh" }] }
+      ]
+    }
+  }, null, 2) + "\n", "utf8");
+
+  await harnessInstall(vault, "claude", options);
+  const config = JSON.parse(await readFile(settingsPath, "utf8"));
+  const commandsOf = (cfg) => Object.values(cfg.hooks ?? {})
+    .flatMap((groups) => groups.flatMap((g) => (g.hooks ?? []).map((h) => h.command)));
+  const allCommands = commandsOf(config);
+  const ipaCommands = allCommands.filter((c) => /ipa-[a-z-]+\.mjs/.test(c));
+
+  // Every IPA hook is a home-relative ~ path; no absolute or other-machine path remains.
+  assert.ok(ipaCommands.length >= 5);
+  for (const command of ipaCommands) {
+    assert.match(command, /^node ~\/\.claude\/hooks\/ipa-[a-z-]+\.mjs$/, `expected ~ path, got: ${command}`);
+  }
+  assert.ok(!ipaCommands.some((c) => c.includes(home)), "absolute home path should be migrated away");
+  assert.ok(!ipaCommands.some((c) => c.includes("other-machine")), "other-machine path should be migrated away");
+
+  // Duplicate prompt hooks collapse to exactly one.
+  const promptIpa = config.hooks.UserPromptSubmit
+    .flatMap((g) => g.hooks).filter((h) => h.command.includes("ipa-user-prompt-nudge.mjs"));
+  assert.equal(promptIpa.length, 1);
+
+  // Unrelated non-IPA hooks are preserved.
+  assert.ok(allCommands.includes("~/.claude/hooks/companion-nudge.sh"));
+  assert.ok(allCommands.includes("~/.claude/hooks/ruff-lint.sh"));
+
+  // Uninstall removes every IPA hook but leaves non-IPA hooks intact.
+  await harnessUninstall(vault, "claude", options);
+  const afterCommands = commandsOf(JSON.parse(await readFile(settingsPath, "utf8")));
+  assert.ok(!afterCommands.some((c) => /ipa-[a-z-]+\.mjs/.test(c)), "all IPA hooks removed on uninstall");
+  assert.ok(afterCommands.includes("~/.claude/hooks/companion-nudge.sh"), "non-IPA hooks survive uninstall");
+});
+
+test("hook scripts resolve the vault path via homedir() with profile fallback instead of a hard-coded absolute path", async () => {
+  const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
+  const vault = join(home, "notes", "vault");
+  await mkdir(join(vault, ".ipa"), { recursive: true });
+  await mkdir(join(vault, "00 Inbox"), { recursive: true });
+  await writeFile(join(vault, ".ipa", "config.yaml"), "folders:\n  inbox: \"00 Inbox\"\n", "utf8");
+  await harnessInstall(vault, "claude", { homeDir: home });
+
+  const scripts = ["ipa-inbox-guard.mjs", "ipa-user-prompt-nudge.mjs", "ipa-md-write-nudge.mjs", "ipa-formatter-gate.mjs"];
+  for (const name of scripts) {
+    const src = await readFile(join(home, ".claude", "hooks", name), "utf8");
+    assert.ok(!src.includes(`const vaultPath = "${vault}"`), `${name} must not hard-code the absolute vault path`);
+    assert.match(src, /spawnSync\("ipa", \["config", "show", "--json"\]/, `${name} resolves vault via ipa global config first`);
+    assert.match(src, /return join\(homedir\(\), "notes\/vault"\)/, `${name} uses a homedir()-relative fallback`);
+    assert.match(src, /import \{ homedir \} from "node:os"/, `${name} imports homedir`);
+  }
+
+  // session-env hook carries no vault path and must stay untouched.
+  const sessionEnv = await readFile(join(home, ".claude", "hooks", "ipa-session-env.mjs"), "utf8");
+  assert.doesNotMatch(sessionEnv, /const vaultPath =/);
 });
 
 test("vault-local JS plugins run in search, validation and formatter paths", async () => {

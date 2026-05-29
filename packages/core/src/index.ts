@@ -5347,7 +5347,14 @@ async function writeJsonObject(path, value) {
   await writeFile(path, JSON.stringify(value, null, 2) + "\n", "utf8");
 }
 
-function hookCommand(path) {
+function hookCommand(path, spec) {
+  const home = spec ? dirname(spec.home) : null;
+  if (home) {
+    const rel = relative(home, path);
+    if (rel && !rel.startsWith("..") && !isAbsolute(rel) && !/\s/.test(rel)) {
+      return `node ~/${rel.split(sep).join("/")}`;
+    }
+  }
   return `node ${shellQuote(path)}`;
 }
 
@@ -5390,11 +5397,27 @@ function addHookCommand(config, event, matcher, command, statusMessage, timeout 
   config.hooks[event].push(group);
 }
 
-function removeHookCommand(config, command) {
+const IPA_MANAGED_HOOK_SCRIPTS = [
+  "ipa-session-env.mjs",
+  "ipa-inbox-guard.mjs",
+  "ipa-user-prompt-nudge.mjs",
+  "ipa-md-write-nudge.mjs",
+  "ipa-formatter-gate.mjs"
+];
+
+function isManagedHookCommand(command) {
+  return typeof command === "string" && IPA_MANAGED_HOOK_SCRIPTS.some((name) => command.includes(name));
+}
+
+// Remove every IPA-managed hook entry regardless of how its path was spelled
+// (legacy absolute paths, other-machine home paths, or ~ paths). Matching by
+// script basename lets install/uninstall clean up entries this machine could
+// not otherwise recognize, so a re-install converges on a single ~ entry.
+function removeManagedHookCommands(config) {
   if (!config.hooks) return;
   for (const event of Object.keys(config.hooks)) {
     config.hooks[event] = (config.hooks[event] ?? [])
-      .map((group) => ({ ...group, hooks: (group.hooks ?? []).filter((hook) => hook.command !== command) }))
+      .map((group) => ({ ...group, hooks: (group.hooks ?? []).filter((hook) => !isManagedHookCommand(hook.command)) }))
       .filter((group) => group.hooks.length);
     if (!config.hooks[event].length) delete config.hooks[event];
   }
@@ -5636,14 +5659,40 @@ function vaultLocalSkillStatus(vaultPath, spec) {
   ]));
 }
 
-function inboxGuardScript(vaultPath, inboxDir) {
+// Build a JS expression for the hook script that resolves the vault path at
+// runtime instead of hard-coding an absolute path. Priority: (1) `ipa config
+// show --json`, which is IPA's own resolution over env vars and the global
+// profile registry (~/.config/ipa/profile.yaml) — the single source of truth;
+// (2) the install machine's home-relative path as a fallback only when the ipa
+// CLI is unavailable. This keeps a synced hook script working across machines
+// with different home directories.
+function vaultResolverSnippet(vaultPath, options = {}) {
+  const home = harnessHomeBase(options);
+  const rel = relative(home, vaultPath);
+  const fallbackExpr = rel && !rel.startsWith("..") && !isAbsolute(rel)
+    ? `join(homedir(), ${JSON.stringify(rel.split(sep).join("/"))})`
+    : JSON.stringify(vaultPath);
+  return `(() => {
+  try {
+    const result = spawnSync("ipa", ["config", "show", "--json"], { encoding: "utf8" });
+    if (result.status === 0) {
+      const resolved = JSON.parse(result.stdout).vault_path;
+      if (resolved) return resolved.startsWith("~/") ? join(homedir(), resolved.slice(2)) : resolved;
+    }
+  } catch {}
+  return ${fallbackExpr};
+})()`;
+}
+
+function inboxGuardScript(vaultPath, inboxDir, options = {}) {
   return `#!/usr/bin/env node
 // ${HARNESS_MARKER}: shared IPA inbox creation guard.
 import { existsSync, readFileSync } from "node:fs";
-import { relative, resolve, sep } from "node:path";
+import { homedir } from "node:os";
+import { join, relative, resolve, sep } from "node:path";
 import { spawnSync } from "node:child_process";
 
-const vaultPath = ${JSON.stringify(vaultPath)};
+const vaultPath = ${vaultResolverSnippet(vaultPath, options)};
 const fallbackInbox = ${JSON.stringify(inboxDir)};
 
 function readInput() {
@@ -5721,9 +5770,11 @@ function userPromptNudgeScript(vaultPath, options = {}) {
 // ${HARNESS_MARKER}: IPA UserPromptSubmit context nudge.
 import { createHash, randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
 
-const vaultPath = ${JSON.stringify(vaultPath)};
+const vaultPath = ${vaultResolverSnippet(vaultPath, options)};
 const agent = ${JSON.stringify(options.agent ?? "unknown")};
 const prefix = "ipa";
 
@@ -5841,9 +5892,11 @@ function markdownWriteNudgeScript(vaultPath, mapping, options = {}) {
   return `#!/usr/bin/env node
 // ${HARNESS_MARKER}: prompt nudge after IPA vault Markdown edits.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
+import { spawnSync } from "node:child_process";
 
-const vaultPath = ${JSON.stringify(vaultPath)};
+const vaultPath = ${vaultResolverSnippet(vaultPath, options)};
 const noteRoots = ${JSON.stringify([mapping.inbox_dir, mapping.project_dir, mapping.archive_dir].filter(Boolean))};
 const prefix = "ipa";
 const pendingPath = join(vaultPath, ".ipa", "harness", "formatter-pending.json");
@@ -5923,10 +5976,11 @@ function formatterGateScript(vaultPath, options = {}) {
   return `#!/usr/bin/env node
 // ${HARNESS_MARKER}: block final response until pending IPA formatter patches are applied.
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 
-const vaultPath = ${JSON.stringify(vaultPath)};
+const vaultPath = ${vaultResolverSnippet(vaultPath, options)};
 const pendingPath = join(vaultPath, ".ipa", "harness", "formatter-pending.json");
 const prefix = "ipa";
 
@@ -6027,17 +6081,18 @@ async function installGlobalHarness(vaultPath, spec, mapping, options = {}) {
   const formatterGatePath = join(spec.hooksDir, "ipa-formatter-gate.mjs");
   await writeManagedFile(spec.skillFile, harnessSkillContent(vaultPath, spec, options), files);
   await writeManagedFile(envPath, sessionEnvScript(), files);
-  await writeManagedFile(guardPath, inboxGuardScript(vaultPath, mapping.inbox_dir), files);
+  await writeManagedFile(guardPath, inboxGuardScript(vaultPath, mapping.inbox_dir, options), files);
   await writeManagedFile(promptPath, userPromptNudgeScript(vaultPath, { ...options, agent: spec.name }), files);
   await writeManagedFile(writeNudgePath, markdownWriteNudgeScript(vaultPath, mapping, options), files);
   await writeManagedFile(formatterGatePath, formatterGateScript(vaultPath, options), files);
 
   const config = await readJsonObject(spec.hooksConfig);
-  addHookCommand(config, "SessionStart", null, hookCommand(envPath), "Setting IPA search logging environment...", 5);
-  addHookCommand(config, "PreToolUse", "Write|Edit|MultiEdit", hookCommand(guardPath), "Checking IPA inbox write policy...", 5);
-  addHookCommand(config, "PostToolUse", "Write|Edit|MultiEdit", hookCommand(writeNudgePath), "Reminding IPA lint/format checks...", 5);
-  addHookCommand(config, "UserPromptSubmit", null, hookCommand(promptPath), null, 5);
-  addHookCommand(config, "Stop", null, hookCommand(formatterGatePath), "Checking IPA formatter apply gate...", 20);
+  removeManagedHookCommands(config);
+  addHookCommand(config, "SessionStart", null, hookCommand(envPath, spec), "Setting IPA search logging environment...", 5);
+  addHookCommand(config, "PreToolUse", "Write|Edit|MultiEdit", hookCommand(guardPath, spec), "Checking IPA inbox write policy...", 5);
+  addHookCommand(config, "PostToolUse", "Write|Edit|MultiEdit", hookCommand(writeNudgePath, spec), "Reminding IPA lint/format checks...", 5);
+  addHookCommand(config, "UserPromptSubmit", null, hookCommand(promptPath, spec), null, 5);
+  addHookCommand(config, "Stop", null, hookCommand(formatterGatePath, spec), "Checking IPA formatter apply gate...", 20);
   await writeJsonObject(spec.hooksConfig, config);
   files.push(spec.hooksConfig);
   await upsertManagedBlock(spec.globalPromptFile, globalPromptContent(spec));
@@ -6057,7 +6112,7 @@ async function uninstallGlobalHarness(spec) {
   for (const path of [spec.skillFile, ...scripts]) await removeManagedFile(path, removed);
   if (existsSync(spec.hooksConfig)) {
     const config = await readJsonObject(spec.hooksConfig);
-    for (const path of scripts) removeHookCommand(config, hookCommand(path));
+    removeManagedHookCommands(config);
     await writeJsonObject(spec.hooksConfig, config);
     removed.push(spec.hooksConfig);
   }
