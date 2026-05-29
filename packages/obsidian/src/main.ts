@@ -18,6 +18,23 @@ import { ConfirmModal } from "./util/ConfirmModal";
 import { IpaFlow } from "./core/ipaFlow";
 import { applyFixes } from "./core/applyFixes";
 
+// Obsidian's renderer cannot resolve node builtin ESM imports (node:fs, ...)
+// inside a blob module, but `require` is available there. Rewrite static builtin
+// imports to require() so vault plugins that use them load in Obsidian too; on
+// the CLI (Node) the original ESM import is used unchanged.
+function rewriteNodeBuiltinImports(code: string): string {
+  return code.replace(
+    /^[ \t]*import\s+(.+?)\s+from\s+["'](node:[a-zA-Z/_-]+)["'][ \t]*;?[ \t]*$/gm,
+    (_full, clause: string, mod: string) => {
+      const req = `require(${JSON.stringify(mod)})`;
+      const c = clause.trim();
+      if (c.startsWith("{")) return `const ${c} = ${req};`;
+      if (c.startsWith("* as ")) return `const ${c.slice(5).trim()} = ${req};`;
+      return `const ${c} = ${req}.default ?? ${req};`;
+    }
+  );
+}
+
 export default class IpaPlugin extends Plugin {
   settings!: IpaSettings;
   adapter!: ObsidianVaultAdapter;
@@ -88,7 +105,7 @@ export default class IpaPlugin extends Plugin {
       if (!this.settings.enableVaultPlugins) {
         throw new Error("IPA: vault-local plugins are disabled in settings.");
       }
-      const code = await readFile(absPath, "utf8");
+      const code = rewriteNodeBuiltinImports(await readFile(absPath, "utf8"));
       const url = URL.createObjectURL(new Blob([code], { type: "application/javascript" }));
       try {
         return await import(url);
