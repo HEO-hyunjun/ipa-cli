@@ -53,6 +53,11 @@ export class ValidationView extends BaseIpaView {
     }
   }
 
+  // Public entry for external callers (e.g. format-on-save) to re-run validation.
+  async revalidate(): Promise<void> {
+    if (this.summaryEl) await this.validate();
+  }
+
   async onOpen(): Promise<void> {
     const { body, header } = this.buildShell("Validation");
     this.buildControls(header);
@@ -211,7 +216,7 @@ export class ValidationView extends BaseIpaView {
     const notes = this.scope === "current" ? this.currentNotes() : undefined;
     const run = async () => {
       try {
-        const result = await applyFixes(this.app, this.client, this.plugin.settings, notes);
+        const result = await applyFixes(this.app, this.client, notes);
         new Notice(result.message);
         if (this.plugin.settings.autoValidateAfterApply) await this.validate();
       } catch (error) {
@@ -220,7 +225,7 @@ export class ValidationView extends BaseIpaView {
     };
 
     // Confirm only when writing fixes to disk across the whole vault.
-    if (this.scope === "vault" && this.plugin.settings.saveOnApply && this.plugin.settings.confirmIpaFlow) {
+    if (this.scope === "vault" && this.plugin.settings.confirmIpaFlow) {
       new ConfirmModal(this.app, {
         title: "Apply fixes across the vault?",
         body: "This writes formatter fixes to every note that has available fixes.",

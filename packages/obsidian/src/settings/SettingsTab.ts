@@ -18,13 +18,13 @@ export class IpaSettingTab extends PluginSettingTab {
     new Setting(containerEl).setName("Apply").setHeading();
 
     new Setting(containerEl)
-      .setName("Save on apply")
+      .setName("Format on save")
       .setDesc(
-        "On: write fixes directly to files via the Vault API. Off: only update the open editor buffer where possible."
+        "Automatically apply formatter fixes to a note when you leave it (switch notes, close it) or save with Cmd/Ctrl+S."
       )
       .addToggle((toggle) =>
-        toggle.setValue(this.plugin.settings.saveOnApply).onChange(async (value) => {
-          this.plugin.settings.saveOnApply = value;
+        toggle.setValue(this.plugin.settings.formatOnSave).onChange(async (value) => {
+          this.plugin.settings.formatOnSave = value;
           await this.plugin.saveSettings();
         })
       );

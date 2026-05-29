@@ -4,7 +4,8 @@ export type ValidationScope = "current" | "vault";
 
 export interface IpaSettings {
   // Apply behaviour
-  saveOnApply: boolean;
+  // Auto-apply formatter fixes when a note is saved (note switch, close, Cmd+S).
+  formatOnSave: boolean;
   autoValidateAfterApply: boolean;
   // Validation
   defaultValidationScope: ValidationScope;
@@ -21,7 +22,7 @@ export interface IpaSettings {
 }
 
 export const DEFAULT_SETTINGS: IpaSettings = {
-  saveOnApply: true,
+  formatOnSave: false,
   autoValidateAfterApply: true,
   defaultValidationScope: "current",
   confirmIpaFlow: true,

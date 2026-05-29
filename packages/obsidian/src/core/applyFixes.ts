@@ -1,6 +1,5 @@
-import { App, MarkdownView, TFile } from "obsidian";
+import { App, TFile } from "obsidian";
 import type { IpaClient } from "./ipaClient";
-import type { IpaSettings } from "../settings/settings";
 
 interface Patch {
   note?: string;
@@ -38,15 +37,13 @@ function groupByPath(patches: Patch[]): Map<string, Patch[]> {
   return map;
 }
 
-// Apply formatter fixes through Obsidian so the editor and metadata cache stay in
-// sync. core.formatVault(apply=true) writes via Node fs and bypasses Obsidian,
-// leaving the editor with stale content (the bug behind "save on apply does
-// nothing"). Instead we plan the patches and write them with the Vault API when
-// saveOnApply is on, or into the active editor buffer when it is off.
+// Apply formatter fixes through Obsidian's Vault API so the editor and metadata
+// cache stay in sync. core.formatVault(apply=true) writes via Node fs and
+// bypasses Obsidian, leaving the editor with stale content; vault.process keeps
+// disk, editor buffer, and cache consistent.
 export async function applyFixes(
   app: App,
   client: IpaClient,
-  settings: IpaSettings,
   notes: string[] | undefined
 ): Promise<ApplyResult> {
   const plan = await client.formatPlan(notes);
@@ -56,40 +53,19 @@ export async function applyFixes(
   }
 
   const byPath = groupByPath(patches);
-
-  if (settings.saveOnApply) {
-    let applied = 0;
-    let files = 0;
-    for (const [path, notePatches] of byPath) {
-      // core paths come from fs.readdir (NFD on macOS); Obsidian indexes by NFC.
-      const file = app.vault.getAbstractFileByPath(path.normalize("NFC"));
-      if (!(file instanceof TFile)) continue;
-      await app.vault.process(file, (data) => {
-        let text = data;
-        for (const patch of notePatches) text = applyPatchToText(text, patch);
-        return text;
-      });
-      applied += notePatches.length;
-      files += 1;
-    }
-    return { applied, message: `IPA: applied ${applied} fix(es) across ${files} note(s).` };
+  let applied = 0;
+  let files = 0;
+  for (const [path, notePatches] of byPath) {
+    // core paths come from fs.readdir (NFD on macOS); Obsidian indexes by NFC.
+    const file = app.vault.getAbstractFileByPath(path.normalize("NFC"));
+    if (!(file instanceof TFile)) continue;
+    await app.vault.process(file, (data) => {
+      let text = data;
+      for (const patch of notePatches) text = applyPatchToText(text, patch);
+      return text;
+    });
+    applied += notePatches.length;
+    files += 1;
   }
-
-  // Save on apply OFF: update only the active editor buffer (left unsaved).
-  const view = app.workspace.getActiveViewOfType(MarkdownView);
-  const file = view?.file;
-  if (!view || !file) {
-    return { applied: 0, message: "IPA: 'Save on apply' is off — open the note in an editor to preview fixes." };
-  }
-  const notePatches = byPath.get(file.path);
-  if (!notePatches || notePatches.length === 0) {
-    return { applied: 0, message: "IPA: 'Save on apply' is off — no buffer fixes for the active note." };
-  }
-  let text = view.editor.getValue();
-  for (const patch of notePatches) text = applyPatchToText(text, patch);
-  view.editor.setValue(text);
-  return {
-    applied: notePatches.length,
-    message: `IPA: applied ${notePatches.length} fix(es) to the editor buffer (unsaved).`
-  };
+  return { applied, message: `IPA: applied ${applied} fix(es) across ${files} note(s).` };
 }

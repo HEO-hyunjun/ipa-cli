@@ -1,4 +1,4 @@
-import { Notice, Plugin, WorkspaceLeaf } from "obsidian";
+import { Notice, Plugin, TFile, WorkspaceLeaf } from "obsidian";
 import { readFile } from "node:fs/promises";
 import {
   ICON_ID,
@@ -23,6 +23,9 @@ export default class IpaPlugin extends Plugin {
   adapter!: ObsidianVaultAdapter;
   client!: IpaClient;
   private warmTimer: number | null = null;
+  private lastMarkdownFile: TFile | null = null;
+  private formatGuard = new Set<string>();
+  private restoreSaveCommand: (() => void) | null = null;
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -30,16 +33,19 @@ export default class IpaPlugin extends Plugin {
     this.client = new IpaClient(() => this.adapter.getVaultPath());
     this.installPluginLoader();
 
-    // Drop the in-memory caches whenever the vault changes, then re-warm the
-    // search context once edits settle.
+    // Drop the in-memory caches whenever the vault changes. We deliberately do
+    // NOT re-warm the search context here: prepareSearchContext is a multi-second
+    // main-thread build, and re-running it on every edit/apply froze Obsidian.
+    // The context rebuilds lazily on the next search; only onload pre-warms it.
     const onVaultChange = () => {
       this.client.invalidateNotes();
-      this.scheduleSearchWarm();
     };
     this.registerEvent(this.app.vault.on("modify", onVaultChange));
     this.registerEvent(this.app.vault.on("create", onVaultChange));
     this.registerEvent(this.app.vault.on("delete", onVaultChange));
     this.registerEvent(this.app.vault.on("rename", onVaultChange));
+
+    this.registerFormatOnSave();
 
     this.registerView(VIEW_TYPE_SEARCH, (leaf) => new SearchView(leaf, this));
     this.registerView(VIEW_TYPE_TRAVERSAL, (leaf) => new TraversalView(leaf, this));
@@ -58,6 +64,7 @@ export default class IpaPlugin extends Plugin {
 
   onunload(): void {
     if (this.warmTimer !== null) window.clearTimeout(this.warmTimer);
+    if (this.restoreSaveCommand) this.restoreSaveCommand();
     delete (globalThis as Record<string, unknown>).__ipaImportPlugin;
   }
 
@@ -89,6 +96,85 @@ export default class IpaPlugin extends Plugin {
         URL.revokeObjectURL(url);
       }
     };
+  }
+
+  // Auto-apply formatter fixes when the user "saves" a note. Obsidian autosaves,
+  // so we treat leaving a note (switching leaves or closing it) and the explicit
+  // save-file command (Cmd/Ctrl+S) as the save points.
+  private registerFormatOnSave(): void {
+    this.registerEvent(
+      this.app.workspace.on("active-leaf-change", () => {
+        const current = this.app.workspace.getActiveFile();
+        const previous = this.lastMarkdownFile;
+        this.lastMarkdownFile = current && current.extension === "md" ? current : null;
+        if (this.settings.formatOnSave && previous && previous !== current) {
+          void this.formatOnSaveApply(previous);
+        }
+      })
+    );
+    this.lastMarkdownFile = this.app.workspace.getActiveFile();
+
+    // Obsidian runs a command's checkCallback(false) when present, otherwise its
+    // callback. editor:save-file has both and checkCallback wins, so wrap both to
+    // reliably trigger format-on-save after the real save runs.
+    const commands = (this.app as unknown as {
+      commands?: {
+        commands?: Record<string, {
+          callback?: () => unknown;
+          checkCallback?: (checking: boolean) => unknown;
+        }>;
+      };
+    }).commands;
+    const saveCommand = commands?.commands?.["editor:save-file"];
+    if (saveCommand) {
+      const afterSave = () => {
+        const file = this.app.workspace.getActiveFile();
+        if (this.settings.formatOnSave && file && file.extension === "md") {
+          void this.formatOnSaveApply(file);
+        }
+      };
+      const originalCallback = saveCommand.callback;
+      const originalCheck = saveCommand.checkCallback;
+      if (originalCheck) {
+        saveCommand.checkCallback = (checking: boolean) => {
+          const result = originalCheck.call(saveCommand, checking);
+          if (!checking && result !== false) afterSave();
+          return result;
+        };
+      }
+      if (originalCallback) {
+        saveCommand.callback = () => {
+          const result = originalCallback.call(saveCommand);
+          afterSave();
+          return result;
+        };
+      }
+      this.restoreSaveCommand = () => {
+        if (originalCheck) saveCommand.checkCallback = originalCheck;
+        if (originalCallback) saveCommand.callback = originalCallback;
+      };
+    }
+  }
+
+  // Apply fixes for one note, persisting to disk. Guards against the re-entrant
+  // modify event the write itself fires.
+  private async formatOnSaveApply(file: TFile): Promise<void> {
+    if (!this.adapter.hasFileSystemAccess()) return;
+    if (this.formatGuard.has(file.path)) return;
+    this.formatGuard.add(file.path);
+    try {
+      await applyFixes(this.app, this.client, [file.basename]);
+      // If the validation panel is open, re-run validation so the user sees the
+      // recheck after fixes (the validate → fix → validate cycle).
+      const validation = this.app.workspace.getLeavesOfType(VIEW_TYPE_VALIDATION)[0]?.view as
+        | ValidationView
+        | undefined;
+      await validation?.revalidate();
+    } catch (error) {
+      new Notice(`IPA format-on-save failed: ${errorMessage(error)}`);
+    } finally {
+      window.setTimeout(() => this.formatGuard.delete(file.path), 600);
+    }
   }
 
   async activateView(type: string): Promise<WorkspaceLeaf | null> {
@@ -222,7 +308,7 @@ export default class IpaPlugin extends Plugin {
       return;
     }
     try {
-      const result = await applyFixes(this.app, this.client, this.settings, [title]);
+      const result = await applyFixes(this.app, this.client, [title]);
       new Notice(result.message);
       const view = this.app.workspace.getLeavesOfType(VIEW_TYPE_VALIDATION)[0]?.view as
         | ValidationView
