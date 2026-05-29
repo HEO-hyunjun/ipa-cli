@@ -1151,7 +1151,7 @@ async function loadCachedNoteSummaries(vaultPath, mapping = DEFAULT_MAPPING) {
   return entries.map((entry) => noteSummaryFromCacheEntry(vaultPath, entry));
 }
 
-async function loadNotesForView(vaultPath, mapping = DEFAULT_MAPPING) {
+export async function loadNotesForView(vaultPath, mapping = DEFAULT_MAPPING) {
   return await loadCachedNoteSummaries(vaultPath, mapping) ??
     await refreshCachedNoteSummaries(vaultPath, mapping) ??
     await loadNotes(vaultPath, mapping);
@@ -1868,9 +1868,9 @@ async function maybeRecordSearchEvent(vaultPath, result, options = {}) {
   await appendFile(path, JSON.stringify(event) + "\n", "utf8");
 }
 
-async function prepareSearchContext(vaultPath) {
+export async function prepareSearchContext(vaultPath, notes = null) {
   const { config, mapping } = await readVaultConfig(vaultPath);
-  const notes = await loadNotes(vaultPath, mapping);
+  if (!notes) notes = await loadNotes(vaultPath, mapping);
   const active = await activeSearchParams(vaultPath);
   const searchPlugins = await loadPluginModules(vaultPath, "search");
   const pluginChannels = [];
@@ -1884,7 +1884,7 @@ async function prepareSearchContext(vaultPath) {
   return { vaultPath, mapping, notes, active, plugins, channels, preparedNotes: prepareSearchNotes(notes, mapping), queryScoreCache: new Map() };
 }
 
-async function searchWithContext(context, query, options = {}) {
+export async function searchWithContext(context, query, options = {}) {
   const { active } = context;
   const threshold = options.showAll ? 0 : options.threshold ?? active.threshold ?? 0.3;
   const cap = options.maxResults ?? options.cap ?? active.cap ?? 10;
@@ -2490,6 +2490,26 @@ export async function traversal(vaultPath, mode, noteName) {
   if (mode === "siblings") return { mode, note: note.id, siblings: siblings(note, notes).map((item) => item.id) };
   if (mode === "root") return { mode, note: note.id, roots: upwardPaths(note, notes).map((path) => path[path.length - 1]).filter(Boolean) };
   throw new Error(`unknown traversal mode: ${mode}`);
+}
+
+// Compute up / down / siblings / root in one pass. Callers that already hold the
+// parsed notes (e.g. a long-running UI) can pass them to skip loadNotes entirely.
+export async function traversalAll(vaultPath, noteName, notes = null) {
+  if (!notes) {
+    const { mapping } = await readVaultConfig(vaultPath);
+    // Use the .ipa/cache summary (refs/type) like viewNote — no full re-parse.
+    notes = await loadNotesForView(vaultPath, mapping);
+  }
+  const note = findNote(notes, noteName);
+  if (!note) throw new Error(`note not found: ${noteName}`);
+  const paths = upwardPaths(note, notes);
+  return {
+    note: note.id,
+    paths,
+    tree: downwardTree(note.id, notes),
+    siblings: siblings(note, notes).map((item) => item.id),
+    roots: paths.map((path) => path[path.length - 1]).filter(Boolean)
+  };
 }
 
 function upwardPaths(note, notes, seen = new Set()) {
@@ -4337,15 +4357,32 @@ function applyPluginSetting(current, setting, kind, relPath) {
   return enabled;
 }
 
+// Hosts that cannot import file:// ESM (e.g. the Obsidian renderer) may install
+// globalThis.__ipaImportPlugin to load a vault module their own way (blob URL,
+// etc.). The CLI leaves it unset and uses a normal dynamic import.
+async function importVaultModule(path) {
+  if (typeof globalThis.__ipaImportPlugin === "function") {
+    return globalThis.__ipaImportPlugin(path);
+  }
+  return import(pathToFileURL(path).href + `?t=${Date.now()}`);
+}
+
 async function loadPluginModules(vaultPath, kind) {
   const plugins = (await listPlugins(vaultPath)).plugins.filter((item) => item.kind === kind);
   const modules = [];
   for (const plugin of plugins) {
     const path = resolve(vaultPath, plugin.path);
-    modules.push({
-      ...plugin,
-      module: await import(pathToFileURL(path).href + `?t=${Date.now()}`)
-    });
+    try {
+      modules.push({
+        ...plugin,
+        module: await importVaultModule(path)
+      });
+    } catch (error) {
+      // With an injected loader (Obsidian) skip a plugin that fails to load so
+      // builtin rules still run; the CLI keeps fail-fast behaviour.
+      if (typeof globalThis.__ipaImportPlugin === "function") continue;
+      throw error;
+    }
   }
   return modules;
 }
@@ -4363,7 +4400,7 @@ export async function pluginDoctor(vaultPath) {
 export async function validatePlugin(path, kind = null) {
   const issues = [];
   try {
-    const mod = await import(pathToFileURL(path).href + `?t=${Date.now()}`);
+    const mod = await importVaultModule(path);
     if ((kind === "search" || path.includes("/search/")) && typeof mod.search !== "function" && !normalizeSearchChannelPlugin({ path, module: mod })) {
       issues.push({ code: "plugin.contract", severity: "error", message: "search plugin must export search() or a channel descriptor" });
     }
@@ -4387,7 +4424,7 @@ export async function validatePlugin(path, kind = null) {
 export async function pluginDryRun(vaultPath, kind, pluginRelPath, options = {}) {
   const { mapping } = await readVaultConfig(vaultPath);
   const notes = await loadNotes(vaultPath, mapping);
-  const mod = await import(pathToFileURL(resolve(vaultPath, pluginRelPath)).href + `?t=${Date.now()}`);
+  const mod = await importVaultModule(resolve(vaultPath, pluginRelPath));
   if (kind === "search") {
     const channel = normalizeSearchChannelPlugin({ path: pluginRelPath, module: mod });
     const results = channel
