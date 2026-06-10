@@ -1070,6 +1070,47 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   assert.equal(passedFormatter.status, 0);
   assert.equal(existsSync(pendingPath), false);
 
+  // Session-scoped gating: pending notes from another session must not block.
+  await writeFile(
+    join(vault, "00 Inbox", "Needs Format.md"),
+    `---\ndate_modified: 2026/05/10 (Sun) 00:00:00\nref: ["[[🔖 Topic Index]]"]\ntags: [format]\n---\n# Needs Format\n\nBody\n`,
+    "utf8"
+  );
+  const sessionNudge = spawnSync(process.execPath, [join(home, ".codex", "hooks", "ipa-md-write-nudge.mjs")], {
+    input: JSON.stringify({
+      session_id: "sess-a",
+      tool_name: "Edit",
+      tool_input: { file_path: join(vault, "00 Inbox", "Needs Format.md") }
+    }),
+    env: hookEnv,
+    encoding: "utf8"
+  });
+  assert.equal(sessionNudge.status, 0);
+  const pendingWithSession = JSON.parse(await readFile(pendingPath, "utf8"));
+  assert.equal(pendingWithSession.notes[0].session_id, "sess-a");
+  const otherSessionGate = spawnSync(process.execPath, [formatterGate], {
+    input: JSON.stringify({ session_id: "sess-b" }),
+    env: hookEnv,
+    encoding: "utf8"
+  });
+  assert.equal(otherSessionGate.status, 0);
+  assert.equal(existsSync(pendingPath), true);
+  const sameSessionGate = spawnSync(process.execPath, [formatterGate], {
+    input: JSON.stringify({ session_id: "sess-a" }),
+    env: hookEnv,
+    encoding: "utf8"
+  });
+  assert.equal(sameSessionGate.status, 2);
+  assert.match(sameSessionGate.stderr, /Formatter gate blocked final response/);
+  await formatVault(vault, true, { notes: ["Needs Format"] });
+  const sameSessionPass = spawnSync(process.execPath, [formatterGate], {
+    input: JSON.stringify({ session_id: "sess-a" }),
+    env: hookEnv,
+    encoding: "utf8"
+  });
+  assert.equal(sameSessionPass.status, 0);
+  assert.equal(existsSync(pendingPath), false);
+
   const claudeInstall = await harnessInstall(vault, "claude", options);
   assert.equal(claudeInstall.installed, true);
   assert.ok(claudeInstall.files.includes(".claude/skills/ipa-rule/SKILL.md"));
