@@ -6040,11 +6040,37 @@ function inNoteRoot(rel) {
   return noteRoots.some((root) => rel === root || rel.startsWith(root.replace(/\\/+$/, "") + "/"));
 }
 
+function sessionIdFrom(input) {
+  return firstString([
+    input.session_id,
+    input.sessionId,
+    input.conversation_id,
+    input.conversationId,
+    input.transcript_path,
+    input.transcriptPath,
+    process.env.IPA_SESSION_ID,
+    process.env.CODEX_SESSION_ID,
+    process.env.CLAUDE_SESSION_ID,
+    process.env.TERM_SESSION_ID
+  ]);
+}
+
+// Entries from sessions that ended without clearing the gate are pruned by age.
+const PENDING_TTL_MS = 48 * 60 * 60 * 1000;
+
+function freshNotes(notes) {
+  const cutoff = Date.now() - PENDING_TTL_MS;
+  return notes.filter((item) => {
+    const ts = Date.parse(item?.updated_at ?? "");
+    return Number.isNaN(ts) || ts >= cutoff;
+  });
+}
+
 function readPending() {
   if (!existsSync(pendingPath)) return { version: 1, notes: [] };
   try {
     const parsed = JSON.parse(readFileSync(pendingPath, "utf8"));
-    return { version: 1, notes: Array.isArray(parsed.notes) ? parsed.notes : [] };
+    return { version: 1, notes: freshNotes(Array.isArray(parsed.notes) ? parsed.notes : []) };
   } catch {
     return { version: 1, notes: [] };
   }
@@ -6067,9 +6093,10 @@ if (rel === "" || rel.startsWith("..") || rel.startsWith("/") || !rel.toLowerCas
 const note = rel.split(sep).join("/");
 if (!inNoteRoot(note)) process.exit(0);
 const noteTitle = note.split("/").pop().replace(/\\.md$/i, "");
+const sessionId = sessionIdFrom(input);
 const pending = readPending();
 pending.notes = pending.notes.filter((item) => item.path !== note && item.title !== noteTitle);
-pending.notes.push({ title: noteTitle, path: note, updated_at: new Date().toISOString() });
+pending.notes.push({ title: noteTitle, path: note, session_id: sessionId ?? null, updated_at: new Date().toISOString() });
 pending.updated_at = new Date().toISOString();
 writePending(pending);
 const noteArg = JSON.stringify(noteTitle);
@@ -6104,21 +6131,70 @@ const vaultPath = ${vaultResolverSnippet(vaultPath, options)};
 const pendingPath = join(vaultPath, ".ipa", "harness", "formatter-pending.json");
 const prefix = "ipa";
 
+function inputJson() {
+  try {
+    return JSON.parse(readFileSync(0, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+function firstString(values) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return null;
+}
+
+function sessionIdFrom(input) {
+  return firstString([
+    input.session_id,
+    input.sessionId,
+    input.conversation_id,
+    input.conversationId,
+    input.transcript_path,
+    input.transcriptPath,
+    process.env.IPA_SESSION_ID,
+    process.env.CODEX_SESSION_ID,
+    process.env.CLAUDE_SESSION_ID,
+    process.env.TERM_SESSION_ID
+  ]);
+}
+
+// Entries from sessions that ended without clearing the gate are pruned by age.
+const PENDING_TTL_MS = 48 * 60 * 60 * 1000;
+
+function freshNotes(notes) {
+  const cutoff = Date.now() - PENDING_TTL_MS;
+  return notes.filter((item) => {
+    const ts = Date.parse(item?.updated_at ?? "");
+    return Number.isNaN(ts) || ts >= cutoff;
+  });
+}
+
 function readPending() {
   if (!existsSync(pendingPath)) return { version: 1, notes: [] };
   try {
     const parsed = JSON.parse(readFileSync(pendingPath, "utf8"));
-    return { version: 1, notes: Array.isArray(parsed.notes) ? parsed.notes : [] };
+    return { version: 1, notes: freshNotes(Array.isArray(parsed.notes) ? parsed.notes : []) };
   } catch {
     return { version: 1, notes: [] };
   }
 }
 
-function clearPending() {
+function clearPending(remaining) {
+  if (!remaining.length) {
+    try {
+      unlinkSync(pendingPath);
+      return;
+    } catch {
+      // fall through and persist the empty list instead
+    }
+  }
   try {
-    unlinkSync(pendingPath);
+    writeFileSync(pendingPath, JSON.stringify({ version: 1, notes: remaining }, null, 2) + "\\n", "utf8");
   } catch {
-    writeFileSync(pendingPath, JSON.stringify({ version: 1, notes: [] }, null, 2) + "\\n", "utf8");
+    // best effort; the TTL prune keeps the file from growing unbounded
   }
 }
 
@@ -6139,8 +6215,15 @@ function block(message) {
   process.exit(2);
 }
 
+const input = inputJson();
+const sessionId = sessionIdFrom(input);
 const pending = readPending();
-const notes = pending.notes
+// Gate only notes edited in this session. Entries without a recorded session
+// (legacy or unknown runtime) stay gated by every session as a safe fallback.
+const owned = sessionId
+  ? pending.notes.filter((item) => !item.session_id || item.session_id === sessionId)
+  : pending.notes;
+const notes = owned
   .filter((item) => typeof item.title === "string" && item.title.trim())
   .map((item) => item.title.trim());
 const uniqueNotes = [...new Set(notes)];
@@ -6188,7 +6271,8 @@ if (patchCount > 0) {
   ].join("\\n"));
 }
 
-clearPending();
+const ownedSet = new Set(owned);
+clearPending(pending.notes.filter((item) => !ownedSet.has(item)));
 `;
 }
 
