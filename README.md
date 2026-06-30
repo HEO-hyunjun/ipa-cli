@@ -138,13 +138,27 @@ Optional AI harness install:
 ipa harness init codex
 ipa harness install codex
 ipa harness install claude
+ipa harness install opencode
 ipa harness doctor
 ```
 
-`harness init` is an alias for `harness install`. Harness install/init adds
-user-global IPA skills/hooks for Codex or Claude, vault-local `AGENTS.md` /
-`CLAUDE.md` guidance blocks, `.ipa/harness/*` metadata, and the `.ipa/plugins`
-JS authoring scaffold used for convention/search plugins.
+`harness init` is an alias for `harness install`. `install <target>` supports
+`codex`, `claude`, and `opencode`; the default target is `codex`. A normal
+`install`/`init` is a full install that includes the evidence nudge/logging
+hook (`hook:evidence`) unless explicitly excluded with `--without hook:evidence`.
+
+Component selectors narrow an install:
+
+```sh
+ipa harness install opencode --without hook:evidence
+ipa harness install opencode --only skill,prompt
+ipa harness install codex --only hook:guard
+```
+
+Harness install/init adds user-global IPA skills/hooks for Codex, Claude, or
+OpenCode, vault-local `AGENTS.md` / `CLAUDE.md` guidance blocks,
+`.ipa/harness/*` metadata, and the `.ipa/plugins` JS authoring scaffold used
+for convention/search plugins.
 
 ## Vault-local plugins
 
@@ -406,13 +420,25 @@ run a search for a prompt, only the prompt event remains.
 ## Harness
 
 `ipa harness` manages both user-global AI harness files and vault-local
-metadata under `.ipa/harness/`. `install <target>` supports `codex` and
-`claude`; `init <target>` is the same bootstrap command.
+metadata under `.ipa/harness/`. `install <target>` supports `codex`, `claude`,
+and `opencode`; `init <target>` is the same bootstrap command. The default
+target is `codex`. A normal `install`/`init` is a full install that includes
+the evidence nudge/logging hook (`hook:evidence`) unless explicitly excluded
+with `--without hook:evidence`. Component selectors narrow an install:
+`--only <component...>` installs just the named components, `--with
+<component...>` adds components to the default set, and `--without
+<component...>` removes components from the default set.
+
+```sh
+ipa harness install opencode --without hook:evidence
+ipa harness install opencode --only skill,prompt
+ipa harness install codex --only hook:guard
+```
 
 For the selected target, install writes:
 
-- user-global IPA CLI skill: `~/.codex/skills/ipa/SKILL.md` or
-  `~/.claude/skills/ipa/SKILL.md`
+- user-global IPA CLI skill: `~/.codex/skills/ipa/SKILL.md`,
+  `~/.claude/skills/ipa/SKILL.md`, or `~/.config/opencode/skills/ipa/SKILL.md`
 - user-global `SessionStart` environment hook that exports `IPA_SEARCH_LOG=1`
 - user-global inbox creation guard hook
 - user-global `UserPromptSubmit` IPA context-first nudge hook
@@ -420,13 +446,27 @@ For the selected target, install writes:
 - user-global `Stop` formatter gate that blocks final responses while edited
   vault notes still have formatter patches
 - vault-local manifest and guard helper under `.ipa/harness/<target>/`
-- vault-local system prompt block in `AGENTS.md` for Codex or `CLAUDE.md`
-  for Claude
+- vault-local system prompt block in `AGENTS.md` for Codex/OpenCode or
+  `CLAUDE.md` for Claude
 - vault-local helper skills:
   - Codex: `.agents/skills/ipa-rule`, `.agents/skills/ipa-config`, `.agents/skills/ipa-tune`
   - Claude: `.claude/skills/ipa-rule`, `.claude/skills/ipa-config`, `.claude/skills/ipa-tune`
+  - OpenCode: `.opencode/skills/ipa-rule`, `.opencode/skills/ipa-config`, `.opencode/skills/ipa-tune`
 - vault-local `.ipa/plugins` scaffold with JS types and disabled rule/search
   examples
+
+OpenCode native locations differ from Codex/Claude. User-global files land
+under `~/.config/opencode/`: `~/.config/opencode/AGENTS.md` (managed system
+prompt), `~/.config/opencode/skills/ipa/SKILL.md` (IPA CLI skill), and
+`~/.config/opencode/plugins/ipa-harness.js` (plugin that records prompt
+events). Vault-local files are `AGENTS.md` and `.opencode/skills/...` helper
+skills.
+
+OpenCode evidence behavior has one limitation: the OpenCode plugin can record
+prompt events, but unlike Claude's `UserPromptSubmit` hook it cannot inject
+additional model context into the running turn. The IPA nudge instructions
+reach the model only through the managed `AGENTS.md` and skill text, not via a
+hook-injected context block.
 
 The built-in guard policy is intentionally small: new Markdown files must be
 created under the configured inbox folder, while existing Markdown edits and
