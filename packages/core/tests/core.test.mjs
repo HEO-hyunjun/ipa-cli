@@ -6,7 +6,7 @@ import { existsSync } from "node:fs";
 import { chmod, cp, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   buildContext,
   cacheStatus,
@@ -1211,6 +1211,312 @@ test("hook scripts resolve the vault path via homedir() with profile fallback in
   assert.doesNotMatch(sessionEnv, /const vaultPath =/);
 });
 
+test("harness install opencode creates OpenCode-native managed artifacts and uninstall removes them", async () => {
+  // Given: a fixture vault and an isolated home directory.
+  const vault = await fixtureVault();
+  const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
+  const options = { homeDir: home, profile: "ipa-test" };
+  const opencodeHome = join(home, ".config", "opencode");
+
+  // Given: no opencode target is installed yet.
+  assert.deepEqual((await harnessStatus(vault, options)).installed, []);
+
+  // When: full default install for the opencode target.
+  const install = await harnessInstall(vault, "opencode", options);
+
+  // Then: install succeeds and reports OpenCode-native managed artifacts.
+  assert.equal(install.installed, true);
+
+  // Then: vault-local helper skills under .opencode/skills.
+  assert.ok(install.files.includes(".opencode/skills/ipa-rule/SKILL.md"));
+  assert.ok(install.files.includes(".opencode/skills/ipa-config/SKILL.md"));
+  assert.ok(install.files.includes(".opencode/skills/ipa-tune/SKILL.md"));
+
+  // Then: plugin scaffold is created.
+  assert.ok(install.plugin_init.created.includes(".ipa/plugins/jsconfig.json"));
+  assert.ok(install.plugin_init.created.includes(".ipa/plugins/types/ipa-plugin.d.ts"));
+
+  // Then: harness manifest and index exist.
+  assert.ok(install.files.includes(".ipa/harness/opencode/manifest.json"));
+  assert.ok(install.files.includes(".ipa/harness/manifest.json"));
+
+  // Then: global OpenCode artifacts are written to ~/.config/opencode.
+  assert.ok(install.global_files.some((file) => file.endsWith(".config/opencode/AGENTS.md")));
+  assert.ok(install.global_files.some((file) => file.endsWith(".config/opencode/skills/ipa/SKILL.md")));
+  assert.ok(install.global_files.some((file) => file.endsWith(".config/opencode/plugins/ipa-harness.js")));
+
+  // Then: exact OpenCode global paths exist on disk.
+  assert.ok(existsSync(join(opencodeHome, "AGENTS.md")));
+  assert.ok(existsSync(join(opencodeHome, "skills", "ipa", "SKILL.md")));
+  assert.ok(existsSync(join(opencodeHome, "plugins", "ipa-harness.js")));
+
+  // Then: vault-local AGENTS.md prompt block is present.
+  assert.ok(install.files.includes("AGENTS.md"));
+  const agentsPrompt = await readFile(join(vault, "AGENTS.md"), "utf8");
+  assert.match(agentsPrompt, /IPA CLI Harness/);
+
+  // Then: vault-local OpenCode helper skills exist on disk.
+  assert.ok(existsSync(join(vault, ".opencode", "skills", "ipa-rule", "SKILL.md")));
+  assert.ok(existsSync(join(vault, ".opencode", "skills", "ipa-config", "SKILL.md")));
+  assert.ok(existsSync(join(vault, ".opencode", "skills", "ipa-tune", "SKILL.md")));
+
+  // Then: plugin scaffold type files exist on disk.
+  assert.ok(existsSync(join(vault, ".ipa", "plugins", "jsconfig.json")));
+  assert.ok(existsSync(join(vault, ".ipa", "plugins", "types", "ipa-plugin.d.ts")));
+
+  // Then: harness manifests exist on disk.
+  assert.ok(existsSync(join(vault, ".ipa", "harness", "opencode", "manifest.json")));
+  assert.ok(existsSync(join(vault, ".ipa", "harness", "manifest.json")));
+
+  // Then: the global OpenCode skill has IPA frontmatter and command guidance.
+  const skill = await readFile(join(opencodeHome, "skills", "ipa", "SKILL.md"), "utf8");
+  assert.ok(skill.startsWith("---\nname: ipa\n"), "skill YAML frontmatter must be first");
+  assert.match(skill, /ipa context "keyword" --size medium --format markdown/);
+  assert.match(skill, /ipa search "keyword"/);
+
+  // Then: the global OpenCode AGENTS.md prompt has evidence-based guidance.
+  const globalPrompt = await readFile(join(opencodeHome, "AGENTS.md"), "utf8");
+  assert.match(globalPrompt, /Evidence-Based Work/);
+  assert.match(globalPrompt, /IPA: user knowledge base/);
+
+  // Then: the OpenCode plugin file is valid JavaScript with the harness marker.
+  const pluginSource = await readFile(join(opencodeHome, "plugins", "ipa-harness.js"), "utf8");
+  assert.match(pluginSource, /IPA_HARNESS_MANAGED/);
+
+  // Then: status reports opencode as installed.
+  const status = await harnessStatus(vault, options);
+  assert.deepEqual(status.installed, ["opencode"]);
+
+  // Then: the per-target manifest records default full install components,
+  // including hook:evidence (evidence is included by default; excluded only
+  // with --without hook:evidence).
+  const manifest = JSON.parse(await readFile(join(vault, ".ipa", "harness", "opencode", "manifest.json"), "utf8"));
+  assert.equal(manifest.target, "opencode");
+  assert.ok(Array.isArray(manifest.components), "manifest must declare components for default full install");
+  assert.ok(manifest.components.includes("hook:evidence"), "default full install must include hook:evidence");
+  assert.ok(manifest.components.includes("skill"), "default full install must include skill");
+  assert.ok(manifest.components.includes("prompt"), "default full install must include prompt");
+  assert.ok(manifest.components.includes("opencode-plugin"), "default full install must include opencode-plugin");
+
+  // Then: doctor reports ok for the full install.
+  assert.equal((await harnessDoctor(vault, options)).status, "ok");
+
+  // When: uninstall the opencode target.
+  const uninstall = await harnessUninstall(vault, "opencode", options);
+
+  // Then: uninstall succeeds and removes managed OpenCode artifacts.
+  assert.equal(uninstall.installed, false);
+  assert.ok(uninstall.removed.includes(".ipa/harness/opencode"));
+  assert.ok(uninstall.removed.some((path) => path.endsWith(".opencode/skills/ipa-rule/SKILL.md")));
+  assert.ok(uninstall.removed.some((path) => path.endsWith(".opencode/skills/ipa-config/SKILL.md")));
+  assert.ok(uninstall.removed.some((path) => path.endsWith(".opencode/skills/ipa-tune/SKILL.md")));
+
+  // Then: global OpenCode managed artifacts are removed.
+  assert.ok(uninstall.global_removed.some((file) => file.endsWith(".config/opencode/AGENTS.md")));
+  assert.ok(uninstall.global_removed.some((file) => file.endsWith(".config/opencode/skills/ipa/SKILL.md")));
+  assert.ok(uninstall.global_removed.some((file) => file.endsWith(".config/opencode/plugins/ipa-harness.js")));
+
+  // Then: vault-local .opencode/skills files are gone.
+  assert.equal(existsSync(join(vault, ".opencode", "skills", "ipa-rule", "SKILL.md")), false);
+  assert.equal(existsSync(join(vault, ".opencode", "skills", "ipa-config", "SKILL.md")), false);
+  assert.equal(existsSync(join(vault, ".opencode", "skills", "ipa-tune", "SKILL.md")), false);
+
+  // Then: the opencode target is no longer reported as installed.
+  assert.deepEqual((await harnessStatus(vault, options)).installed, []);
+});
+
+test("harness install with --only skill,prompt creates only selected artifacts plus required dependencies", async () => {
+  // Given: a fixture vault and an isolated home directory.
+  const vault = await fixtureVault();
+  const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
+  const options = { homeDir: home, profile: "ipa-test", components: { only: ["skill", "prompt"] } };
+  const codexHome = join(home, ".codex");
+
+  // Given: no target is installed yet.
+  assert.deepEqual((await harnessStatus(vault, options)).installed, []);
+
+  // When: install codex with only skill and prompt components.
+  const install = await harnessInstall(vault, "codex", options);
+
+  // Then: install succeeds.
+  assert.equal(install.installed, true);
+
+  // Then: the global skill file is created.
+  assert.ok(install.global_files.some((file) => file.endsWith(".codex/skills/ipa/SKILL.md")));
+  assert.ok(existsSync(join(codexHome, "skills", "ipa", "SKILL.md")));
+
+  // Then: the global prompt file is created.
+  assert.ok(install.global_files.some((file) => file.endsWith(".codex/AGENTS.md")));
+  assert.ok(existsSync(join(codexHome, "AGENTS.md")));
+
+  // Then: hook scripts are NOT created because no hook components were selected.
+  assert.equal(existsSync(join(codexHome, "hooks", "ipa-session-env.mjs")), false);
+  assert.equal(existsSync(join(codexHome, "hooks", "ipa-inbox-guard.mjs")), false);
+  assert.equal(existsSync(join(codexHome, "hooks", "ipa-user-prompt-nudge.mjs")), false);
+  assert.equal(existsSync(join(codexHome, "hooks", "ipa-md-write-nudge.mjs")), false);
+  assert.equal(existsSync(join(codexHome, "hooks", "ipa-formatter-gate.mjs")), false);
+
+  // Then: hooks config does not contain IPA hook commands.
+  const hooksConfigPath = join(codexHome, "hooks.json");
+  if (existsSync(hooksConfigPath)) {
+    const hooksConfig = await readFile(hooksConfigPath, "utf8");
+    assert.doesNotMatch(hooksConfig, /ipa-session-env/);
+    assert.doesNotMatch(hooksConfig, /ipa-inbox-guard/);
+    assert.doesNotMatch(hooksConfig, /ipa-user-prompt-nudge/);
+    assert.doesNotMatch(hooksConfig, /ipa-md-write-nudge/);
+    assert.doesNotMatch(hooksConfig, /ipa-formatter-gate/);
+  }
+
+  // Then: the manifest records exactly the selected components.
+  const manifest = JSON.parse(await readFile(join(vault, ".ipa", "harness", "codex", "manifest.json"), "utf8"));
+  assert.ok(Array.isArray(manifest.components), "manifest must declare components");
+  assert.ok(manifest.components.includes("skill"));
+  assert.ok(manifest.components.includes("prompt"));
+  assert.ok(!manifest.components.includes("hook:evidence"), "evidence must not be selected with only skill,prompt");
+  assert.ok(!manifest.components.includes("hook:guard"), "guard must not be selected with only skill,prompt");
+  assert.ok(!manifest.components.includes("hook:session-env"), "session-env must not be selected with only skill,prompt");
+
+  // Then: status reports selected and omitted components.
+  const status = await harnessStatus(vault, options);
+  assert.deepEqual(status.installed, ["codex"]);
+  assert.ok(status.global.codex.skill, "selected skill must be reported as present");
+  assert.ok(status.global.codex.prompt, "selected prompt must be reported as present");
+  assert.ok(status.components.selected.includes("skill"), "status must list skill as selected");
+  assert.ok(status.components.selected.includes("prompt"), "status must list prompt as selected");
+  assert.ok(status.components.omitted.includes("hook:evidence"), "status must list hook:evidence as omitted");
+
+  // Then: doctor is ok because only selected components are required.
+  assert.equal((await harnessDoctor(vault, options)).status, "ok");
+
+  await harnessUninstall(vault, "codex", options);
+});
+
+test("harness install with --without hook:evidence omits evidence hook while preserving other full-install artifacts", async () => {
+  // Given: a fixture vault and an isolated home directory.
+  const vault = await fixtureVault();
+  const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
+  const options = { homeDir: home, profile: "ipa-test", components: { without: ["hook:evidence"] } };
+  const codexHome = join(home, ".codex");
+
+  // Given: no target is installed yet.
+  assert.deepEqual((await harnessStatus(vault, options)).installed, []);
+
+  // When: install codex with hook:evidence excluded from the default full set.
+  const install = await harnessInstall(vault, "codex", options);
+
+  // Then: install succeeds.
+  assert.equal(install.installed, true);
+
+  // Then: full-install artifacts other than evidence are present.
+  assert.ok(install.global_files.some((file) => file.endsWith(".codex/skills/ipa/SKILL.md")));
+  assert.ok(install.global_files.some((file) => file.endsWith(".codex/AGENTS.md")));
+  assert.ok(install.global_files.some((file) => file.endsWith(".codex/hooks/ipa-session-env.mjs")));
+  assert.ok(install.global_files.some((file) => file.endsWith(".codex/hooks/ipa-inbox-guard.mjs")));
+  assert.ok(install.global_files.some((file) => file.endsWith(".codex/hooks/ipa-md-write-nudge.mjs")));
+  assert.ok(install.global_files.some((file) => file.endsWith(".codex/hooks/ipa-formatter-gate.mjs")));
+
+  // Then: the evidence hook script is NOT created.
+  assert.equal(existsSync(join(codexHome, "hooks", "ipa-user-prompt-nudge.mjs")), false);
+  assert.ok(!install.global_files.some((file) => file.endsWith(".codex/hooks/ipa-user-prompt-nudge.mjs")));
+
+  // Then: hooks config does not register the evidence hook.
+  const hooksConfig = JSON.parse(await readFile(join(codexHome, "hooks.json"), "utf8"));
+  const allCommands = Object.values(hooksConfig.hooks ?? {})
+    .flatMap((groups) => groups.flatMap((g) => (g.hooks ?? []).map((h) => h.command)));
+  assert.ok(!allCommands.some((c) => /ipa-user-prompt-nudge\.mjs/.test(c)), "evidence hook must not be registered");
+  assert.ok(allCommands.some((c) => /ipa-session-env\.mjs/.test(c)), "session-env hook must remain");
+  assert.ok(allCommands.some((c) => /ipa-inbox-guard\.mjs/.test(c)), "guard hook must remain");
+
+  // Then: the manifest records hook:evidence as omitted and other full-install components as selected.
+  const manifest = JSON.parse(await readFile(join(vault, ".ipa", "harness", "codex", "manifest.json"), "utf8"));
+  assert.ok(Array.isArray(manifest.components));
+  assert.ok(!manifest.components.includes("hook:evidence"), "evidence must be omitted");
+  assert.ok(manifest.components.includes("skill"), "skill must remain in full install minus evidence");
+  assert.ok(manifest.components.includes("hook:guard"), "guard must remain in full install minus evidence");
+  assert.ok(manifest.components.includes("hook:session-env"), "session-env must remain");
+
+  // Then: status reports hook:evidence as omitted.
+  const status = await harnessStatus(vault, options);
+  assert.ok(status.components.omitted.includes("hook:evidence"), "status must list hook:evidence as omitted");
+  assert.ok(status.components.selected.includes("skill"), "skill must still be selected");
+
+  // Then: doctor is ok because evidence was intentionally omitted.
+  assert.equal((await harnessDoctor(vault, options)).status, "ok");
+
+  await harnessUninstall(vault, "codex", options);
+});
+
+test("harness install with --only hook:guard creates guard hook and required opencode-plugin dependency for opencode", async () => {
+  // Given: a fixture vault and an isolated home directory.
+  const vault = await fixtureVault();
+  const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
+  const options = { homeDir: home, profile: "ipa-test", components: { only: ["hook:guard"] } };
+  const opencodeHome = join(home, ".config", "opencode");
+
+  // Given: no target is installed yet.
+  assert.deepEqual((await harnessStatus(vault, options)).installed, []);
+
+  // When: install opencode with only the guard hook component.
+  const install = await harnessInstall(vault, "opencode", options);
+
+  // Then: install succeeds.
+  assert.equal(install.installed, true);
+
+  // Then: the OpenCode plugin file is created as a required dependency of hook:* for opencode.
+  assert.ok(install.global_files.some((file) => file.endsWith(".config/opencode/plugins/ipa-harness.js")));
+  assert.ok(existsSync(join(opencodeHome, "plugins", "ipa-harness.js")));
+
+  // Then: the global skill is NOT created because only hook:guard was selected.
+  assert.equal(existsSync(join(opencodeHome, "skills", "ipa", "SKILL.md")), false);
+
+  // Then: the global prompt is NOT created.
+  assert.equal(existsSync(join(opencodeHome, "AGENTS.md")), false);
+
+  // Then: the manifest records exactly hook:guard and opencode-plugin as selected components.
+  const manifest = JSON.parse(await readFile(join(vault, ".ipa", "harness", "opencode", "manifest.json"), "utf8"));
+  assert.ok(Array.isArray(manifest.components));
+  assert.ok(manifest.components.includes("hook:guard"), "guard must be selected");
+  assert.ok(manifest.components.includes("opencode-plugin"), "opencode-plugin must be auto-selected as a dependency of hook:*");
+  assert.ok(!manifest.components.includes("skill"), "skill must not be selected");
+  assert.ok(!manifest.components.includes("hook:evidence"), "evidence must not be selected");
+  assert.ok(!manifest.components.includes("prompt"), "prompt must not be selected");
+
+  // Then: status reports hook:guard as selected and skill/prompt as omitted.
+  const status = await harnessStatus(vault, options);
+  assert.ok(status.components.selected.includes("hook:guard"));
+  assert.ok(status.components.omitted.includes("skill"));
+  assert.ok(status.components.omitted.includes("prompt"));
+
+  // Then: doctor is ok because only the guard hook is required.
+  assert.equal((await harnessDoctor(vault, options)).status, "ok");
+
+  await harnessUninstall(vault, "opencode", options);
+});
+
+test("harness install rejects unknown component before writing any managed artifacts", async () => {
+  // Given: a fixture vault and an isolated home directory.
+  const vault = await fixtureVault();
+  const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
+  const options = { homeDir: home, profile: "ipa-test", components: { only: ["nope"] } };
+
+  // When: install codex with an invalid component name.
+  // Then: it rejects with an error mentioning "unknown harness component".
+  await assert.rejects(
+    () => harnessInstall(vault, "codex", options),
+    /unknown harness component/
+  );
+
+  // Then: no target manifest was written.
+  assert.equal(existsSync(join(vault, ".ipa", "harness", "codex", "manifest.json")), false);
+  assert.equal(existsSync(join(vault, ".ipa", "harness", "manifest.json")), false);
+
+  // Then: no global codex artifacts were written.
+  assert.equal(existsSync(join(home, ".codex")), false);
+
+  // Then: the target is not reported as installed.
+  assert.deepEqual((await harnessStatus(vault, options)).installed, []);
+});
+
 test("vault-local JS plugins run in search, validation and formatter paths", async () => {
   const vault = await fixtureVault();
   await mkdir(join(vault, ".ipa", "plugins", "search"), { recursive: true });
@@ -1333,4 +1639,252 @@ test("search channels can disable builtins and use tunable plugin channels", asy
   const disabledChannels = await listSearchChannels(vault);
   assert.equal(disabledChannels.channels.find((item) => item.name === "custom_boost").enabled, false);
   assert.equal((await searchVault(vault, "channel-only")).count, 0);
+});
+
+test("opencode plugin hook:evidence records prompt events from tui.prompt.append and message.updated", async () => {
+  const vault = await fixtureVault();
+  const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
+  const options = { homeDir: home, profile: "ipa-test", components: { only: ["hook:evidence"] } };
+  const opencodeHome = join(home, ".config", "opencode");
+  const previousVaultEnv = process.env.IPA_VAULT_PATH;
+  process.env.IPA_VAULT_PATH = vault;
+
+  try {
+    await harnessInstall(vault, "opencode", options);
+
+    const pluginPath = join(opencodeHome, "plugins", "ipa-harness.js");
+    assert.ok(existsSync(pluginPath), "plugin file must exist for hook:evidence");
+    const pluginModule = await import(pathToFileURL(pluginPath).href);
+    const plugin = await pluginModule.IPAHarnessPlugin();
+    const eventHook = plugin.hooks["event"];
+    assert.ok(typeof eventHook === "function", "event hook must be registered for evidence");
+
+    const eventsPath = join(vault, ".ipa", "tune", "logs", "search-events.jsonl");
+    assert.equal(existsSync(eventsPath), false);
+
+    await eventHook({ type: "tui.prompt.append", payload: { prompt: "how do I tune ipa search", session_id: "sess-1" } });
+    await eventHook({ type: "message.updated", data: { message: "second prompt text", session_id: "sess-1" } });
+
+    assert.ok(existsSync(eventsPath), "evidence prompt log must be created after prompt events");
+    const log = (await readFile(eventsPath, "utf8")).trim().split("\n");
+    assert.equal(log.length, 2, "two prompt events must be recorded");
+    const first = JSON.parse(log[0]);
+    assert.equal(first.event_type, "prompt");
+    assert.equal(first.agent, "opencode");
+    assert.equal(first.source, "harness");
+    assert.equal(first.prompt, "how do I tune ipa search");
+    const second = JSON.parse(log[1]);
+    assert.equal(second.prompt, "second prompt text");
+
+    await harnessUninstall(vault, "opencode", options);
+  } finally {
+    if (previousVaultEnv === undefined) delete process.env.IPA_VAULT_PATH;
+    else process.env.IPA_VAULT_PATH = previousVaultEnv;
+  }
+});
+
+test("opencode plugin default full install composes formatter-gate and evidence event handlers", async () => {
+  const vault = await fixtureVault();
+  const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
+  // Default full install: no components option, so all components including
+  // hook:formatter-gate and hook:evidence are selected simultaneously.
+  const options = { homeDir: home, profile: "ipa-test" };
+  const opencodeHome = join(home, ".config", "opencode");
+  const previousVaultEnv = process.env.IPA_VAULT_PATH;
+  process.env.IPA_VAULT_PATH = vault;
+
+  try {
+    await harnessInstall(vault, "opencode", options);
+
+    const pluginPath = join(opencodeHome, "plugins", "ipa-harness.js");
+    assert.ok(existsSync(pluginPath), "plugin file must exist for default full install");
+    const pluginModule = await import(pathToFileURL(pluginPath).href);
+    const plugin = await pluginModule.IPAHarnessPlugin();
+    const eventHook = plugin.hooks["event"];
+    assert.ok(typeof eventHook === "function", "event hook must be registered for default full install");
+
+    const eventsPath = join(vault, ".ipa", "tune", "logs", "search-events.jsonl");
+    assert.equal(existsSync(eventsPath), false, "no evidence log before prompt events");
+
+    // When: a prompt event arrives. The evidence handler must record it even
+    // though the formatter-gate handler is also registered on the same event hook.
+    await eventHook({ type: "tui.prompt.append", payload: { prompt: "composes both handlers", session_id: "sess-compose" } });
+
+    // Then: the evidence prompt log is created, proving the evidence handler
+    // was not discarded by the formatter-gate handler assignment.
+    assert.ok(existsSync(eventsPath), "evidence prompt log must be created when both formatter-gate and evidence are selected");
+    const log = (await readFile(eventsPath, "utf8")).trim().split("\n");
+    assert.equal(log.length, 1, "one prompt event must be recorded");
+    const first = JSON.parse(log[0]);
+    assert.equal(first.event_type, "prompt");
+    assert.equal(first.agent, "opencode");
+    assert.equal(first.prompt, "composes both handlers");
+
+    // When: a session.idle event arrives. The formatter-gate handler must
+    // still be callable in the same composed hook. With no pending formatter
+    // notes, runFormatterGate returns early without throwing.
+    await eventHook({ type: "session.idle" });
+
+    await harnessUninstall(vault, "opencode", options);
+  } finally {
+    if (previousVaultEnv === undefined) delete process.env.IPA_VAULT_PATH;
+    else process.env.IPA_VAULT_PATH = previousVaultEnv;
+  }
+});
+
+test("opencode plugin hook:session-env injects IPA_SEARCH_LOG=1 via shell.env", async () => {
+  const vault = await fixtureVault();
+  const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
+  const options = { homeDir: home, profile: "ipa-test", components: { only: ["hook:session-env"] } };
+  const opencodeHome = join(home, ".config", "opencode");
+  const previousVaultEnv = process.env.IPA_VAULT_PATH;
+  process.env.IPA_VAULT_PATH = vault;
+
+  try {
+    await harnessInstall(vault, "opencode", options);
+
+    const pluginPath = join(opencodeHome, "plugins", "ipa-harness.js");
+    const pluginModule = await import(pathToFileURL(pluginPath).href);
+    const plugin = await pluginModule.IPAHarnessPlugin();
+    const envHook = plugin.hooks["shell.env"];
+    assert.ok(typeof envHook === "function", "shell.env hook must be registered for session-env");
+    const result = await envHook();
+    assert.equal(result.env.IPA_SEARCH_LOG, "1");
+
+    await harnessUninstall(vault, "opencode", options);
+  } finally {
+    if (previousVaultEnv === undefined) delete process.env.IPA_VAULT_PATH;
+    else process.env.IPA_VAULT_PATH = previousVaultEnv;
+  }
+});
+
+test("opencode plugin hook:markdown-nudge records pending formatter state after tool execute", async () => {
+  const vault = await fixtureVault();
+  const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
+  const options = { homeDir: home, profile: "ipa-test", components: { only: ["hook:markdown-nudge"] } };
+  const opencodeHome = join(home, ".config", "opencode");
+  const previousVaultEnv = process.env.IPA_VAULT_PATH;
+  process.env.IPA_VAULT_PATH = vault;
+
+  try {
+    await harnessInstall(vault, "opencode", options);
+
+    const pluginPath = join(opencodeHome, "plugins", "ipa-harness.js");
+    const pluginModule = await import(pathToFileURL(pluginPath).href);
+    const plugin = await pluginModule.IPAHarnessPlugin();
+    const afterHook = plugin.hooks["tool.execute.after"];
+    assert.ok(typeof afterHook === "function", "tool.execute.after hook must be registered for markdown-nudge");
+
+    const inboxNoteRel = "00 Inbox/DraftNote.md";
+    const inboxNoteAbs = join(vault, inboxNoteRel);
+    await mkdir(dirname(inboxNoteAbs), { recursive: true });
+    await writeFile(inboxNoteAbs, "# DraftNote\n", "utf8");
+
+    await afterHook({ output: { args: { filePath: inboxNoteAbs } }, cwd: vault });
+
+    const pendingPath = join(vault, ".ipa", "harness", "formatter-pending.json");
+    assert.ok(existsSync(pendingPath), "formatter-pending.json must be created after markdown edit");
+    const pending = JSON.parse(await readFile(pendingPath, "utf8"));
+    assert.ok(pending.notes.some((item) => item.title === "DraftNote"), "DraftNote must be in pending list");
+
+    await harnessUninstall(vault, "opencode", options);
+  } finally {
+    if (previousVaultEnv === undefined) delete process.env.IPA_VAULT_PATH;
+    else process.env.IPA_VAULT_PATH = previousVaultEnv;
+  }
+});
+
+test("opencode plugin hook:guard blocks new markdown outside inbox on tool.execute.before", async () => {
+  const vault = await fixtureVault();
+  const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
+  const options = { homeDir: home, profile: "ipa-test", components: { only: ["hook:guard"] } };
+  const opencodeHome = join(home, ".config", "opencode");
+  const previousVaultEnv = process.env.IPA_VAULT_PATH;
+  process.env.IPA_VAULT_PATH = vault;
+
+  try {
+    await harnessInstall(vault, "opencode", options);
+
+    const pluginPath = join(opencodeHome, "plugins", "ipa-harness.js");
+    const pluginModule = await import(pathToFileURL(pluginPath).href);
+    const plugin = await pluginModule.IPAHarnessPlugin();
+    const beforeHook = plugin.hooks["tool.execute.before"];
+    assert.ok(typeof beforeHook === "function", "tool.execute.before hook must be registered for guard");
+
+    const outsideInboxRel = "01 Project/OutsideNote.md";
+    const outsideAbs = join(vault, outsideInboxRel);
+    const decision = await beforeHook({ output: { args: { filePath: outsideAbs } }, cwd: vault });
+    assert.equal(decision.decision, "block", "guard must block new markdown outside inbox");
+    assert.match(decision.reason, /IPA guard blocked/);
+
+    const inboxRel = "00 Inbox/InboxNote.md";
+    const inboxAbs = join(vault, inboxRel);
+    const allowed = await beforeHook({ output: { args: { filePath: inboxAbs } }, cwd: vault });
+    assert.notEqual(allowed.decision, "block", "guard must not block new markdown inside inbox");
+
+    await harnessUninstall(vault, "opencode", options);
+  } finally {
+    if (previousVaultEnv === undefined) delete process.env.IPA_VAULT_PATH;
+    else process.env.IPA_VAULT_PATH = previousVaultEnv;
+  }
+});
+
+test("opencode plugin --without hook:evidence generates no evidence behavior", async () => {
+  const vault = await fixtureVault();
+  const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
+  const options = { homeDir: home, profile: "ipa-test", components: { without: ["hook:evidence"] } };
+  const opencodeHome = join(home, ".config", "opencode");
+  const previousVaultEnv = process.env.IPA_VAULT_PATH;
+  process.env.IPA_VAULT_PATH = vault;
+
+  try {
+    await harnessInstall(vault, "opencode", options);
+
+    const pluginPath = join(opencodeHome, "plugins", "ipa-harness.js");
+    const pluginSource = await readFile(pluginPath, "utf8");
+    assert.match(pluginSource, /IPA_HARNESS_MANAGED/);
+    assert.doesNotMatch(pluginSource, /evidenceHandler/, "evidence handler must be absent when hook:evidence is omitted");
+
+    const pluginModule = await import(pathToFileURL(pluginPath).href);
+    const plugin = await pluginModule.IPAHarnessPlugin();
+    const eventHook = plugin.hooks["event"];
+    if (eventHook) {
+      await eventHook({ type: "tui.prompt.append", payload: { prompt: "should not be recorded" } });
+    }
+    const eventsPath = join(vault, ".ipa", "tune", "logs", "search-events.jsonl");
+    assert.equal(existsSync(eventsPath), false, "no evidence log must be created when hook:evidence is omitted");
+
+    await harnessUninstall(vault, "opencode", options);
+  } finally {
+    if (previousVaultEnv === undefined) delete process.env.IPA_VAULT_PATH;
+    else process.env.IPA_VAULT_PATH = previousVaultEnv;
+  }
+});
+
+test("opencode full install reports plugin-backed hook components as present in status and doctor", async () => {
+  // Given: a fixture vault and an isolated home directory.
+  const vault = await fixtureVault();
+  const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
+  const options = { homeDir: home, profile: "ipa-test" };
+
+  // When: full default install for the opencode target.
+  await harnessInstall(vault, "opencode", options);
+
+  // Then: status reports all selected hook components as present via the plugin file.
+  const status = await harnessStatus(vault, options);
+  const components = status.global.opencode.components;
+  assert.equal(components["hook:session-env"], true, "hook:session-env must be present via plugin");
+  assert.equal(components["hook:guard"], true, "hook:guard must be present via plugin");
+  assert.equal(components["hook:markdown-nudge"], true, "hook:markdown-nudge must be present via plugin");
+  assert.equal(components["hook:formatter-gate"], true, "hook:formatter-gate must be present via plugin");
+  assert.equal(components["hook:evidence"], true, "hook:evidence must be present via plugin");
+
+  // Then: doctor reports no false-positive missing hook script warnings for plugin-backed hooks.
+  const doctor = await harnessDoctor(vault, options);
+  const hookMissingIssues = (doctor.issues ?? []).filter(
+    (issue) => typeof issue.code === "string" && issue.code.includes("_hook_missing")
+  );
+  assert.equal(hookMissingIssues.length, 0, "doctor must not report false-positive hook_missing warnings for plugin-backed OpenCode hooks");
+
+  await harnessUninstall(vault, "opencode", options);
 });

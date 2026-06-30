@@ -5212,6 +5212,110 @@ function harnessRoot(vaultPath) {
 const HARNESS_MARKER = "IPA_HARNESS_MANAGED";
 const HARNESS_MANAGED_BLOCK = "ipa-harness";
 
+const HARNESS_COMPONENTS = [
+  "skill",
+  "prompt",
+  "local-prompt",
+  "local-skills",
+  "plugin-scaffold",
+  "opencode-plugin",
+  "hook:session-env",
+  "hook:guard",
+  "hook:markdown-nudge",
+  "hook:formatter-gate",
+  "hook:evidence"
+];
+
+const HARNESS_HOOK_COMPONENT_TO_SCRIPT = {
+  "hook:session-env": "ipa-session-env.mjs",
+  "hook:guard": "ipa-inbox-guard.mjs",
+  "hook:markdown-nudge": "ipa-md-write-nudge.mjs",
+  "hook:formatter-gate": "ipa-formatter-gate.mjs",
+  "hook:evidence": "ipa-user-prompt-nudge.mjs"
+};
+
+const HARNESS_HOOK_COMPONENT_TO_EVENT = {
+  "hook:session-env": "SessionStart",
+  "hook:guard": "PreToolUse",
+  "hook:markdown-nudge": "PostToolUse",
+  "hook:formatter-gate": "Stop",
+  "hook:evidence": "UserPromptSubmit"
+};
+
+const HARNESS_HOOK_COMPONENT_TO_MATCHER = {
+  "hook:session-env": null,
+  "hook:guard": "Write|Edit|MultiEdit",
+  "hook:markdown-nudge": "Write|Edit|MultiEdit",
+  "hook:formatter-gate": null,
+  "hook:evidence": null
+};
+
+const HARNESS_HOOK_COMPONENT_TO_PLUGIN_MARKER = {
+  "hook:session-env": 'hooks["shell.env"]',
+  "hook:guard": 'hooks["tool.execute.before"]',
+  "hook:markdown-nudge": 'hooks["tool.execute.after"]',
+  "hook:formatter-gate": "runFormatterGate",
+  "hook:evidence": "evidenceHandler"
+};
+
+function componentsValidForTarget(name) {
+  if (name === "opencode") return [...HARNESS_COMPONENTS];
+  return HARNESS_COMPONENTS.filter((component) => component !== "opencode-plugin");
+}
+
+function defaultComponentsForTarget(name) {
+  return componentsValidForTarget(name);
+}
+
+function resolveHarnessComponents(name, options = {}) {
+  const valid = componentsValidForTarget(name);
+  const validSet = new Set(valid);
+  const normalizeList = (input) => {
+    if (!input) return [];
+    return input
+      .flatMap((item) => String(item).split(","))
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0);
+  };
+  const only = normalizeList(options.components?.only);
+  const withList = normalizeList(options.components?.with);
+  const without = normalizeList(options.components?.without);
+  const allRequested = [...only, ...withList, ...without];
+  for (const component of allRequested) {
+    if (!validSet.has(component)) {
+      throw new Error(`unknown harness component: ${component}`);
+    }
+  }
+  let selected;
+  if (only.length > 0) {
+    selected = [...new Set(only)];
+    for (const component of withList) {
+      if (!selected.includes(component)) selected.push(component);
+    }
+  } else {
+    selected = [...valid];
+    for (const component of withList) {
+      if (!selected.includes(component)) selected.push(component);
+    }
+  }
+  for (const component of without) {
+    selected = selected.filter((item) => item !== component);
+  }
+  if (name === "opencode") {
+    const hasHook = selected.some((component) => component.startsWith("hook:"));
+    if (hasHook && !selected.includes("opencode-plugin")) {
+      selected.push("opencode-plugin");
+    }
+  }
+  const selectedSet = new Set(selected);
+  const omitted = valid.filter((component) => !selectedSet.has(component));
+  return { selected, omitted };
+}
+
+function componentSelected(selected, component) {
+  return selected.includes(component);
+}
+
 function normalizeHarnessTarget(target = "codex") {
   const value = String(target || "codex").trim().toLowerCase();
   if (!/^[a-z0-9_-]+$/.test(value)) throw new Error(`invalid harness target: ${target}`);
@@ -5224,8 +5328,21 @@ function harnessHomeBase(options = {}) {
 
 function harnessTargetSpec(target = "codex", options = {}) {
   const name = normalizeHarnessTarget(target);
-  if (!["codex", "claude"].includes(name)) {
-    throw new Error(`unsupported harness target: ${name}. Expected codex or claude`);
+  if (!["codex", "claude", "opencode"].includes(name)) {
+    throw new Error(`unsupported harness target: ${name}. Expected codex, claude, or opencode`);
+  }
+  if (name === "opencode") {
+    const home = join(harnessHomeBase(options), ".config", "opencode");
+    return {
+      name,
+      home,
+      skillFile: join(home, "skills", "ipa", "SKILL.md"),
+      hooksDir: join(home, "hooks"),
+      hooksConfig: join(home, "settings.json"),
+      localPrompt: "AGENTS.md",
+      globalPromptFile: join(home, "AGENTS.md"),
+      pluginFile: join(home, "plugins", "ipa-harness.js")
+    };
   }
   const home = join(harnessHomeBase(options), name === "claude" ? ".claude" : ".codex");
   return {
@@ -5235,7 +5352,8 @@ function harnessTargetSpec(target = "codex", options = {}) {
     hooksDir: join(home, "hooks"),
     hooksConfig: name === "claude" ? join(home, "settings.json") : join(home, "hooks.json"),
     localPrompt: name === "claude" ? "CLAUDE.md" : "AGENTS.md",
-    globalPromptFile: join(home, name === "claude" ? "CLAUDE.md" : "AGENTS.md")
+    globalPromptFile: join(home, name === "claude" ? "CLAUDE.md" : "AGENTS.md"),
+    pluginFile: null
   };
 }
 
@@ -5252,7 +5370,7 @@ function ipaCommandSelection(prefix = "ipa") {
 }
 
 function globalPromptContent(spec) {
-  const tool = spec.name === "claude" ? "Claude Code" : "Codex";
+  const tool = spec.name === "claude" ? "Claude Code" : spec.name === "opencode" ? "OpenCode" : "Codex";
   return `## Evidence-Based Work
 
 You are an evidence-based AI. Before making claims, choose the right evidence source.
@@ -5297,7 +5415,7 @@ Rules:
 - A single context note is not authoritative for broad questions (system, process, history, tradeoff). Run \`ipa search\` to widen and record search evidence for tune.
 - The harness Stop hook blocks final responses while edited vault notes still have formatter patches; run \`ipa formatter apply --note ...\` before finishing.
 - For scripted edits to existing notes, including frontmatter line fixes, prefer \`ipa note replace\` or exported core helpers over hard-coded vault folder scans.
-- See the IPA skill at \`~/.${spec.name}/skills/ipa/SKILL.md\` and the vault-local \`${spec.localPrompt}\` for the full workflow.`;
+- See the IPA skill at \`${spec.name === "opencode" ? "~/.config/opencode/skills/ipa/SKILL.md" : `~/.${spec.name}/skills/ipa/SKILL.md`}\` and the vault-local \`${spec.localPrompt}\` for the full workflow.`;
 }
 
 function profileRegistryDisplay() {
@@ -5430,7 +5548,9 @@ Treat tuning as an evaluation loop, not a one-off command. Prefer better labels 
 ];
 
 function vaultLocalSkillRootRel(spec) {
-  return `${spec.name === "claude" ? ".claude" : ".agents"}/skills`;
+  if (spec.name === "opencode") return ".opencode/skills";
+  if (spec.name === "claude") return ".claude/skills";
+  return ".agents/skills";
 }
 
 function vaultLocalSkillRelPath(spec, name) {
@@ -5793,6 +5913,10 @@ function vaultResolverSnippet(vaultPath, options = {}) {
     ? `join(homedir(), ${JSON.stringify(rel.split(sep).join("/"))})`
     : JSON.stringify(vaultPath);
   return `(() => {
+  if (process.env.IPA_VAULT_PATH) {
+    const v = process.env.IPA_VAULT_PATH;
+    return v === "~" ? homedir() : v.startsWith("~/") ? join(homedir(), v.slice(2)) : v;
+  }
   try {
     const result = spawnSync("ipa", ["config", "show", "--json"], { encoding: "utf8" });
     if (result.status === 0) {
@@ -6276,31 +6400,340 @@ clearPending(pending.notes.filter((item) => !ownedSet.has(item)));
 `;
 }
 
+function opencodePluginScript(vaultPath, mapping, selected, options = {}) {
+  const has = (component) => componentSelected(selected, component);
+  const sessionEnv = has("hook:session-env");
+  const guard = has("hook:guard");
+  const markdownNudge = has("hook:markdown-nudge");
+  const formatterGate = has("hook:formatter-gate");
+  const evidence = has("hook:evidence");
+  const vaultResolver = vaultResolverSnippet(vaultPath, options);
+  const inboxDir = JSON.stringify(mapping.inbox_dir);
+  const noteRoots = JSON.stringify([mapping.inbox_dir, mapping.project_dir, mapping.archive_dir].filter(Boolean));
+  return `// ${HARNESS_MARKER}: OpenCode IPA harness plugin.
+// Generated by ipa harness install opencode. Node-compatible ESM only.
+import { createHash, randomUUID } from "node:crypto";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join, relative, resolve, sep } from "node:path";
+import { spawnSync } from "node:child_process";
+
+const vaultPath = ${vaultResolver};
+const inboxDir = ${inboxDir};
+const noteRoots = ${noteRoots};
+const pendingPath = join(vaultPath, ".ipa", "harness", "formatter-pending.json");
+const eventsPath = join(vaultPath, ".ipa", "tune", "logs", "search-events.jsonl");
+const PENDING_TTL_MS = 48 * 60 * 60 * 1000;
+
+function firstString(values) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return null;
+}
+
+function normalizeCwd(cwd) {
+  const value = firstString([cwd]);
+  if (!value) return null;
+  return resolve(value);
+}
+
+function promptContextPathForCwd(cwd) {
+  const normalized = normalizeCwd(cwd);
+  if (!normalized) return null;
+  const key = createHash("sha256").update(normalized).digest("hex").slice(0, 16);
+  return join(vaultPath, ".ipa", "tune", "logs", \`current-prompt-\${key}.json\`);
+}
+
+function sessionIdFrom(input) {
+  return firstString([
+    input?.session_id,
+    input?.sessionId,
+    input?.conversation_id,
+    input?.conversationId,
+    input?.transcript_path,
+    input?.transcriptPath,
+    process.env.IPA_SESSION_ID,
+    process.env.CODEX_SESSION_ID,
+    process.env.CLAUDE_SESSION_ID,
+    process.env.TERM_SESSION_ID
+  ]);
+}
+
+function freshNotes(notes) {
+  const cutoff = Date.now() - PENDING_TTL_MS;
+  return notes.filter((item) => {
+    const ts = Date.parse(item?.updated_at ?? "");
+    return Number.isNaN(ts) || ts >= cutoff;
+  });
+}
+
+function readPending() {
+  if (!existsSync(pendingPath)) return { version: 1, notes: [] };
+  try {
+    const parsed = JSON.parse(readFileSync(pendingPath, "utf8"));
+    return { version: 1, notes: freshNotes(Array.isArray(parsed.notes) ? parsed.notes : []) };
+  } catch {
+    return { version: 1, notes: [] };
+  }
+}
+
+function writePending(pending) {
+  mkdirSync(dirname(pendingPath), { recursive: true });
+  writeFileSync(pendingPath, JSON.stringify(pending, null, 2) + "\\n", "utf8");
+}
+
+function clearPending(remaining) {
+  if (!remaining.length) {
+    try { unlinkSync(pendingPath); return; } catch {}
+  }
+  try { writeFileSync(pendingPath, JSON.stringify({ version: 1, notes: remaining }, null, 2) + "\\n", "utf8"); } catch {}
+}
+
+function toVaultRelative(filePath, cwd) {
+  const absolute = resolve(cwd || process.cwd(), filePath);
+  const rel = relative(vaultPath, absolute);
+  if (rel === "" || rel.startsWith("..") || rel.startsWith("/")) return null;
+  return { absolute, rel: rel.split(sep).join("/") };
+}
+
+function inNoteRoot(rel) {
+  return noteRoots.some((root) => rel === root || rel.startsWith(root.replace(/\\/+$/, "") + "/"));
+}
+
+function recordPromptEvent(input) {
+  const prompt = firstString([
+    input?.prompt,
+    input?.user_prompt,
+    input?.userPrompt,
+    input?.message,
+    input?.text,
+    input?.tool_input?.prompt,
+    input?.input?.prompt
+  ]);
+  if (!prompt) return;
+  const ts = new Date().toISOString();
+  const eventId = firstString([input?.event_id, input?.eventId, input?.prompt_event_id, input?.promptEventId]) || \`prompt_\${randomUUID()}\`;
+  const sessionId = sessionIdFrom(input) || "opencode:unknown";
+  const turnId = firstString([input?.turn_id, input?.turnId, input?.turnID]) || eventId;
+  const cwd = normalizeCwd(firstString([input?.cwd, input?.project_dir, input?.projectDir, input?.workspace_root, input?.workspaceRoot]));
+  const event = {
+    schema_version: 1,
+    event_id: eventId,
+    event_type: "prompt",
+    ts,
+    source: "harness",
+    agent: "opencode",
+    session_id: sessionId,
+    turn_id: turnId,
+    query: prompt,
+    prompt,
+    source_prompt: prompt,
+    generated_query: null,
+    cwd,
+    prompt_length: prompt.length
+  };
+  const currentPath = join(vaultPath, ".ipa", "tune", "logs", "current-prompt.json");
+  const workspaceCurrentPath = promptContextPathForCwd(cwd);
+  mkdirSync(dirname(eventsPath), { recursive: true });
+  appendFileSync(eventsPath, JSON.stringify(event) + "\\n", "utf8");
+  writeFileSync(currentPath, JSON.stringify({ ...event, ttl_seconds: 1800 }, null, 2) + "\\n", "utf8");
+  if (workspaceCurrentPath) {
+    writeFileSync(workspaceCurrentPath, JSON.stringify({ ...event, ttl_seconds: 1800 }, null, 2) + "\\n", "utf8");
+  }
+}
+
+function extractFilePath(output) {
+  const args = output?.args ?? output?.input ?? output?.tool_input ?? output?.toolInput ?? {};
+  return firstString([args.filePath, args.file_path, args.path, output?.filePath, output?.file_path, output?.path]);
+}
+
+function runFormatterGate(block) {
+  const pending = readPending();
+  const sessionId = sessionIdFrom({});
+  const owned = sessionId
+    ? pending.notes.filter((item) => !item.session_id || item.session_id === sessionId)
+    : pending.notes;
+  const notes = owned.filter((item) => typeof item.title === "string" && item.title.trim()).map((item) => item.title.trim());
+  const uniqueNotes = [...new Set(notes)];
+  if (!uniqueNotes.length) return;
+  const plan = spawnSync("ipa", ["--vault", vaultPath, "--json", "formatter", "plan", "--note", ...uniqueNotes], { encoding: "utf8", timeout: 15000 });
+  const noteArgs = uniqueNotes.map((value) => JSON.stringify(String(value))).join(" ");
+  const commands = [\`ipa validator\`, \`ipa formatter plan --note \${noteArgs}\`, \`ipa formatter apply --note \${noteArgs}\`].join("\\n");
+  if (plan.status !== 0) {
+    block([
+      "[IPA CLI] Formatter gate could not verify pending vault Markdown edits.",
+      plan.stderr.trim() || plan.stdout.trim() || "formatter plan failed",
+      "Run:",
+      commands
+    ].join("\\n"));
+    return;
+  }
+  let parsed = null;
+  try { parsed = JSON.parse(plan.stdout); } catch {
+    block([
+      "[IPA CLI] Formatter gate could not parse formatter plan output.",
+      "Run:",
+      commands
+    ].join("\\n"));
+    return;
+  }
+  const patchCount = Number(parsed?.summary?.patches ?? parsed?.patches?.length ?? 0);
+  if (patchCount > 0) {
+    block([
+      \`[IPA CLI] Formatter gate blocked final response: \${patchCount} formatter patch(es) remain for edited vault note(s).\`,
+      "Run:",
+      commands,
+      "Do not stop at formatter plan; run formatter apply after reviewing the plan."
+    ].join("\\n"));
+    return;
+  }
+  const ownedSet = new Set(owned);
+  clearPending(pending.notes.filter((item) => !ownedSet.has(item)));
+}
+
+export const IPAHarnessPlugin = async () => {
+  const hooks = {};
+  ${sessionEnv ? `
+  hooks["shell.env"] = () => {
+    return { env: { IPA_SEARCH_LOG: "1" } };
+  };` : ""}
+  ${guard ? `
+  hooks["tool.execute.before"] = async (ctx) => {
+    const output = ctx?.output ?? ctx?.tool ?? ctx;
+    const filePath = extractFilePath(output);
+    if (!filePath) return { decision: "allow" };
+    const cwd = ctx?.cwd ?? ctx?.project_dir ?? process.cwd();
+    const target = toVaultRelative(filePath, cwd);
+    if (!target || !target.rel.toLowerCase().endsWith(".md")) return { decision: "allow" };
+    const action = existsSync(target.absolute) ? "edit" : "create";
+    if (action !== "create") return { decision: "allow" };
+    const result = spawnSync("ipa", ["--vault", vaultPath, "harness", "guard", "check", target.rel, "--action", action, "--json"], { encoding: "utf8", timeout: 4000 });
+    if (result.status === 0 && result.stdout) {
+      try {
+        const parsed = JSON.parse(result.stdout);
+        if (parsed.allowed === false) {
+          const message = \`IPA guard blocked \${target.rel}: \${parsed.reason || "blocked"}. Use ipa inbox add or create the file under \${inboxDir}.\`;
+          return { decision: "block", reason: message };
+        }
+      } catch {}
+    }
+    return { decision: "allow" };
+  };` : ""}
+  ${markdownNudge ? `
+  hooks["tool.execute.after"] = async (ctx) => {
+    const output = ctx?.output ?? ctx?.tool ?? ctx;
+    const filePath = extractFilePath(output);
+    if (!filePath) return {};
+    const cwd = ctx?.cwd ?? ctx?.project_dir ?? process.cwd();
+    const target = toVaultRelative(filePath, cwd);
+    if (!target || !target.rel.toLowerCase().endsWith(".md")) return {};
+    if (!inNoteRoot(target.rel)) return {};
+    const noteTitle = target.rel.split("/").pop().replace(/\\.md$/i, "");
+    const sessionId = sessionIdFrom(ctx ?? {});
+    const pending = readPending();
+    pending.notes = pending.notes.filter((item) => item.path !== target.rel && item.title !== noteTitle);
+    pending.notes.push({ title: noteTitle, path: target.rel, session_id: sessionId ?? null, updated_at: new Date().toISOString() });
+    pending.updated_at = new Date().toISOString();
+    writePending(pending);
+    return {};
+  };` : ""}
+  ${formatterGate ? `
+  hooks["event"] = async (ctx) => {
+    const type = ctx?.type ?? ctx?.event ?? ctx?.name;
+    if (type === "session.idle") {
+      runFormatterGate((message) => {
+        throw new Error(message);
+      });
+    }
+    return {};
+  };` : ""}
+  ${evidence ? `
+  const evidenceHandler = async (ctx) => {
+    const type = ctx?.type ?? ctx?.event ?? ctx?.name;
+    if (type === "tui.prompt.append" || type === "message.updated") {
+      const payload = ctx?.payload ?? ctx?.data ?? ctx;
+      recordPromptEvent(payload);
+    }
+    return {};
+  };
+  const previousEvent = hooks["event"];
+  hooks["event"] = previousEvent
+    ? async (ctx) => {
+        await previousEvent(ctx);
+        return evidenceHandler(ctx);
+      }
+    : evidenceHandler;` : ""}
+  return { name: "ipa-harness", hooks };
+};
+
+export default IPAHarnessPlugin;
+`;
+}
+
 async function installGlobalHarness(vaultPath, spec, mapping, options = {}) {
+  const selected = options.components?.selected
+    ? options.components.selected
+    : defaultComponentsForTarget(spec.name);
   const files = [];
+  const isOpencode = spec.name === "opencode";
   const envPath = join(spec.hooksDir, "ipa-session-env.mjs");
   const guardPath = join(spec.hooksDir, "ipa-inbox-guard.mjs");
   const promptPath = join(spec.hooksDir, "ipa-user-prompt-nudge.mjs");
   const writeNudgePath = join(spec.hooksDir, "ipa-md-write-nudge.mjs");
   const formatterGatePath = join(spec.hooksDir, "ipa-formatter-gate.mjs");
-  await writeManagedFile(spec.skillFile, harnessSkillContent(vaultPath, spec, options), files);
-  await writeManagedFile(envPath, sessionEnvScript(), files);
-  await writeManagedFile(guardPath, inboxGuardScript(vaultPath, mapping.inbox_dir, options), files);
-  await writeManagedFile(promptPath, userPromptNudgeScript(vaultPath, { ...options, agent: spec.name }), files);
-  await writeManagedFile(writeNudgePath, markdownWriteNudgeScript(vaultPath, mapping, options), files);
-  await writeManagedFile(formatterGatePath, formatterGateScript(vaultPath, options), files);
 
-  const config = await readJsonObject(spec.hooksConfig);
-  removeManagedHookCommands(config);
-  addHookCommand(config, "SessionStart", null, hookCommand(envPath, spec), "Setting IPA search logging environment...", 5);
-  addHookCommand(config, "PreToolUse", "Write|Edit|MultiEdit", hookCommand(guardPath, spec), "Checking IPA inbox write policy...", 5);
-  addHookCommand(config, "PostToolUse", "Write|Edit|MultiEdit", hookCommand(writeNudgePath, spec), "Reminding IPA lint/format checks...", 5);
-  addHookCommand(config, "UserPromptSubmit", null, hookCommand(promptPath, spec), null, 5);
-  addHookCommand(config, "Stop", null, hookCommand(formatterGatePath, spec), "Checking IPA formatter apply gate...", 20);
-  await writeJsonObject(spec.hooksConfig, config);
-  files.push(spec.hooksConfig);
-  await upsertManagedBlock(spec.globalPromptFile, globalPromptContent(spec));
-  files.push(spec.globalPromptFile);
+  if (componentSelected(selected, "skill")) {
+    await writeManagedFile(spec.skillFile, harnessSkillContent(vaultPath, spec, options), files);
+  }
+
+  if (!isOpencode) {
+    if (componentSelected(selected, "hook:session-env")) {
+      await writeManagedFile(envPath, sessionEnvScript(), files);
+    }
+    if (componentSelected(selected, "hook:guard")) {
+      await writeManagedFile(guardPath, inboxGuardScript(vaultPath, mapping.inbox_dir, options), files);
+    }
+    if (componentSelected(selected, "hook:evidence")) {
+      await writeManagedFile(promptPath, userPromptNudgeScript(vaultPath, { ...options, agent: spec.name }), files);
+    }
+    if (componentSelected(selected, "hook:markdown-nudge")) {
+      await writeManagedFile(writeNudgePath, markdownWriteNudgeScript(vaultPath, mapping, options), files);
+    }
+    if (componentSelected(selected, "hook:formatter-gate")) {
+      await writeManagedFile(formatterGatePath, formatterGateScript(vaultPath, options), files);
+    }
+
+    const config = await readJsonObject(spec.hooksConfig);
+    removeManagedHookCommands(config);
+    if (componentSelected(selected, "hook:session-env")) {
+      addHookCommand(config, "SessionStart", null, hookCommand(envPath, spec), "Setting IPA search logging environment...", 5);
+    }
+    if (componentSelected(selected, "hook:guard")) {
+      addHookCommand(config, "PreToolUse", "Write|Edit|MultiEdit", hookCommand(guardPath, spec), "Checking IPA inbox write policy...", 5);
+    }
+    if (componentSelected(selected, "hook:markdown-nudge")) {
+      addHookCommand(config, "PostToolUse", "Write|Edit|MultiEdit", hookCommand(writeNudgePath, spec), "Reminding IPA lint/format checks...", 5);
+    }
+    if (componentSelected(selected, "hook:evidence")) {
+      addHookCommand(config, "UserPromptSubmit", null, hookCommand(promptPath, spec), null, 5);
+    }
+    if (componentSelected(selected, "hook:formatter-gate")) {
+      addHookCommand(config, "Stop", null, hookCommand(formatterGatePath, spec), "Checking IPA formatter apply gate...", 20);
+    }
+    await writeJsonObject(spec.hooksConfig, config);
+    files.push(spec.hooksConfig);
+  } else {
+    const needsPlugin = componentSelected(selected, "opencode-plugin") || selected.some((component) => component.startsWith("hook:"));
+    if (needsPlugin && spec.pluginFile) {
+      await writeManagedFile(spec.pluginFile, opencodePluginScript(vaultPath, mapping, selected, options), files);
+    }
+  }
+
+  if (componentSelected(selected, "prompt")) {
+    await upsertManagedBlock(spec.globalPromptFile, globalPromptContent(spec));
+    files.push(spec.globalPromptFile);
+  }
   return files;
 }
 
@@ -6314,6 +6747,7 @@ async function uninstallGlobalHarness(spec) {
     join(spec.hooksDir, "ipa-formatter-gate.mjs")
   ];
   for (const path of [spec.skillFile, ...scripts]) await removeManagedFile(path, removed);
+  if (spec.pluginFile) await removeManagedFile(spec.pluginFile, removed);
   if (existsSync(spec.hooksConfig)) {
     const config = await readJsonObject(spec.hooksConfig);
     removeManagedHookCommands(config);
@@ -6335,6 +6769,17 @@ function hasManagedFile(path) {
   }
 }
 
+function opencodeHookComponentPresent(pluginFile, component) {
+  if (!hasManagedFile(pluginFile)) return false;
+  const marker = HARNESS_HOOK_COMPONENT_TO_PLUGIN_MARKER[component];
+  if (!marker) return false;
+  try {
+    return readFileSyncText(pluginFile).includes(marker);
+  } catch {
+    return false;
+  }
+}
+
 function readFileSyncText(path) {
   return existsSync(path) ? readFileSync(path, "utf8") : "";
 }
@@ -6351,11 +6796,64 @@ async function writeHarnessIndex(vaultPath, index) {
   await writeFile(path, JSON.stringify(index, null, 2) + "\n", "utf8");
 }
 
+async function readTargetManifest(vaultPath, target) {
+  const path = join(harnessRoot(vaultPath), target, "manifest.json");
+  if (!existsSync(path)) return null;
+  try {
+    return JSON.parse(await readFile(path, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function componentPresence(spec, vaultPath, selected) {
+  const presence = {};
+  for (const component of HARNESS_COMPONENTS) {
+    presence[component] = false;
+  }
+  if (componentSelected(selected, "skill")) presence.skill = hasManagedFile(spec.skillFile);
+  if (componentSelected(selected, "prompt")) presence.prompt = hasManagedFile(spec.globalPromptFile);
+  if (componentSelected(selected, "local-prompt")) presence["local-prompt"] = existsSync(join(vaultPath, spec.localPrompt));
+  if (componentSelected(selected, "local-skills")) {
+    const skills = vaultLocalSkillStatus(vaultPath, spec);
+    presence["local-skills"] = Object.values(skills).every((value) => value === true);
+  }
+  if (componentSelected(selected, "plugin-scaffold")) {
+    const scaffold = pluginScaffoldStatus(vaultPath);
+    presence["plugin-scaffold"] = Boolean(scaffold.jsconfig && scaffold.types && scaffold.rules_dir && scaffold.search_dir);
+  }
+  if (spec.name === "opencode") {
+    if (componentSelected(selected, "opencode-plugin") && spec.pluginFile) {
+      presence["opencode-plugin"] = hasManagedFile(spec.pluginFile);
+    }
+  }
+  for (const component of Object.keys(HARNESS_HOOK_COMPONENT_TO_SCRIPT)) {
+    if (componentSelected(selected, component)) {
+      if (spec.name === "opencode" && spec.pluginFile) {
+        presence[component] = opencodeHookComponentPresent(spec.pluginFile, component);
+      } else {
+        const script = HARNESS_HOOK_COMPONENT_TO_SCRIPT[component];
+        presence[component] = hasManagedFile(join(spec.hooksDir, script));
+      }
+    }
+  }
+  return presence;
+}
+
 export async function harnessStatus(vaultPath, options = {}) {
   const index = await readHarnessIndex(vaultPath);
   const global = {};
+  let aggregateSelected = [];
+  let aggregateOmitted = [];
   for (const target of Object.keys(index.targets ?? {})) {
     const spec = harnessTargetSpec(target, options);
+    const targetManifest = await readTargetManifest(vaultPath, target);
+    const selected = targetManifest?.components ?? defaultComponentsForTarget(target);
+    const omitted = targetManifest?.omitted_components ?? [];
+    if (targetManifest) {
+      aggregateSelected = [...new Set([...aggregateSelected, ...selected])];
+      aggregateOmitted = [...new Set([...aggregateOmitted, ...omitted])];
+    }
     global[target] = {
       skill: hasManagedFile(spec.skillFile),
       session_env_hook: hasManagedFile(join(spec.hooksDir, "ipa-session-env.mjs")),
@@ -6365,7 +6863,9 @@ export async function harnessStatus(vaultPath, options = {}) {
       formatter_gate_hook: hasManagedFile(join(spec.hooksDir, "ipa-formatter-gate.mjs")),
       hooks_config: existsSync(spec.hooksConfig),
       prompt: hasManagedFile(spec.globalPromptFile),
-      local_skills: vaultLocalSkillStatus(vaultPath, spec)
+      local_skills: vaultLocalSkillStatus(vaultPath, spec),
+      opencode_plugin: spec.pluginFile ? hasManagedFile(spec.pluginFile) : false,
+      components: componentPresence(spec, vaultPath, selected)
     };
   }
   return {
@@ -6373,6 +6873,10 @@ export async function harnessStatus(vaultPath, options = {}) {
     installed: Object.keys(index.targets ?? {}),
     manifest: existsSync(join(harnessRoot(vaultPath), "manifest.json")) ? ".ipa/harness/manifest.json" : null,
     global,
+    components: {
+      selected: aggregateSelected,
+      omitted: aggregateOmitted
+    },
     plugin_scaffold: pluginScaffoldStatus(vaultPath),
     guard: await harnessGuardStatus(vaultPath)
   };
@@ -6381,21 +6885,31 @@ export async function harnessStatus(vaultPath, options = {}) {
 export async function harnessInstall(vaultPath, target = "codex", options = {}) {
   const spec = harnessTargetSpec(target, options);
   const name = spec.name;
+  const { selected, omitted } = resolveHarnessComponents(name, options);
   const { mapping } = await readVaultConfig(vaultPath);
-  const pluginInitResult = await pluginInit(vaultPath, { examples: true });
+  const pluginInitResult = componentSelected(selected, "plugin-scaffold")
+    ? await pluginInit(vaultPath, { examples: true })
+    : { created: [], skipped: [] };
   const root = harnessRoot(vaultPath);
   const dir = join(root, name);
+  const globalHome = name === "opencode" ? "~/.config/opencode" : `~/.${name}`;
+  const globalSkill = name === "opencode" ? "~/.config/opencode/skills/ipa/SKILL.md" : `~/.${name}/skills/ipa/SKILL.md`;
+  const globalPrompt = name === "opencode" ? "~/.config/opencode/AGENTS.md" : `~/.${name}/${spec.localPrompt}`;
+  const globalHooksConfig = name === "claude" ? "~/.claude/settings.json" : name === "opencode" ? "~/.config/opencode/settings.json" : "~/.codex/hooks.json";
   const manifest = {
     version: 1,
     target: name,
     installed_at: nowIso(),
     scope: ["global", "vault-local"],
     local_prompt: spec.localPrompt,
+    components: selected,
+    omitted_components: omitted,
     global: {
-      home: `~/.${name}`,
-      skill: `~/.${name}/skills/ipa/SKILL.md`,
-      hooks_config: name === "claude" ? "~/.claude/settings.json" : "~/.codex/hooks.json",
-      prompt: `~/.${name}/${spec.localPrompt}`,
+      home: globalHome,
+      skill: globalSkill,
+      hooks_config: globalHooksConfig,
+      prompt: globalPrompt,
+      opencode_plugin: name === "opencode" ? "~/.config/opencode/plugins/ipa-harness.js" : null,
       environment: {
         IPA_SEARCH_LOG: "1"
       }
@@ -6446,15 +6960,26 @@ export async function harnessInstall(vaultPath, target = "codex", options = {}) 
     ].join("\n"),
     "utf8"
   );
-  await upsertManagedBlock(join(vaultPath, spec.localPrompt), localPromptContent(vaultPath, spec, mapping, options));
-  const localSkillFiles = await installVaultLocalSkills(vaultPath, spec);
-  const globalFiles = await installGlobalHarness(vaultPath, spec, mapping, options);
+  const files = [`.ipa/harness/${name}/manifest.json`, `.ipa/harness/${name}/guard.mjs`, ".ipa/harness/manifest.json"];
+  if (componentSelected(selected, "local-prompt")) {
+    await upsertManagedBlock(join(vaultPath, spec.localPrompt), localPromptContent(vaultPath, spec, mapping, options));
+    files.push(spec.localPrompt);
+  }
+  let localSkillFiles = [];
+  if (componentSelected(selected, "local-skills")) {
+    localSkillFiles = await installVaultLocalSkills(vaultPath, spec);
+    files.push(...localSkillFiles);
+  }
+  const installOptions = { ...options, components: { ...options.components, selected } };
+  const globalFiles = await installGlobalHarness(vaultPath, spec, mapping, installOptions);
   const index = await readHarnessIndex(vaultPath);
   index.targets = index.targets || {};
   index.targets[name] = {
     path: `.ipa/harness/${name}/manifest.json`,
     installed_at: manifest.installed_at,
-    local_prompt: spec.localPrompt
+    local_prompt: spec.localPrompt,
+    components: selected,
+    omitted_components: omitted
   };
   await writeHarnessIndex(vaultPath, index);
   return {
@@ -6462,7 +6987,7 @@ export async function harnessInstall(vaultPath, target = "codex", options = {}) 
     target: name,
     installed: true,
     plugin_init: pluginInitResult,
-    files: [`.ipa/harness/${name}/manifest.json`, `.ipa/harness/${name}/guard.mjs`, ".ipa/harness/manifest.json", spec.localPrompt, ...localSkillFiles],
+    files,
     global_files: globalFiles
   };
 }
@@ -6485,39 +7010,54 @@ export async function harnessDoctor(vaultPath, options = {}) {
   const issues = [];
   for (const [target, entry] of Object.entries(index.targets ?? {})) {
     const spec = harnessTargetSpec(target, options);
+    const targetManifest = await readTargetManifest(vaultPath, target);
+    const selected = targetManifest?.components ?? entry.components ?? defaultComponentsForTarget(target);
     if (!existsSync(resolve(vaultPath, entry.path))) {
       issues.push({ severity: "error", code: "harness.manifest_missing", target, message: `missing ${entry.path}` });
     }
     if (!existsSync(join(harnessRoot(vaultPath), target, "guard.mjs"))) {
       issues.push({ severity: "warn", code: "harness.guard_missing", target, message: "guard script is missing" });
     }
-    if (!hasManagedFile(spec.skillFile)) {
-      issues.push({ severity: "warn", code: "harness.global_skill_missing", target, message: `missing managed IPA skill at ~/.${target}/skills/ipa/SKILL.md` });
+    if (componentSelected(selected, "skill") && !hasManagedFile(spec.skillFile)) {
+      const skillPath = target === "opencode" ? "~/.config/opencode/skills/ipa/SKILL.md" : `~/.${target}/skills/ipa/SKILL.md`;
+      issues.push({ severity: "warn", code: "harness.global_skill_missing", target, message: `missing managed IPA skill at ${skillPath}` });
     }
-    for (const [code, file] of [
-      ["harness.global_session_env_hook_missing", join(spec.hooksDir, "ipa-session-env.mjs")],
-      ["harness.global_guard_hook_missing", join(spec.hooksDir, "ipa-inbox-guard.mjs")],
-      ["harness.global_prompt_hook_missing", join(spec.hooksDir, "ipa-user-prompt-nudge.mjs")],
-      ["harness.global_markdown_nudge_missing", join(spec.hooksDir, "ipa-md-write-nudge.mjs")],
-      ["harness.global_formatter_gate_missing", join(spec.hooksDir, "ipa-formatter-gate.mjs")]
-    ]) {
-      if (!hasManagedFile(file)) issues.push({ severity: "warn", code, target, message: `missing managed hook ${basename(file)}` });
-    }
-    if (!hasManagedFile(spec.globalPromptFile)) {
-      issues.push({ severity: "warn", code: "harness.global_prompt_missing", target, message: `missing IPA harness block in ~/.${target}/${spec.localPrompt}` });
-    }
-    if (!existsSync(join(vaultPath, entry.local_prompt ?? spec.localPrompt))) {
-      issues.push({ severity: "warn", code: "harness.local_prompt_missing", target, message: `missing ${entry.local_prompt ?? spec.localPrompt}` });
-    }
-    for (const skill of VAULT_LOCAL_SKILLS) {
-      const relPath = vaultLocalSkillRelPath(spec, skill.name);
-      if (!hasManagedFile(join(vaultPath, relPath))) {
-        issues.push({ severity: "warn", code: "harness.local_skill_missing", target, message: `missing managed vault-local skill ${relPath}` });
+    for (const [component, script] of Object.entries(HARNESS_HOOK_COMPONENT_TO_SCRIPT)) {
+      if (!componentSelected(selected, component)) continue;
+      if (spec.name === "opencode" && spec.pluginFile) {
+        if (!opencodeHookComponentPresent(spec.pluginFile, component)) {
+          issues.push({ severity: "warn", code: `harness.global_${component.replace("hook:", "")}_hook_missing`, target, message: `missing managed OpenCode plugin behavior for ${component}` });
+        }
+      } else {
+        const file = join(spec.hooksDir, script);
+        if (!hasManagedFile(file)) {
+          issues.push({ severity: "warn", code: `harness.global_${component.replace("hook:", "")}_hook_missing`, target, message: `missing managed hook ${script}` });
+        }
       }
     }
-    const scaffold = pluginScaffoldStatus(vaultPath);
-    if (!scaffold.jsconfig || !scaffold.types || !scaffold.rules_dir || !scaffold.search_dir) {
-      issues.push({ severity: "warn", code: "harness.plugin_scaffold_missing", target, message: "missing .ipa/plugins authoring scaffold; run ipa harness init or ipa plugin init" });
+    if (spec.name === "opencode" && spec.pluginFile && componentSelected(selected, "opencode-plugin") && !hasManagedFile(spec.pluginFile)) {
+      issues.push({ severity: "warn", code: "harness.global_opencode_plugin_missing", target, message: "missing managed OpenCode plugin at ~/.config/opencode/plugins/ipa-harness.js" });
+    }
+    if (componentSelected(selected, "prompt") && !hasManagedFile(spec.globalPromptFile)) {
+      const promptPath = target === "opencode" ? "~/.config/opencode/AGENTS.md" : `~/.${target}/${spec.localPrompt}`;
+      issues.push({ severity: "warn", code: "harness.global_prompt_missing", target, message: `missing IPA harness block in ${promptPath}` });
+    }
+    if (componentSelected(selected, "local-prompt") && !existsSync(join(vaultPath, entry.local_prompt ?? spec.localPrompt))) {
+      issues.push({ severity: "warn", code: "harness.local_prompt_missing", target, message: `missing ${entry.local_prompt ?? spec.localPrompt}` });
+    }
+    if (componentSelected(selected, "local-skills")) {
+      for (const skill of VAULT_LOCAL_SKILLS) {
+        const relPath = vaultLocalSkillRelPath(spec, skill.name);
+        if (!hasManagedFile(join(vaultPath, relPath))) {
+          issues.push({ severity: "warn", code: "harness.local_skill_missing", target, message: `missing managed vault-local skill ${relPath}` });
+        }
+      }
+    }
+    if (componentSelected(selected, "plugin-scaffold")) {
+      const scaffold = pluginScaffoldStatus(vaultPath);
+      if (!scaffold.jsconfig || !scaffold.types || !scaffold.rules_dir || !scaffold.search_dir) {
+        issues.push({ severity: "warn", code: "harness.plugin_scaffold_missing", target, message: "missing .ipa/plugins authoring scaffold; run ipa harness init or ipa plugin init" });
+      }
     }
   }
   return {
