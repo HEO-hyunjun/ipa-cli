@@ -208,14 +208,28 @@ const COMMAND_HELP = {
       ["ipa harness init codex", "Initialize Codex skill/hooks, vault prompt block, and plugin scaffold"],
       ["ipa harness install codex", "Install Codex skill/hooks, vault prompt block, and plugin scaffold"],
       ["ipa harness install claude", "Install Claude Code skill/hooks, vault prompt block, and plugin scaffold"],
+      ["ipa harness install opencode", "Install OpenCode skill/hooks, vault prompt block, and plugin scaffold"],
       ["ipa harness uninstall codex", "Remove Codex harness files"],
       ["ipa harness doctor", "Validate installed harness files"],
       ["ipa harness guard status", "Show guard policy state"],
       ["ipa harness guard check PATH --action create", "Check inbox-only write policy"]
     ],
     options: [
-      ["init/install/uninstall [target]", "Harness target; default codex"],
+      ["init/install/uninstall [target]", "Harness target: codex (default), claude, or opencode"],
+      ["init/install --only <component...>", "Install only the named components (repeatable, comma-separated)"],
+      ["init/install --with <component...>", "Add components to the default set (repeatable, comma-separated)"],
+      ["init/install --without <component...>", "Remove components from the default set (repeatable, comma-separated)"],
       ["guard check --action ACTION", "Write action to evaluate; default is create-like behavior"]
+    ],
+    examples: [
+      ["ipa harness install opencode", "Full OpenCode install (all components including evidence)"],
+      ["ipa harness install opencode --without hook:evidence", "Default install except the evidence hook"],
+      ["ipa harness install opencode --only skill,prompt", "Install only the global skill and prompt components"],
+      ["ipa harness install codex --only hook:guard", "Install only the Codex inbox guard hook"]
+    ],
+    notes: [
+      "Without --only, init/install applies the default full install for the target (all components).",
+      "Components: skill, prompt, local-prompt, local-skills, plugin-scaffold, opencode-plugin, hook:session-env, hook:guard, hook:markdown-nudge, hook:formatter-gate, hook:evidence."
     ]
   }),
   inbox: formatDetailedHelp({
@@ -937,6 +951,14 @@ function renderHarnessStatus(payload) {
     state.markdown_nudge_hook ? "yes" : "no"
   ]);
   if (globalRows.length) lines.push("", table(["target", "skill", "guard", "prompt", "md nudge"], globalRows));
+  const selectedComponents = payload.components?.selected ?? [];
+  const omittedComponents = payload.components?.omitted ?? [];
+  if (selectedComponents.length || omittedComponents.length) {
+    lines.push("", formatRows([
+      ["selected", selectedComponents.length ? selectedComponents.join(", ") : "-"],
+      ["omitted", omittedComponents.length ? omittedComponents.join(", ") : "-"]
+    ]));
+  }
   return lines.join("\n");
 }
 
@@ -1046,6 +1068,14 @@ function optionNumber(value, fallback = undefined) {
 
 function collectRepeated(value, previous) {
   return [...previous, value];
+}
+
+function collectComponents(value, previous) {
+  const segments = String(value)
+    .split(",")
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length > 0);
+  return [...previous, ...segments];
 }
 
 function optionalList(values) {
@@ -1348,17 +1378,33 @@ function buildProgram() {
   harnessCommand
     .command("init")
     .argument("[target]", "Harness target", "codex")
-    .action(async (target) => {
+    .option("--only <component...>", "Install only the named components", collectComponents, [])
+    .option("--with <component...>", "Add components to the default set", collectComponents, [])
+    .option("--without <component...>", "Remove components from the default set", collectComponents, [])
+    .action(async (target, options) => {
       await withVault(globalOptions(program), async (vault, resolved) => print(await harnessInstall(vault, target, {
-        profile: resolved.profile
+        profile: resolved.profile,
+        components: {
+          only: optionalList(options.only),
+          with: optionalList(options["with"]),
+          without: optionalList(options.without)
+        }
       }), jsonOutput(program)));
     });
   harnessCommand
     .command("install")
     .argument("[target]", "Harness target", "codex")
-    .action(async (target) => {
+    .option("--only <component...>", "Install only the named components", collectComponents, [])
+    .option("--with <component...>", "Add components to the default set", collectComponents, [])
+    .option("--without <component...>", "Remove components from the default set", collectComponents, [])
+    .action(async (target, options) => {
       await withVault(globalOptions(program), async (vault, resolved) => print(await harnessInstall(vault, target, {
-        profile: resolved.profile
+        profile: resolved.profile,
+        components: {
+          only: optionalList(options.only),
+          with: optionalList(options["with"]),
+          without: optionalList(options.without)
+        }
       }), jsonOutput(program)));
     });
   harnessCommand

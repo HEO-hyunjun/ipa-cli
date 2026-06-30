@@ -344,3 +344,51 @@ test("legacy surface fixture is covered by JS fixtures", async () => {
   assert.match(refactors, /ref-replace\s+frontmatter ref 교체 \(전체 vault\)/);
   assert.match(refactors, /ref-remove\s+frontmatter ref 제거 \(전체 vault\)/);
 });
+
+test("harness help lists opencode target, selector options, and default full install", async () => {
+  const { env } = await fixtureProfile();
+  const help = run(env, ["harness", "--help"]);
+  assert.match(help, /ipa harness install opencode/);
+  assert.match(help, /ipa harness install opencode --without hook:evidence/);
+  assert.match(help, /ipa harness install opencode --only skill,prompt/);
+  assert.match(help, /ipa harness install codex --only hook:guard/);
+  assert.match(help, /--only <component\.\.\.>/);
+  assert.match(help, /--with <component\.\.\.>/);
+  assert.match(help, /--without <component\.\.\.>/);
+  assert.match(help, /default full install/i);
+});
+
+test("harness install accepts component selectors for opencode and codex", async () => {
+  const { env } = await fixtureProfile();
+  const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
+  const harnessEnv = { ...env, IPA_HARNESS_HOME: home };
+
+  // JSON: install opencode --only skill,prompt --with hook:evidence
+  const onlyWith = JSON.parse(
+    run(harnessEnv, ["--json", "harness", "install", "opencode", "--only", "skill,prompt", "--with", "hook:evidence"])
+  );
+  assert.equal(onlyWith.status, "ok");
+  assert.equal(onlyWith.target, "opencode");
+  assert.equal(onlyWith.installed, true);
+
+  // JSON: install opencode --without hook:evidence
+  const without = JSON.parse(
+    run(harnessEnv, ["--json", "harness", "install", "opencode", "--without", "hook:evidence"])
+  );
+  assert.equal(without.status, "ok");
+  assert.equal(without.target, "opencode");
+  assert.equal(without.installed, true);
+
+  // JSON: install codex --only hook:guard
+  const codexOnly = JSON.parse(
+    run(harnessEnv, ["--json", "harness", "install", "codex", "--only", "hook:guard"])
+  );
+  assert.equal(codexOnly.status, "ok");
+  assert.equal(codexOnly.target, "codex");
+  assert.equal(codexOnly.installed, true);
+
+  // Invalid selector: nonzero exit with unknown component error
+  const invalid = runRaw(harnessEnv, ["--json", "harness", "install", "opencode", "--only", "nope"]);
+  assert.notEqual(invalid.status, 0);
+  assert.match(invalid.stderr, /unknown harness component: nope/);
+});
