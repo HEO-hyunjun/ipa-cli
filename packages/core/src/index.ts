@@ -1983,6 +1983,8 @@ export async function searchWithContext(context, query, options = {}) {
   if (channels.some((channel) => channel.name === "project")) {
     applyProjectScores(rowsByNote);
   }
+  const notesById = new Map((context.notes ?? []).map((note) => [note.id, note]));
+  const updatedKey = context.mapping?.updated_at ?? DEFAULT_MAPPING.updated_at;
   const hits = [...rowsByNote.values()]
     .map((row) => ({
       note: row.note,
@@ -1994,7 +1996,15 @@ export async function searchWithContext(context, query, options = {}) {
     }))
     .filter((hit) => options.showAll || hit.score >= threshold)
     .sort((a, b) => b.score - a.score || a.note.localeCompare(b.note))
-    .slice(0, cap);
+    .slice(0, cap)
+    .map((hit) => {
+      const source = notesById.get(hit.note);
+      return {
+        ...hit,
+        modified: source?.frontmatter?.[updatedKey] ?? null,
+        snippet: source ? noteSnippet(source, 100) : null
+      };
+    });
   const refCounts = {};
   for (const hit of hits) {
     for (const ref of hit.refs ?? []) refCounts[ref] = (refCounts[ref] ?? 0) + 1;
@@ -2533,15 +2543,156 @@ export async function rewriteNote(vaultPath, noteName, rewrite, options = {}) {
   if (nextText === null) throw new Error("rewriteNote callback must return markdown text");
   const changed = nextText !== note.raw;
   const apply = options.apply !== false;
-  if (changed && apply) await writeFile(note.path, nextText, "utf8");
+  const finalText = changed && options.syncUpdatedAt !== false
+    ? syncUpdatedAtText(nextText, mapping)
+    : nextText;
+  if (changed && apply) await writeFile(note.path, finalText, "utf8");
   return {
     operation: "rewrite-note",
     note: note.id,
     path: note.relPath,
     changed,
     applied: changed && apply,
+    updated_at_synced: finalText !== nextText,
     sha256_before: sha256(note.raw),
-    sha256_after: sha256(nextText)
+    sha256_after: sha256(finalText)
+  };
+}
+
+function escapeRegExpText(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Core-backed writes keep the mapped updated_at field in sync so agents never
+// need to touch time fields by hand. Only rewrites an existing field line.
+function syncUpdatedAtText(text, mapping = DEFAULT_MAPPING, now = new Date()) {
+  const key = mapping.updated_at;
+  if (!key) return text;
+  const normalized = String(text ?? "");
+  if (!normalized.startsWith("---\n")) return normalized;
+  const end = normalized.indexOf("\n---", 4);
+  if (end === -1) return normalized;
+  const head = normalized.slice(0, end + 1);
+  const pattern = new RegExp(`^(${escapeRegExpText(key)}:[ \\t]*).*$`, "m");
+  if (!pattern.test(head)) return normalized;
+  return head.replace(pattern, `$1${JSON.stringify(formatVaultDate(now))}`) + normalized.slice(end + 1);
+}
+
+function noteSnippet(note, maxChars = 100) {
+  const body = String(note.body ?? "");
+  let text = "";
+  const callout = body.match(/^>\s*\[!\w+\][+-]?[ \t]*([^\n]*)((?:\n>[^\n]*)*)/m);
+  if (callout) {
+    const block = String(callout[2] ?? "")
+      .split("\n")
+      .map((line) => line.replace(/^>\s?/, "").replace(/^[-*]\s+/, "").trim())
+      .filter(Boolean)
+      .join(" ");
+    text = [String(callout[1] ?? "").trim(), block].filter(Boolean).join(" — ");
+  }
+  if (!text) {
+    const line = body.split("\n").find((candidate) => {
+      const trimmed = candidate.trim();
+      return trimmed
+        && !trimmed.startsWith("#")
+        && !trimmed.startsWith("```")
+        && !trimmed.startsWith("---")
+        && !trimmed.startsWith("![");
+    });
+    text = String(line ?? "").trim()
+      .replace(/^(?:>\s?)+/, "")
+      .replace(/^\[!\w+\][+-]?\s*/, "")
+      .replace(/^[-*]\s+/, "");
+  }
+  text = text
+    .replace(/\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g, "$1")
+    .replace(/[*_`]/g, "")
+    .trim();
+  if (text.length > maxChars) text = `${text.slice(0, Math.max(1, maxChars - 1)).trimEnd()}…`;
+  return text || null;
+}
+
+function setScalarFieldText(text, key, value) {
+  const normalized = String(text ?? "").replace(/\r\n/g, "\n");
+  const end = normalized.startsWith("---\n") ? normalized.indexOf("\n---", 4) : -1;
+  if (end === -1) {
+    const parsed = readFrontmatter(normalized);
+    parsed.frontmatter[key] = value;
+    return writeFrontmatter(parsed.frontmatter, parsed.body);
+  }
+  const head = normalized.slice(0, end + 1);
+  const pattern = new RegExp(`^(${escapeRegExpText(key)}:[ \\t]*).*$`, "m");
+  if (!pattern.test(head)) return insertFrontmatterField(normalized, key, value);
+  const rendered = typeof value === "string" && IPA_DATE_RE.test(value) ? JSON.stringify(value) : yamlScalar(value);
+  return head.replace(pattern, `$1${rendered}`) + normalized.slice(end + 1);
+}
+
+// Frontmatter-only edits without exact-match text blocks. Scalar fields use a
+// line-level rewrite; list fields (ref/tags) reuse the refactor list rewriter.
+export async function setNoteField(vaultPath, noteName, field, options = {}) {
+  const key = String(field ?? "").trim();
+  if (!key) throw new Error("note set requires a frontmatter field name");
+  const hasValue = options.value !== undefined;
+  const adds = asList(options.add);
+  const removes = asList(options.remove);
+  if (!hasValue && !adds.length && !removes.length) {
+    throw new Error("note set requires --value, --add, or --remove");
+  }
+  if (hasValue && (adds.length || removes.length)) {
+    throw new Error("note set cannot combine --value with --add/--remove");
+  }
+  const { mapping } = await readVaultConfig(vaultPath);
+  const isRefs = key === mapping.refs;
+  const result = await rewriteNote(vaultPath, noteName, (document) => {
+    if (hasValue) return setScalarFieldText(document.text, key, options.value);
+    return rewriteListValue(document.text, key, (items) => {
+      let next = [...items.map(String)];
+      for (const value of adds) {
+        const rendered = isRefs ? `[[${stripWiki(value)}]]` : String(value);
+        if (!next.includes(rendered)) next.push(rendered);
+      }
+      if (removes.length) {
+        next = next.filter((item) => {
+          const plain = isRefs ? stripWiki(item) : String(item);
+          return !removes.some((value) => (isRefs ? stripWiki(value) : String(value)) === plain);
+        });
+      }
+      return next;
+    }, null);
+  }, {
+    apply: options.apply,
+    syncUpdatedAt: key === mapping.updated_at ? false : options.syncUpdatedAt
+  });
+  return { ...result, operation: "set-note-field", field: key };
+}
+
+// One call replaces the "traversal --down + view --full per child" loop:
+// children of an index with modified date, section titles, and a short snippet.
+export async function digestNote(vaultPath, noteName, options = {}) {
+  const { mapping } = await readVaultConfig(vaultPath);
+  const notes = await loadNotes(vaultPath, mapping);
+  const note = findNote(notes, noteName);
+  if (!note) throw new Error(`note not found: ${noteName}`);
+  const max = Number.isFinite(options.max) && options.max > 0 ? Math.floor(options.max) : 30;
+  const snippetChars = Number.isFinite(options.snippetChars) && options.snippetChars > 0
+    ? Math.floor(options.snippetChars)
+    : 240;
+  const children = childNotes(note, notes).sort((a, b) => a.id.localeCompare(b.id));
+  const items = children.slice(0, max).map((child) => ({
+    id: child.id,
+    type: child.type,
+    modified: child.frontmatter?.[mapping.updated_at] ?? null,
+    headings: (child.headings ?? []).slice(0, 6).map((heading) => heading.title),
+    snippet: noteSnippet(child, snippetChars)
+  }));
+  return {
+    operation: "digest",
+    note: note.id,
+    type: note.type,
+    snippet: noteSnippet(note, snippetChars),
+    children_total: children.length,
+    children_shown: items.length,
+    items
   };
 }
 
@@ -5222,6 +5373,7 @@ const HARNESS_COMPONENTS = [
   "hook:session-env",
   "hook:guard",
   "hook:markdown-nudge",
+  "hook:call-counter",
   "hook:formatter-gate",
   "hook:evidence"
 ];
@@ -5230,6 +5382,7 @@ const HARNESS_HOOK_COMPONENT_TO_SCRIPT = {
   "hook:session-env": "ipa-session-env.mjs",
   "hook:guard": "ipa-inbox-guard.mjs",
   "hook:markdown-nudge": "ipa-md-write-nudge.mjs",
+  "hook:call-counter": "ipa-call-counter.mjs",
   "hook:formatter-gate": "ipa-formatter-gate.mjs",
   "hook:evidence": "ipa-user-prompt-nudge.mjs"
 };
@@ -5238,6 +5391,7 @@ const HARNESS_HOOK_COMPONENT_TO_EVENT = {
   "hook:session-env": "SessionStart",
   "hook:guard": "PreToolUse",
   "hook:markdown-nudge": "PostToolUse",
+  "hook:call-counter": "PostToolUse",
   "hook:formatter-gate": "Stop",
   "hook:evidence": "UserPromptSubmit"
 };
@@ -5246,6 +5400,7 @@ const HARNESS_HOOK_COMPONENT_TO_MATCHER = {
   "hook:session-env": null,
   "hook:guard": "Write|Edit|MultiEdit",
   "hook:markdown-nudge": "Write|Edit|MultiEdit",
+  "hook:call-counter": "Bash",
   "hook:formatter-gate": null,
   "hook:evidence": null
 };
@@ -5254,12 +5409,15 @@ const HARNESS_HOOK_COMPONENT_TO_PLUGIN_MARKER = {
   "hook:session-env": 'hooks["shell.env"]',
   "hook:guard": 'hooks["tool.execute.before"]',
   "hook:markdown-nudge": 'hooks["tool.execute.after"]',
+  "hook:call-counter": "callCounterHandler",
   "hook:formatter-gate": "runFormatterGate",
   "hook:evidence": "evidenceHandler"
 };
 
 function componentsValidForTarget(name) {
-  if (name === "opencode") return [...HARNESS_COMPONENTS];
+  // The Bash call counter is a claude/codex hook; the opencode plugin has no
+  // equivalent shell matcher yet.
+  if (name === "opencode") return HARNESS_COMPONENTS.filter((component) => component !== "hook:call-counter");
   return HARNESS_COMPONENTS.filter((component) => component !== "opencode-plugin");
 }
 
@@ -5360,11 +5518,11 @@ function harnessTargetSpec(target = "codex", options = {}) {
 function ipaCommandSelection(prefix = "ipa") {
   return `## IPA Command Selection
 
-- Broad prior context or user-specific background: \`${prefix} context "keyword" --size medium --format markdown\`, then \`${prefix} search "keyword"\`.
-- Exact note content: \`${prefix} view "Note Title" --full\`.
-- Related notes, previous meeting comparison, or wikilink candidates for one note: \`${prefix} link suggest "Note Title"\`.
-- Ref/root/sibling graph structure: \`${prefix} traversal --up|--down|--siblings "Note Title"\`.
-- Safe note creation/editing: \`${prefix} inbox add ...\` / \`${prefix} note replace ...\`.
+- Exact note title known: \`${prefix} view "Note Title"\` (overview first), then \`--section\`/\`--full\` for the parts you actually need. Several chosen notes: \`${prefix} view "A" "B" --full\` in one call.
+- Summary of an index/root and its children: \`${prefix} digest "Index Note"\` (children + snippets + dates in one call), then \`view --full\` on at most the 2-3 most relevant children.
+- Broad prior context or user-specific background: \`${prefix} context "keyword" --size medium --format markdown\`; widen with \`${prefix} search "other angle"\` only when context missed something. Search results already include snippets and modified dates — judge relevance from them before opening notes.
+- Related notes or wikilink candidates: \`${prefix} link suggest "Note Title"\`. Ref/root/sibling graph shape: \`${prefix} traversal --up|--down|--siblings "Note Title"\`.
+- New note: \`${prefix} inbox add ...\`. Body text edit: \`${prefix} note replace ...\`. Frontmatter field edit: \`${prefix} note set "Note" --field ref --add "Index Note" --apply\`.
 - Unsure command or syntax: \`${prefix} help\` or \`${prefix} <command> --help\`.
 `;
 }
@@ -5392,29 +5550,33 @@ Rules:
 
 This ${tool} environment has the IPA CLI harness installed. Whenever the user's request touches IPA, the harness, a vault, a vault note, inbox capture, note search, validation, formatting, or plugins, you MUST drive the work through the \`ipa\` CLI rather than reading vault files directly. This applies on the very first turn — do not wait for the user to ask again.
 
-Minimum required moves:
+Core moves:
 
 \`\`\`bash
-ipa context "<short keyword>" --size medium --format markdown   # bootstrap
-ipa search "<keyword>"                                          # widen; harness prompt context records tune evidence
-ipa view "Note Title" --full                                    # read a specific note
+ipa view "Note Title"                                           # overview; add --full only for chosen notes
+ipa view "Note A" "Note B" --full                               # read several chosen notes in one call
+ipa digest "Index Note"                                        # index summary: children + snippets in one call
+ipa context "<short keyword>" --size medium --format markdown   # bootstrap for broad/history questions
+ipa search "<keyword>"                                          # discovery; results include snippets + dates
 ipa link suggest "Note Title"                                  # find related notes/link candidates
 ipa validator                                                   # after editing vault Markdown
 ipa formatter plan --note "Edited Note"
 ipa formatter apply --note "Edited Note"
 ipa inbox add ./draft.md --title "Title"                        # new notes go through inbox
 ipa note replace "Note Title" --old-file .tmp/old --new-file .tmp/new --apply
+ipa note set "Note Title" --field ref --add "Index Note" --apply  # frontmatter without exact matching
 \`\`\`
 
 ${ipaCommandSelection("ipa")}
 Rules:
 
-- Do not skip the bootstrap, even for short questions, when the topic could live in the vault.
+- Route by task, not by checklist: exact title known → \`view\` directly; single-note edit → \`view\` → edit → formatter. Only broad/history/discovery questions need the \`context\` bootstrap.
+- Call budget: simple lookups should finish within ~3 ipa calls, broad questions within ~8. At the budget, answer from the evidence you have and say what was not checked.
+- Never open every child of an index with \`view --full\`. Run \`digest\` (or judge from search snippets), then read at most the 2-3 most relevant notes in full.
 - Pick short keywords or exact note titles — never paste raw file paths or the full user prompt.
-- The harness records the current prompt context, so plain \`ipa search\` commands can be tied back to the prompt even when the runtime does not propagate env-file exports.
-- A single context note is not authoritative for broad questions (system, process, history, tradeoff). Run \`ipa search\` to widen and record search evidence for tune.
+- Never edit time fields (\`date_created\`/\`date_modified\`) yourself: CLI writes and \`formatter apply\` keep them in sync automatically. A stale-looking date is not a task to fix.
 - The harness Stop hook blocks final responses while edited vault notes still have formatter patches; run \`ipa formatter apply --note ...\` before finishing.
-- For scripted edits to existing notes, including frontmatter line fixes, prefer \`ipa note replace\` or exported core helpers over hard-coded vault folder scans.
+- For scripted edits to existing notes prefer \`ipa note replace\` / \`ipa note set\` over hard-coded vault folder scans.
 - See the IPA skill at \`${spec.name === "opencode" ? "~/.config/opencode/skills/ipa/SKILL.md" : `~/.${spec.name}/skills/ipa/SKILL.md`}\` and the vault-local \`${spec.localPrompt}\` for the full workflow.`;
 }
 
@@ -5642,6 +5804,7 @@ const IPA_MANAGED_HOOK_SCRIPTS = [
   "ipa-inbox-guard.mjs",
   "ipa-user-prompt-nudge.mjs",
   "ipa-md-write-nudge.mjs",
+  "ipa-call-counter.mjs",
   "ipa-formatter-gate.mjs"
 ];
 
@@ -5747,14 +5910,14 @@ Use this skill when a task mentions IPA, a vault note, inbox capture, note searc
 ## Read First
 
 \`\`\`bash
+${prefix} view "Note Title"
+${prefix} digest "Index Note"
 ${prefix} context "keyword" --size medium --format markdown
 ${prefix} search "keyword"
-${prefix} view "Note Title" --full
-${prefix} link suggest "Note Title"
 \`\`\`
 
 ${ipaCommandSelection(prefix)}
-The harness records the current prompt context so plain \`${prefix} search "keyword"\` calls are logged as tune evidence even when the runtime does not propagate env-file exports. Start IPA/vault tasks with \`context\` to gather a compact note-centered pack, then use \`search\` proactively for discovery. Do not treat a one-note or narrow context pack as complete when the user asks about a broader topic, history, architecture, tradeoff, or process. Use \`view --full\` for selected notes after search has surfaced the likely candidates.
+Keep exploration proportional to the question: simple lookups within ~3 ipa calls, broad questions within ~8. Search results and \`digest\` items carry snippets and modified dates — select candidates from them instead of opening notes one by one, and reserve \`view --full\` for the final 2-3 notes that actually matter. When you reach the budget, answer from the evidence gathered and state what was not checked.
 
 ## Vault Convention And Plugins
 
@@ -5794,12 +5957,23 @@ Harness sessions track edited vault notes and the Stop hook blocks final respons
 
 ## Core-Backed Scripted Edits
 
-For exact replacements anywhere in an existing note, including YAML frontmatter, prefer the core-backed CLI instead of scanning vault folders with Node \`fs\`:
+For exact body replacements in an existing note, prefer the core-backed CLI instead of scanning vault folders with Node \`fs\`:
 
 \`\`\`bash
 ${prefix} note replace "Note Title" --old-file .tmp/old-block.txt --new-file .tmp/new-block.txt
 ${prefix} note replace "Note Title" --old-file .tmp/old-block.txt --new-file .tmp/new-block.txt --apply
 \`\`\`
+
+After a successful \`--apply\`, temp files under \`.tmp/\` are removed automatically — no extra \`rm\` call is needed (pass \`--keep-files\` to keep them).
+
+For frontmatter fields, skip exact matching entirely:
+
+\`\`\`bash
+${prefix} note set "Note Title" --field ref --add "Index Note" --apply
+${prefix} note set "Note Title" --field type --value index --apply
+\`\`\`
+
+Core-backed writes keep the mapped \`date_modified\` field in sync automatically. Never edit \`date_created\`/\`date_modified\` by hand — if a date looks stale after an external edit, \`formatter apply --note ...\` fixes it.
 
 For more complex one-off scripts inside the \`ipa-cli\` workspace, import core helpers and let IPA resolve the note:
 
@@ -6232,6 +6406,99 @@ const message = [
   \`  \${prefix} formatter apply --note \${noteArg}\`,
   "Do not stop at formatter plan unless the plan shows unexpected changes that need user review.",
   "For multiple edited notes, use one --note followed by the note titles."
+].join("\\n");
+
+process.stdout.write(JSON.stringify({
+  hookSpecificOutput: {
+    hookEventName: "PostToolUse",
+    additionalContext: message
+  }
+}) + "\\n");
+`;
+}
+
+function callCounterScript(vaultPath, options = {}) {
+  return `#!/usr/bin/env node
+// ${HARNESS_MARKER}: nudge convergence when a session runs many ipa calls.
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
+import { spawnSync } from "node:child_process";
+
+const vaultPath = ${vaultResolverSnippet(vaultPath, options)};
+const statePath = join(vaultPath, ".ipa", "harness", "call-counter.json");
+const WARN_AT = 10;
+const REPEAT_EVERY = 6;
+const TTL_MS = 48 * 60 * 60 * 1000;
+
+function inputJson() {
+  try {
+    return JSON.parse(readFileSync(0, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+function firstString(values) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return null;
+}
+
+const input = inputJson();
+const toolInput = input.tool_input ?? input.toolInput ?? input.input ?? {};
+const command = firstString([toolInput.command, input.command]);
+if (!command || !/(^|[\\s;|&(])ipa\\s/.test(command)) process.exit(0);
+
+const sessionId = firstString([
+  input.session_id,
+  input.sessionId,
+  input.conversation_id,
+  input.conversationId,
+  input.transcript_path,
+  input.transcriptPath,
+  process.env.IPA_SESSION_ID,
+  process.env.CODEX_SESSION_ID,
+  process.env.CLAUDE_SESSION_ID,
+  process.env.TERM_SESSION_ID
+]) ?? "unknown";
+
+let state = { version: 1, sessions: {} };
+if (existsSync(statePath)) {
+  try {
+    const parsed = JSON.parse(readFileSync(statePath, "utf8"));
+    if (parsed && typeof parsed.sessions === "object" && parsed.sessions) {
+      state = { version: 1, sessions: parsed.sessions };
+    }
+  } catch {
+    // corrupt state — start over
+  }
+}
+const cutoff = Date.now() - TTL_MS;
+for (const key of Object.keys(state.sessions)) {
+  const stamp = Date.parse(state.sessions[key]?.updated_at ?? "");
+  if (Number.isNaN(stamp) || stamp < cutoff) delete state.sessions[key];
+}
+const entry = state.sessions[sessionId] ?? { count: 0 };
+entry.count += 1;
+entry.updated_at = new Date().toISOString();
+state.sessions[sessionId] = entry;
+try {
+  mkdirSync(dirname(statePath), { recursive: true });
+  writeFileSync(statePath, JSON.stringify(state, null, 2) + "\\n", "utf8");
+} catch {
+  // counting is best-effort
+}
+
+const count = entry.count;
+if (count < WARN_AT || (count - WARN_AT) % REPEAT_EVERY !== 0) process.exit(0);
+
+const message = [
+  \`[IPA CLI] This session has run \${count} ipa calls.\`,
+  "Check that exploration is converging: prefer \`ipa digest\` and search snippets over opening more notes,",
+  "read at most 2-3 notes in full, and start composing the answer from evidence already gathered.",
+  "If coverage is genuinely incomplete, state what was not checked instead of continuing to search."
 ].join("\\n");
 
 process.stdout.write(JSON.stringify({
@@ -6681,6 +6948,7 @@ async function installGlobalHarness(vaultPath, spec, mapping, options = {}) {
   const guardPath = join(spec.hooksDir, "ipa-inbox-guard.mjs");
   const promptPath = join(spec.hooksDir, "ipa-user-prompt-nudge.mjs");
   const writeNudgePath = join(spec.hooksDir, "ipa-md-write-nudge.mjs");
+  const callCounterPath = join(spec.hooksDir, "ipa-call-counter.mjs");
   const formatterGatePath = join(spec.hooksDir, "ipa-formatter-gate.mjs");
 
   if (componentSelected(selected, "skill")) {
@@ -6700,6 +6968,9 @@ async function installGlobalHarness(vaultPath, spec, mapping, options = {}) {
     if (componentSelected(selected, "hook:markdown-nudge")) {
       await writeManagedFile(writeNudgePath, markdownWriteNudgeScript(vaultPath, mapping, options), files);
     }
+    if (componentSelected(selected, "hook:call-counter")) {
+      await writeManagedFile(callCounterPath, callCounterScript(vaultPath, options), files);
+    }
     if (componentSelected(selected, "hook:formatter-gate")) {
       await writeManagedFile(formatterGatePath, formatterGateScript(vaultPath, options), files);
     }
@@ -6714,6 +6985,9 @@ async function installGlobalHarness(vaultPath, spec, mapping, options = {}) {
     }
     if (componentSelected(selected, "hook:markdown-nudge")) {
       addHookCommand(config, "PostToolUse", "Write|Edit|MultiEdit", hookCommand(writeNudgePath, spec), "Reminding IPA lint/format checks...", 5);
+    }
+    if (componentSelected(selected, "hook:call-counter")) {
+      addHookCommand(config, "PostToolUse", "Bash", hookCommand(callCounterPath, spec), null, 5);
     }
     if (componentSelected(selected, "hook:evidence")) {
       addHookCommand(config, "UserPromptSubmit", null, hookCommand(promptPath, spec), null, 5);
@@ -6744,6 +7018,7 @@ async function uninstallGlobalHarness(spec) {
     join(spec.hooksDir, "ipa-inbox-guard.mjs"),
     join(spec.hooksDir, "ipa-user-prompt-nudge.mjs"),
     join(spec.hooksDir, "ipa-md-write-nudge.mjs"),
+    join(spec.hooksDir, "ipa-call-counter.mjs"),
     join(spec.hooksDir, "ipa-formatter-gate.mjs")
   ];
   for (const path of [spec.skillFile, ...scripts]) await removeManagedFile(path, removed);

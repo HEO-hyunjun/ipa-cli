@@ -527,7 +527,9 @@ old in-package parity oracle has been removed.
 | `validator`        | `@ipa/core.validateVault`            | Validator engine plus formatter-aware issue reporting.                 |
 | `search`           | `@ipa/core.searchVault`              | Weighted builtin and vault-local JS plugin search.                     |
 | `refactor`         | `@ipa/core.refactorVault`            | Parse-layer scan/filter plus frontmatter/body mutation.                |
-| `note replace`     | `@ipa/core.replaceInNote`            | Core note lookup plus raw-note replacement, including frontmatter.     |
+| `note replace`     | `@ipa/core.replaceInNote`            | Core note lookup plus raw-note replacement; syncs `date_modified` and cleans consumed `.tmp` inputs on apply. |
+| `note set`         | `@ipa/core.setNoteField`             | Frontmatter-only edits (scalar `--value`, list `--add`/`--remove`) without exact-match blocks. |
+| `digest`           | `@ipa/core.digestNote`               | One-call index summary: children with modified dates, section titles, and snippets. |
 
 Compatibility is guarded by JS fixtures under
 `packages/test-vaults/fixtures/` and the CLI/core regression tests.

@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -391,4 +392,81 @@ test("harness install accepts component selectors for opencode and codex", async
   const invalid = runRaw(harnessEnv, ["--json", "harness", "install", "opencode", "--only", "nope"]);
   assert.notEqual(invalid.status, 0);
   assert.match(invalid.stderr, /unknown harness component: nope/);
+});
+
+test("agent-efficiency surface: snippets, digest, multi-view, note set, replace cleanup", async () => {
+  const { vault, env } = await fixtureProfile();
+
+  // search results carry modified date + snippet in JSON and human output.
+  const search = JSON.parse(run(env, ["--profile", "ipa-test", "search", "Alpha", "--json"]));
+  assert.equal(search.results[0].note, "Alpha");
+  assert.equal(search.results[0].modified, "2026/05/10 (Sun) 00:00:00");
+  assert.match(search.results[0].snippet, /Alpha mentions Beta/);
+  const humanSearch = run(env, ["--profile", "ipa-test", "search", "Alpha"]);
+  assert.match(humanSearch, /└ 2026\/05\/10 · Alpha mentions Beta/);
+
+  // digest summarizes an index's children in one call.
+  const digest = run(env, ["--profile", "ipa-test", "digest", "🔖 Topic Index"]);
+  assert.match(digest, /Digest for '🔖 Topic Index' \[index\]/);
+  assert.match(digest, /- Alpha {2}\[note\] {2}\(2026\/05\/10\)/);
+  assert.match(digest, /Alpha mentions Beta in plain text\./);
+  const digestJson = JSON.parse(run(env, ["--profile", "ipa-test", "--json", "digest", "🔖 Topic Index", "--max", "1"]));
+  assert.equal(digestJson.children_shown, 1);
+  assert.ok(digestJson.children_total >= 2);
+  assert.ok(digestJson.items[0].headings.length >= 1);
+
+  // view accepts several titles in one call.
+  const multi = run(env, ["--profile", "ipa-test", "view", "Alpha", "Beta"]);
+  assert.match(multi, /=== Alpha \[note\] ===/);
+  assert.match(multi, /=== Beta \[note\] ===/);
+
+  // note set edits frontmatter without exact-match blocks and syncs date_modified.
+  const setOut = run(env, ["--profile", "ipa-test", "note", "set", "Alpha", "--field", "tags", "--add", "extra", "--apply"]);
+  assert.match(setOut, /operation\s+set-note-field/);
+  assert.match(setOut, /updated_at_synced\s+true/);
+  let alpha = await readFile(join(vault, "00 Inbox", "Alpha.md"), "utf8");
+  assert.match(alpha, /extra/);
+  assert.doesNotMatch(alpha, /date_modified: "?2026\/05\/10/);
+
+  const scalarOut = run(env, ["--profile", "ipa-test", "note", "set", "Alpha", "--field", "obsidianUIMode", "--value", "source", "--apply"]);
+  assert.match(scalarOut, /applied\s+true/);
+  alpha = await readFile(join(vault, "00 Inbox", "Alpha.md"), "utf8");
+  assert.match(alpha, /obsidianUIMode: source/);
+
+  // note set on refs wraps values as wikilinks.
+  run(env, ["--profile", "ipa-test", "note", "set", "Beta", "--field", "ref", "--add", "🔖 Topic Index", "--apply"]);
+  const beta = await readFile(join(vault, "00 Inbox", "Beta.md"), "utf8");
+  assert.match(beta, /\[\[🔖 Topic Index\]\]/);
+
+  // note replace --apply removes consumed .tmp files; preview keeps them.
+  const tmpDir = join(vault, ".tmp");
+  await mkdir(tmpDir, { recursive: true });
+  const oldFile = join(tmpDir, "old.txt");
+  const newFile = join(tmpDir, "new.txt");
+  await writeFile(oldFile, "Alpha mentions Beta in plain text.", "utf8");
+  await writeFile(newFile, "Alpha mentions Beta and Gamma in plain text.", "utf8");
+  const preview = run(env, ["--profile", "ipa-test", "note", "replace", "Alpha", "--old-file", oldFile, "--new-file", newFile]);
+  assert.match(preview, /applied\s+false/);
+  assert.equal(existsSync(oldFile), true);
+  assert.equal(existsSync(newFile), true);
+  const applied = run(env, ["--profile", "ipa-test", "note", "replace", "Alpha", "--old-file", oldFile, "--new-file", newFile, "--apply"]);
+  assert.match(applied, /applied\s+true/);
+  // updated_at may already equal "now" from the note set writes in the same
+  // second, so only assert the field is reported, not its value.
+  assert.match(applied, /updated_at_synced/);
+  assert.match(applied, /cleaned_files/);
+  assert.equal(existsSync(oldFile), false);
+  assert.equal(existsSync(newFile), false);
+  alpha = await readFile(join(vault, "00 Inbox", "Alpha.md"), "utf8");
+  assert.match(alpha, /Alpha mentions Beta and Gamma/);
+
+  // --keep-files preserves the inputs.
+  await writeFile(oldFile, "Alpha mentions Beta and Gamma in plain text.", "utf8");
+  await writeFile(newFile, "Alpha mentions Beta in plain text.", "utf8");
+  run(env, ["--profile", "ipa-test", "note", "replace", "Alpha", "--old-file", oldFile, "--new-file", newFile, "--apply", "--keep-files"]);
+  assert.equal(existsSync(oldFile), true);
+
+  // formatter plan surfaces apply-gated rule patches without writing.
+  const planHelp = run(env, ["digest", "--help"]);
+  assert.match(planHelp, /Summarize an index\/root note/);
 });

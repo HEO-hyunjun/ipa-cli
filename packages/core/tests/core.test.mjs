@@ -10,6 +10,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   buildContext,
   cacheStatus,
+  digestNote,
   formatVault,
   inboxAdd,
   IpaNoteDocument,
@@ -31,6 +32,7 @@ import {
   reviewVault,
   searchVault,
   scoreNote,
+  setNoteField,
   traversal,
   harnessDoctor,
   harnessGuardCheck,
@@ -892,7 +894,10 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   assert.match(skill, /IPA Command Selection/);
   assert.match(skill, /ipa link suggest "Note Title"/);
   assert.match(skill, /ipa <command> --help/);
-  assert.match(skill, /current prompt context/);
+  assert.match(skill, /within ~3 ipa calls/);
+  assert.match(skill, /ipa digest "Index Note"/);
+  assert.match(skill, /Never edit `date_created`\/`date_modified` by hand/);
+  assert.doesNotMatch(skill, /current prompt context/);
   assert.doesNotMatch(skill, /IPA_SEARCH_LOG=1 ipa search "keyword"/);
   assert.doesNotMatch(skill, /Use `search` only when/);
   assert.doesNotMatch(skill, /ipa --profile ipa-test search/);
@@ -900,7 +905,7 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   assert.match(skill, /formatter apply --note "Note A" "Note B"/);
   assert.match(skill, /Core-Backed Scripted Edits/);
   assert.match(skill, /ipa note replace "Note Title"/);
-  assert.match(skill, /including YAML frontmatter/);
+  assert.match(skill, /ipa note set "Note Title" --field ref --add "Index Note" --apply/);
   const globalPrompt = await readFile(join(home, ".codex", "AGENTS.md"), "utf8");
   assert.match(globalPrompt, /Evidence-Based Work/);
   assert.match(globalPrompt, /IPA: user knowledge base/);
@@ -1197,7 +1202,7 @@ test("hook scripts resolve the vault path via homedir() with profile fallback in
   await writeFile(join(vault, ".ipa", "config.yaml"), "folders:\n  inbox: \"00 Inbox\"\n", "utf8");
   await harnessInstall(vault, "claude", { homeDir: home });
 
-  const scripts = ["ipa-inbox-guard.mjs", "ipa-user-prompt-nudge.mjs", "ipa-md-write-nudge.mjs", "ipa-formatter-gate.mjs"];
+  const scripts = ["ipa-inbox-guard.mjs", "ipa-user-prompt-nudge.mjs", "ipa-md-write-nudge.mjs", "ipa-call-counter.mjs", "ipa-formatter-gate.mjs"];
   for (const name of scripts) {
     const src = await readFile(join(home, ".claude", "hooks", name), "utf8");
     assert.ok(!src.includes(`const vaultPath = "${vault}"`), `${name} must not hard-code the absolute vault path`);
@@ -1887,4 +1892,108 @@ test("opencode full install reports plugin-backed hook components as present in 
   assert.equal(hookMissingIssues.length, 0, "doctor must not report false-positive hook_missing warnings for plugin-backed OpenCode hooks");
 
   await harnessUninstall(vault, "opencode", options);
+});
+
+test("call-counter hook counts ipa Bash calls per session and nudges at the threshold", async () => {
+  const vault = await fixtureVault();
+  const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
+  const options = { homeDir: home, profile: "ipa-test" };
+  await harnessInstall(vault, "claude", options);
+
+  const script = join(home, ".claude", "hooks", "ipa-call-counter.mjs");
+  assert.equal(existsSync(script), true);
+  const hookEnv = { ...process.env, IPA_VAULT_PATH: vault };
+  const runHook = (command, sessionId = "sess-counter") => spawnSync(process.execPath, [script], {
+    input: JSON.stringify({ session_id: sessionId, tool_name: "Bash", tool_input: { command } }),
+    env: hookEnv,
+    encoding: "utf8"
+  });
+
+  // Non-ipa commands are ignored entirely.
+  const ignored = runHook("git status");
+  assert.equal(ignored.status, 0);
+  assert.equal(ignored.stdout.trim(), "");
+  assert.equal(existsSync(join(vault, ".ipa", "harness", "call-counter.json")), false);
+
+  // ipa calls 1..9 count silently; the 10th emits a convergence nudge.
+  for (let index = 1; index <= 9; index += 1) {
+    const silent = runHook(`ipa search "query ${index}"`);
+    assert.equal(silent.status, 0);
+    assert.equal(silent.stdout.trim(), "", `call ${index} must stay silent`);
+  }
+  const nudged = runHook('ipa view "Some Note" --full');
+  assert.equal(nudged.status, 0);
+  const payload = JSON.parse(nudged.stdout);
+  assert.equal(payload.hookSpecificOutput.hookEventName, "PostToolUse");
+  assert.match(payload.hookSpecificOutput.additionalContext, /10 ipa calls/);
+  assert.match(payload.hookSpecificOutput.additionalContext, /converging/);
+
+  // Counts are per session: a different session starts from zero.
+  const otherSession = runHook('ipa search "other"', "sess-other");
+  assert.equal(otherSession.stdout.trim(), "");
+
+  // The claude settings registration uses the Bash matcher on PostToolUse.
+  const settings = JSON.parse(await readFile(join(home, ".claude", "settings.json"), "utf8"));
+  const counterGroups = (settings.hooks.PostToolUse ?? []).filter((group) =>
+    (group.hooks ?? []).some((hook) => hook.command.includes("ipa-call-counter.mjs"))
+  );
+  assert.equal(counterGroups.length, 1);
+  assert.equal(counterGroups[0].matcher, "Bash");
+
+  await harnessUninstall(vault, "claude", options);
+  assert.equal(existsSync(script), false);
+});
+
+test("core-backed writes sync the mapped updated_at field automatically", async () => {
+  const vault = await fixtureVault();
+  const before = await readFile(join(vault, "00 Inbox", "Alpha.md"), "utf8");
+  assert.match(before, /date_modified: 2026\/05\/10/);
+
+  const result = await replaceInNote(vault, "Alpha", "Alpha mentions Beta in plain text.", "Alpha mentions Beta loudly.", { apply: true });
+  assert.equal(result.applied, true);
+  assert.equal(result.updated_at_synced, true);
+  const after = await readFile(join(vault, "00 Inbox", "Alpha.md"), "utf8");
+  assert.doesNotMatch(after, /date_modified: "?2026\/05\/10/);
+  assert.match(after, /date_created: 2026\/05\/10/);
+
+  // Preview writes nothing and reports what would change.
+  const preview = await replaceInNote(vault, "Alpha", "Alpha mentions Beta loudly.", "Alpha whispers.", { apply: false });
+  assert.equal(preview.applied, false);
+  const untouched = await readFile(join(vault, "00 Inbox", "Alpha.md"), "utf8");
+  assert.match(untouched, /Alpha mentions Beta loudly\./);
+});
+
+test("setNoteField edits scalars and lists without exact matching", async () => {
+  const vault = await fixtureVault();
+
+  const scalar = await setNoteField(vault, "Alpha", "obsidianUIMode", { value: "source", apply: true });
+  assert.equal(scalar.applied, true);
+  assert.match(await readFile(join(vault, "00 Inbox", "Alpha.md"), "utf8"), /obsidianUIMode: source/);
+
+  const missing = await setNoteField(vault, "Alpha", "brand-new-field", { value: "hello", apply: true });
+  assert.equal(missing.applied, true);
+  assert.match(await readFile(join(vault, "00 Inbox", "Alpha.md"), "utf8"), /brand-new-field: hello/);
+
+  const refs = await setNoteField(vault, "Beta", "ref", { add: ["🏷️ Topic Root"], apply: true });
+  assert.equal(refs.applied, true);
+  assert.match(await readFile(join(vault, "00 Inbox", "Beta.md"), "utf8"), /\[\[🏷️ Topic Root\]\]/);
+
+  await assert.rejects(() => setNoteField(vault, "Alpha", "tags", { apply: true }), /requires --value, --add, or --remove/);
+  await assert.rejects(() => setNoteField(vault, "Alpha", "tags", { value: "x", add: ["y"], apply: true }), /cannot combine/);
+});
+
+test("digestNote returns children with snippets and dates in one call", async () => {
+  const vault = await fixtureVault();
+  const digest = await digestNote(vault, "🔖 Topic Index");
+  assert.equal(digest.operation, "digest");
+  assert.ok(digest.children_total >= 2);
+  const alpha = digest.items.find((item) => item.id === "Alpha");
+  assert.ok(alpha, "Alpha child present");
+  assert.match(alpha.snippet, /Alpha mentions Beta/);
+  assert.equal(alpha.modified, "2026/05/10 (Sun) 00:00:00");
+  assert.ok(alpha.headings.length >= 1);
+
+  const capped = await digestNote(vault, "🔖 Topic Index", { max: 1 });
+  assert.equal(capped.children_shown, 1);
+  assert.equal(capped.children_total, digest.children_total);
 });
