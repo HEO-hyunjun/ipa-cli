@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { readFile, unlink } from "node:fs/promises";
+import { relative, resolve, sep } from "node:path";
 import Table from "cli-table3";
 import { Command } from "commander";
 import * as colors from "yoctocolors";
@@ -16,6 +16,7 @@ import {
   contractValidate,
   contractValidateOutput,
   createProfile,
+  digestNote,
   doctor,
   formatVault,
   harnessDoctor,
@@ -46,6 +47,7 @@ import {
   searchVault,
   suggestLinks,
   setDefaultProfile,
+  setNoteField,
   traversal,
   tuneAnalyze,
   tuneEval,
@@ -72,6 +74,7 @@ const COMMAND_GROUPS = [
     rows: [
       ["search", "Search notes with active weights and plugins"],
       ["view", "Show note overview, section, or full content"],
+      ["digest", "Summarize an index note and its children in one call"],
       ["traversal", "Walk refs, backlinks, siblings, and roots"],
       ["validator", "Validate IPA frontmatter and links"],
       ["context", "Build note context for an agent prompt"]
@@ -341,17 +344,27 @@ const COMMAND_HELP = {
     ]
   }),
   note: formatDetailedHelp({
-    usage: "ipa [OPTIONS] note replace NOTE --old-file OLD --new-file NEW [--apply]",
+    usage: "ipa [OPTIONS] note replace|set NOTE [ARGS...]",
     summary: "Apply core-backed edits to existing notes, including frontmatter, without raw vault path scans.",
     commands: [
       ["ipa note replace \"Note\" --old-file .tmp/old.txt --new-file .tmp/new.txt", "Preview a literal block replacement"],
-      ["ipa note replace \"Note\" --old-file .tmp/old.txt --new-file .tmp/new.txt --apply", "Apply the replacement"]
+      ["ipa note replace \"Note\" --old-file .tmp/old.txt --new-file .tmp/new.txt --apply", "Apply the replacement"],
+      ["ipa note set \"Note\" --field ref --add \"Index Note\" --apply", "Add a frontmatter list item"],
+      ["ipa note set \"Note\" --field type --value index --apply", "Set a scalar frontmatter field"]
     ],
     options: [
       ["--old-file PATH", "File containing the exact raw note text to replace"],
       ["--new-file PATH", "File containing replacement text"],
-      ["--apply", "Write the replacement; omit for preview"],
-      ["--allow-multiple", "Allow replacing more than one matching block"]
+      ["--apply", "Write the change; omit for preview"],
+      ["--allow-multiple", "Allow replacing more than one matching block"],
+      ["--keep-files", "Keep --old-file/--new-file after a successful apply (default: .tmp files are removed)"],
+      ["--field NAME", "Frontmatter field to edit with note set"],
+      ["--value VALUE", "Scalar value for note set"],
+      ["--add VALUE", "List item to add (repeatable)"],
+      ["--remove VALUE", "List item to remove (repeatable)"]
+    ],
+    notes: [
+      "Writes keep the mapped date_modified field in sync automatically — never edit time fields by hand."
     ]
   }),
   review: formatDetailedHelp({
@@ -405,8 +418,8 @@ const COMMAND_HELP = {
     ]
   }),
   view: formatDetailedHelp({
-    usage: "ipa [OPTIONS] view NOTE [--full] [--section HEADING]",
-    summary: "Show a note overview, section, or full body while preserving display names.",
+    usage: "ipa [OPTIONS] view NOTE [NOTE...] [--full] [--section HEADING]",
+    summary: "Show note overviews, sections, or full bodies while preserving display names.",
     options: [
       ["--full", "Show the full note body and footer"],
       ["--section HEADING", "Show one markdown section"]
@@ -414,7 +427,23 @@ const COMMAND_HELP = {
     examples: [
       ["ipa view \"Note Title\"", "Show structure overview"],
       ["ipa view \"Note Title\" --full", "Show full content"],
+      ["ipa view \"Note A\" \"Note B\" --full", "Show several notes in one call"],
       ["ipa view \"Note Title\" --section \"Details\"", "Show one section"]
+    ]
+  }),
+  digest: formatDetailedHelp({
+    usage: "ipa [OPTIONS] digest NOTE [--max N] [--snippet-chars N]",
+    summary: "Summarize an index/root note and its children (modified date, sections, snippet) in one call.",
+    options: [
+      ["--max N", "Maximum children to include (default 30)"],
+      ["--snippet-chars N", "Snippet length per child (default 240)"]
+    ],
+    examples: [
+      ["ipa digest \"🔖 Index Note\"", "Digest all children of an index"],
+      ["ipa digest \"🔖 Index Note\" --max 10", "Digest the first 10 children"]
+    ],
+    notes: [
+      "Use digest before opening children with view --full; read at most the 2-3 most relevant children in full."
     ]
   })
 };
@@ -602,6 +631,8 @@ function render(payload) {
   if (payload.rules) return renderRules(payload.rules);
   if (payload.refactors) return renderRefactors(payload.refactors);
   if (payload.operation === "replace-in-note") return renderKeyValues("Note replace", payload);
+  if (payload.operation === "set-note-field") return renderKeyValues("Note set", payload);
+  if (payload.operation === "digest") return renderDigest(payload);
   if (payload.profile !== undefined && payload.vault_path && Object.hasOwn(payload, "created")) return renderKeyValues("Profile", payload);
   if (payload.profile !== undefined && payload.vault_path) return renderKeyValues("Active config", payload);
   if (payload.status && payload.checks) return renderDoctor(payload);
@@ -619,16 +650,22 @@ function renderSearchResults(payload) {
     : [`Search results for '${payload.query}': ${payload.count} notes (threshold ${payload.threshold})`];
   if (!payload.results.length) return `${lines.join("\n")}\n${styleWarn("No results.")}`;
   if (PRETTY) {
-    lines.push("", table(["Score", "Type", "Note", "Refs"], payload.results.map((hit) => [
+    lines.push("", table(["Score", "Type", "Note", "Modified", "Refs"], payload.results.map((hit) => [
       Number(hit.score).toFixed(3),
       hit.type ?? "?",
       hit.note,
+      hit.modified ? String(hit.modified).split(" ")[0] : "",
       hit.refs?.join(", ") ?? ""
     ])));
   } else {
     for (const hit of payload.results) {
       const refs = hit.refs?.length ? `  ref→ ${hit.refs.join(", ")}` : "";
       lines.push(`  [ ${Number(hit.score).toFixed(1)}] [${String(hit.type ?? "?").padEnd(5)}] ${hit.note}${refs}`);
+      const meta = [
+        hit.modified ? String(hit.modified).split(" ")[0] : null,
+        hit.snippet || null
+      ].filter(Boolean).join(" · ");
+      if (meta) lines.push(`         └ ${meta}`);
     }
   }
   if (payload.ref_distribution?.length) {
@@ -640,6 +677,25 @@ function renderSearchResults(payload) {
       }
     }
     lines.push("→ 2건+ 인덱스는 `ipa view \"노트명\"` 또는 `ipa traversal --down \"인덱스명\"` 권장");
+  }
+  return lines.join("\n");
+}
+
+function renderDigest(payload) {
+  const showing = payload.children_shown < payload.children_total
+    ? ` (showing ${payload.children_shown})`
+    : "";
+  const lines = [`Digest for '${payload.note}' [${payload.type || "?"}]: children ${payload.children_total}${showing}`];
+  if (payload.snippet) lines.push(`  ${payload.snippet}`);
+  for (const item of payload.items ?? []) {
+    const date = item.modified ? String(item.modified).split(" ")[0] : "";
+    lines.push("", `- ${item.id}  [${item.type || "?"}]${date ? `  (${date})` : ""}`);
+    if (item.snippet) lines.push(`  ${item.snippet}`);
+    if (item.headings?.length) lines.push(`  sections: ${item.headings.join(" · ")}`);
+  }
+  if (!payload.items?.length) lines.push("", "(no children)");
+  if (payload.children_shown < payload.children_total) {
+    lines.push("", `→ ${payload.children_total - payload.children_shown} more children hidden; raise --max or view specific notes.`);
   }
   return lines.join("\n");
 }
@@ -1126,14 +1182,31 @@ function buildProgram() {
     });
 
   setHelp(program.command("view"), "view")
-    .argument("<note>", "Note title")
+    .argument("<notes...>", "Note titles")
     .option("--full", "Show the full note body and footer")
     .option("--section <heading>", "Show one markdown section")
+    .action(async (notes, options) => {
+      await withVault(globalOptions(program), async (vault) => {
+        const rendered = [];
+        for (const note of notes) {
+          rendered.push(await viewNote(vault, note, {
+            full: Boolean(options.full),
+            section: options.section ?? null
+          }));
+        }
+        print(rendered.join("\n\n"));
+      });
+    });
+
+  setHelp(program.command("digest"), "digest")
+    .argument("<note>", "Index or root note title")
+    .option("--max <number>", "Maximum children to include")
+    .option("--snippet-chars <number>", "Snippet length per child")
     .action(async (note, options) => {
-      await withVault(globalOptions(program), async (vault) => print(await viewNote(vault, note, {
-        full: Boolean(options.full),
-        section: options.section ?? null
-      })));
+      await withVault(globalOptions(program), async (vault) => print(await digestNote(vault, note, {
+        max: optionNumber(options.max),
+        snippetChars: optionNumber(options.snippetChars)
+      }), jsonOutput(program)));
     });
 
   setHelp(program.command("traversal"), "traversal")
@@ -1212,12 +1285,48 @@ function buildProgram() {
     .requiredOption("--new-file <path>", "File containing replacement text")
     .option("--apply", "Apply the replacement")
     .option("--allow-multiple", "Allow replacing multiple matches")
+    .option("--keep-files", "Keep --old-file/--new-file after a successful apply")
     .action(async (note, options) => {
-      const oldText = await readFile(resolve(options.oldFile), "utf8");
-      const newText = await readFile(resolve(options.newFile), "utf8");
-      await withVault(globalOptions(program), async (vault) => print(await replaceInNote(vault, note, oldText, newText, {
-        apply: Boolean(options.apply),
-        allowMultiple: Boolean(options.allowMultiple)
+      const oldPath = resolve(options.oldFile);
+      const newPath = resolve(options.newFile);
+      const oldText = await readFile(oldPath, "utf8");
+      const newText = await readFile(newPath, "utf8");
+      await withVault(globalOptions(program), async (vault) => {
+        const result = await replaceInNote(vault, note, oldText, newText, {
+          apply: Boolean(options.apply),
+          allowMultiple: Boolean(options.allowMultiple)
+        });
+        if (result.applied && !options.keepFiles) {
+          const cleaned = [];
+          for (const path of new Set([oldPath, newPath])) {
+            if (!path.split(sep).includes(".tmp")) continue;
+            try {
+              await unlink(path);
+              cleaned.push(relative(process.cwd(), path) || path);
+            } catch {
+              // keep going — cleanup is best-effort
+            }
+          }
+          if (cleaned.length) result.cleaned_files = cleaned.join(", ");
+        }
+        print(result, jsonOutput(program));
+      });
+    });
+
+  noteCommand
+    .command("set")
+    .argument("<note>", "Note title")
+    .requiredOption("--field <name>", "Frontmatter field name")
+    .option("--value <value>", "Scalar value to set")
+    .option("--add <value>", "List item to add", collectRepeated, [])
+    .option("--remove <value>", "List item to remove", collectRepeated, [])
+    .option("--apply", "Apply the change")
+    .action(async (note, options) => {
+      await withVault(globalOptions(program), async (vault) => print(await setNoteField(vault, note, options.field, {
+        value: options.value,
+        add: optionalList(options.add),
+        remove: optionalList(options.remove),
+        apply: Boolean(options.apply)
       }), jsonOutput(program)));
     });
 
@@ -1331,7 +1440,10 @@ function buildProgram() {
     .option("--note <notes...>", "Restrict formatting to note titles")
     .action(async (options) => {
       await withVault(globalOptions(program), async (vault) => print(await formatVault(vault, false, {
-        notes: optionalList(options.note)
+        notes: optionalList(options.note),
+        // Surface apply-gated rule patches (e.g. date_modified sync) at plan
+        // time so plan/apply report the same patch set. fs writes stay off.
+        ruleApply: true
       }), jsonOutput(program)));
     });
   formatterCommand
