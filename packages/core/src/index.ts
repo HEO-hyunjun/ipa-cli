@@ -43,7 +43,8 @@ export const CHANNELS = [
 
 export const RULES = [
   { code: "ipa.frontmatter.required_field", category: "frontmatter", severity: "warn", scope: "note", fixable: true },
-  { code: "ipa.frontmatter.date_format", category: "frontmatter", severity: "warn", scope: "note" },
+  { code: "ipa.frontmatter.date_format", category: "frontmatter", severity: "warn", scope: "note", fixable: true },
+  { code: "ipa.content.absolute_path", category: "content", severity: "warn", scope: "note", fixable: true },
   { code: "ipa.frontmatter.invalid_type", category: "frontmatter", severity: "error", scope: "note" },
   { code: "ipa.frontmatter.missing_ref", category: "frontmatter", severity: "warn", scope: "note" },
   { code: "ipa.inbox.raw_capture", category: "inbox", severity: "warn", scope: "note" },
@@ -2858,6 +2859,25 @@ function builtinRule(code, handlers) {
   return { ...ruleMeta(code), source: "builtin", ...handlers };
 }
 
+// A note pollutes date formats when one mapped date field follows the vault
+// convention while the other is an ISO timestamp. Vaults that use ISO for
+// both fields consistently are left alone.
+function mixedIsoDateFields(note, mapping) {
+  const fields = [mapping.created_at, mapping.updated_at];
+  const values = fields.map((field) => String(note.frontmatter?.[field] ?? ""));
+  if (!values.some((value) => IPA_DATE_RE.test(value))) return [];
+  return fields.filter((field, index) => ISO_DATE_RE.test(values[index]));
+}
+
+function pathAliasEntries(config) {
+  const aliases = config?.path_aliases;
+  if (!aliases || typeof aliases !== "object" || Array.isArray(aliases)) return [];
+  return Object.entries(aliases)
+    .map(([alias, prefix]) => [String(alias), String(prefix ?? "").replace(/\/+$/, "")])
+    .filter(([alias, prefix]) => alias && prefix.startsWith("/"))
+    .sort((a, b) => b[1].length - a[1].length);
+}
+
 const BUILTIN_RULES = [
   builtinRule("ipa.inbox.raw_capture", {
     checkNote(note, ctx) {
@@ -2894,9 +2914,49 @@ const BUILTIN_RULES = [
   }),
   builtinRule("ipa.frontmatter.date_format", {
     checkNote(note, ctx) {
-      return [ctx.mapping.created_at, ctx.mapping.updated_at]
+      const issues = [ctx.mapping.created_at, ctx.mapping.updated_at]
         .filter((field) => note.frontmatter[field] !== undefined && !validDateValue(note.frontmatter[field]))
         .map((field) => noteIssue(this.code, note, `invalid date format in ${field}: ${note.frontmatter[field]}`));
+      issues.push(...mixedIsoDateFields(note, ctx.mapping)
+        .map((field) => noteIssue(this.code, note, `mixed date formats: ${field} is an ISO timestamp; formatter apply rewrites it to the vault date format`)));
+      return issues;
+    },
+    fixNote(note, ctx) {
+      if (!hasFrontmatterBlock(note.raw)) return note.raw;
+      let text = note.raw;
+      for (const field of mixedIsoDateFields(note, ctx.mapping)) {
+        const parsed = new Date(String(note.frontmatter[field]));
+        if (Number.isNaN(parsed.getTime())) continue;
+        text = setScalarFieldText(text, field, formatVaultDate(parsed));
+      }
+      return text;
+    }
+  }),
+  // Active only when the vault config declares path_aliases, e.g.
+  //   path_aliases:
+  //     ipa-cli: /Users/me/workspace/ipa-cli
+  // Notes then use "ipa-cli/packages/..." instead of machine-specific paths.
+  builtinRule("ipa.content.absolute_path", {
+    checkNote(note, ctx) {
+      const aliases = pathAliasEntries(ctx.config);
+      if (!aliases.length) return [];
+      const issues = [];
+      for (const [alias, prefix] of aliases) {
+        if (note.raw.includes(prefix)) {
+          issues.push(noteIssue(this.code, note, `absolute path for alias '${alias}': ${prefix}`));
+        }
+      }
+      return issues;
+    },
+    fixNote(note, ctx) {
+      const aliases = pathAliasEntries(ctx.config);
+      if (!aliases.length) return note.raw;
+      let text = note.raw;
+      for (const [alias, prefix] of aliases) {
+        text = text.split(`${prefix}/`).join(`${alias}/`);
+        text = text.split(prefix).join(alias);
+      }
+      return text;
     }
   }),
   builtinRule("ipa.frontmatter.invalid_type", {
@@ -4189,7 +4249,7 @@ function rewriteListValue(text, key, rewrite, updatedKey = DEFAULT_MAPPING.updat
     return text;
   }
   parsed.frontmatter[key] = next;
-  if (updatedKey) parsed.frontmatter[updatedKey] = nowIso();
+  if (updatedKey) parsed.frontmatter[updatedKey] = formatVaultDate(new Date());
   return writeFrontmatter(parsed.frontmatter, parsed.body);
 }
 
@@ -4202,8 +4262,8 @@ export async function inboxAdd(vaultPath, sourcePath, options = {}) {
   const parsed = readFrontmatter(source);
   const frontmatter = {
     ...parsed.frontmatter,
-    [mapping.created_at]: parsed.frontmatter[mapping.created_at] ?? nowIso(),
-    [mapping.updated_at]: parsed.frontmatter[mapping.updated_at] ?? nowIso(),
+    [mapping.created_at]: parsed.frontmatter[mapping.created_at] ?? formatVaultDate(new Date()),
+    [mapping.updated_at]: parsed.frontmatter[mapping.updated_at] ?? formatVaultDate(new Date()),
     [mapping.refs]: options.refs?.map((ref) => `[[${stripWiki(ref)}]]`) ?? asList(parsed.frontmatter[mapping.refs]),
     [mapping.tags]: options.tags ?? asList(parsed.frontmatter[mapping.tags]),
     [mapping.note_type]: parsed.frontmatter[mapping.note_type] ?? "note"
@@ -4237,6 +4297,167 @@ export async function inboxTriage(vaultPath, apply = false, noteName = null) {
   return recommendations;
 }
 
+// Repoint every wikilink/ref that targets the source notes to the target
+// note. The CLI primitive behind "merge" workflows: content synthesis stays
+// with the agent/user; the repetitive rewiring is done here in one pass.
+export async function redirectNotes(vaultPath, sourceNames, targetName, options = {}) {
+  const { mapping } = await readVaultConfig(vaultPath);
+  const notes = await loadNotes(vaultPath, mapping);
+  const target = findNote(notes, targetName);
+  if (!target) throw new Error(`note not found: ${targetName}`);
+  const sources = [];
+  for (const name of asList(sourceNames)) {
+    const note = findNote(notes, name);
+    if (!note) throw new Error(`note not found: ${name}`);
+    if (note.id === target.id) throw new Error(`redirect source equals target: ${note.id}`);
+    if (!sources.some((item) => item.id === note.id)) sources.push(note);
+  }
+  if (!sources.length) throw new Error("note redirect requires at least one source note");
+  const apply = Boolean(options.apply);
+  const sourceIds = new Set(sources.map((note) => note.id));
+  const changes = [];
+  for (const note of notes) {
+    if (sourceIds.has(note.id)) continue;
+    let next = note.raw;
+    for (const source of sources) {
+      next = next.split(`[[${source.id}]]`).join(`[[${target.id}]]`);
+      next = next.split(`[[${source.id}|`).join(`[[${target.id}|`);
+    }
+    const linksChanged = next !== note.raw;
+    const withRefs = rewriteListValue(next, mapping.refs, (items) => {
+      const mapped = items.map((item) => sourceIds.has(stripWiki(item)) ? `[[${target.id}]]` : String(item));
+      return [...new Set(mapped)];
+    }, null);
+    const refsChanged = withRefs !== next;
+    next = withRefs;
+    if (next === note.raw) continue;
+    if (options.syncUpdatedAt !== false) next = syncUpdatedAtText(next, mapping);
+    changes.push({ note: note.id, path: note.relPath, links: linksChanged, refs: refsChanged });
+    if (apply) await writeFile(note.path, next, "utf8");
+  }
+  const archived = [];
+  if (options.archive) {
+    const archiveDir = mapping.archive_dir ?? "02 Archive";
+    for (const source of sources) {
+      const dest = join(vaultPath, archiveDir, `${source.id}.md`);
+      archived.push({ note: source.id, to: toPosix(relative(vaultPath, dest)) });
+      if (apply) {
+        await mkdir(dirname(dest), { recursive: true });
+        await rename(source.path, dest);
+      }
+    }
+  }
+  return {
+    operation: "redirect-notes",
+    sources: sources.map((note) => note.id),
+    target: target.id,
+    apply,
+    changes,
+    archived
+  };
+}
+
+// Staged ripple for a (usually new) note. Tier 1 (appliable): wire refs into
+// the graph and wrap plain-text title mentions as wikilinks in both
+// directions. Tier 2 (report only): overlap candidates the agent/user can
+// merge by hand — the CLI never edits content it did not mechanically derive.
+export async function cascadeNote(vaultPath, noteName, options = {}) {
+  const context = await prepareSearchContext(vaultPath);
+  const { notes, mapping } = context;
+  const note = findNote(notes, noteName);
+  if (!note) throw new Error(`note not found: ${noteName}`);
+  const only = asList(options.only).map(String);
+  const wants = (kind) => !only.length || only.includes(kind);
+  const apply = Boolean(options.apply);
+
+  const suggestions = wants("refs") || wants("links")
+    ? (await suggestLinks(vaultPath, note.id)).suggestions
+    : [];
+
+  const refSuggestions = [];
+  if (wants("refs")) {
+    const counts = new Map();
+    for (const item of suggestions) {
+      const related = findNote(notes, item.target);
+      for (const ref of related?.refs ?? []) {
+        if (hasNoteName(note.refs, ref)) continue;
+        counts.set(ref, (counts.get(ref) ?? 0) + 1);
+      }
+    }
+    refSuggestions.push(...[...counts.entries()]
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .slice(0, 3)
+      .map(([ref, count]) => ({ ref, count })));
+  }
+
+  const forwardLinks = wants("links")
+    ? suggestions
+      .filter((item) => !hasNoteName(note.links, item.target) && note.body.includes(item.target))
+      .map((item) => ({ note: note.id, target: item.target, reason: item.reason }))
+    : [];
+  const reverseLinks = [];
+  if (wants("links")) {
+    for (const other of notes) {
+      if (other.id === note.id) continue;
+      if (hasNoteName([...other.links, ...other.refs], note.id)) continue;
+      if (other.body.includes(note.id)) {
+        reverseLinks.push({ note: other.id, target: note.id, reason: "plain_text_title_match" });
+      }
+    }
+  }
+
+  const overlaps = [];
+  if (wants("overlaps")) {
+    const queries = [note.id, ...(note.headings ?? []).slice(0, 5).map((heading) => heading.title)];
+    const seen = new Set();
+    for (const query of queries) {
+      const result = await searchWithContext(context, query, { threshold: 0, maxResults: 4 });
+      for (const hit of result.results) {
+        if (hit.note === note.id || seen.has(hit.note) || (hit.score ?? 0) <= 0) continue;
+        seen.add(hit.note);
+        overlaps.push({ note: hit.note, score: hit.score, matched_query: query, snippet: hit.snippet ?? null });
+      }
+    }
+    overlaps.sort((a, b) => b.score - a.score);
+    overlaps.splice(options.maxOverlaps ?? 8);
+  }
+
+  const appliedChanges = [];
+  if (apply) {
+    if (wants("refs") && !note.refs.length && refSuggestions[0]) {
+      await setNoteField(vaultPath, note.id, mapping.refs, { add: [refSuggestions[0].ref], apply: true });
+      appliedChanges.push({ note: note.id, kind: "ref", value: refSuggestions[0].ref });
+    }
+    for (const change of forwardLinks) {
+      const current = await resolveNote(vaultPath, change.note);
+      const next = current.note.raw.replace(change.target, `[[${change.target}]]`);
+      if (next !== current.note.raw) {
+        await writeFile(current.note.path, syncUpdatedAtText(next, mapping), "utf8");
+        appliedChanges.push({ note: change.note, kind: "link", value: change.target });
+      }
+    }
+    for (const change of reverseLinks) {
+      const current = await resolveNote(vaultPath, change.note);
+      const next = current.note.raw.replace(note.id, `[[${note.id}]]`);
+      if (next !== current.note.raw) {
+        await writeFile(current.note.path, syncUpdatedAtText(next, mapping), "utf8");
+        appliedChanges.push({ note: change.note, kind: "link", value: note.id });
+      }
+    }
+  }
+
+  return {
+    operation: "cascade",
+    note: note.id,
+    apply,
+    ref_suggestions: refSuggestions,
+    forward_links: forwardLinks,
+    reverse_links: reverseLinks,
+    overlaps,
+    applied: appliedChanges
+  };
+}
+
 export async function reviewVault(vaultPath, scope = "all", options = {}) {
   const validation = await validateVault(vaultPath);
   const { mapping } = await readVaultConfig(vaultPath);
@@ -4260,6 +4481,25 @@ export async function reviewVault(vaultPath, scope = "all", options = {}) {
     for (const note of notes) for (const tag of note.tags) counts[tag] = (counts[tag] ?? 0) + 1;
     for (const [tag, count] of Object.entries(counts)) {
       if (count === 1) issues.push({ code: "review.tag.low_usage", severity: "info", tag, message: "tag appears once" });
+    }
+  }
+  if (scope === "all" || scope === "sot") {
+    // Report-style note pileups under one index usually mean the knowledge
+    // has no single source of truth. Threshold keeps small indexes quiet.
+    const REPORT_TITLE_RE = /(계획|결과|보고서?|리포트|검증|회고|report|plan|design doc)/i;
+    const SOT_CANDIDATE_MIN = 4;
+    for (const index of notes.filter((item) => item.type === "index" || item.type === "root")) {
+      const children = notes.filter((item) => item.id !== index.id && hasNoteName(item.refs, index.id));
+      const reports = children.filter((item) => REPORT_TITLE_RE.test(item.id));
+      if (reports.length >= SOT_CANDIDATE_MIN) {
+        issues.push({
+          code: "review.sot.consolidation_candidate",
+          severity: "info",
+          note: index.id,
+          message: `${reports.length} plan/report-style children of ${children.length}; consider consolidating into a single source of truth (ipa note redirect ... --to "SoT")`,
+          notes: reports.map((item) => item.id)
+        });
+      }
     }
   }
   if (options.suggestRefactor) {

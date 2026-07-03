@@ -8,6 +8,7 @@ import {
   REFACTORS,
   buildContext,
   cacheClean,
+  cascadeNote,
   cacheDoctor,
   cacheInspect,
   cacheStatus,
@@ -39,6 +40,7 @@ import {
   pluginDryRun,
   pluginInit,
   rebuildCache,
+  redirectNotes,
   refactorVault,
   replaceInNote,
   renameNote,
@@ -74,7 +76,8 @@ const COMMAND_GROUPS = [
     rows: [
       ["search", "Search notes with active weights and plugins"],
       ["view", "Show note overview, section, or full content"],
-      ["digest", "Summarize an index note and its children in one call"],
+      ["digest", "Summarize index notes and their children in one call"],
+      ["cascade", "Plan/apply the ripple of a new note: refs, links, overlap candidates"],
       ["traversal", "Walk refs, backlinks, siblings, and roots"],
       ["validator", "Validate IPA frontmatter and links"],
       ["context", "Build note context for an agent prompt"]
@@ -344,13 +347,15 @@ const COMMAND_HELP = {
     ]
   }),
   note: formatDetailedHelp({
-    usage: "ipa [OPTIONS] note replace|set NOTE [ARGS...]",
+    usage: "ipa [OPTIONS] note replace|set|redirect NOTE [ARGS...]",
     summary: "Apply core-backed edits to existing notes, including frontmatter, without raw vault path scans.",
     commands: [
       ["ipa note replace \"Note\" --old-file .tmp/old.txt --new-file .tmp/new.txt", "Preview a literal block replacement"],
       ["ipa note replace \"Note\" --old-file .tmp/old.txt --new-file .tmp/new.txt --apply", "Apply the replacement"],
       ["ipa note set \"Note\" --field ref --add \"Index Note\" --apply", "Add a frontmatter list item"],
-      ["ipa note set \"Note\" --field type --value index --apply", "Set a scalar frontmatter field"]
+      ["ipa note set \"Note\" --field type --value index --apply", "Set a scalar frontmatter field"],
+      ["ipa note set \"A\" \"B\" --field ref --add \"Index\" --apply", "Same field edit across several notes"],
+      ["ipa note redirect \"Old A\" \"Old B\" --to \"SoT Note\" --archive --apply", "Rewire every wikilink/ref to the target and archive the sources"]
     ],
     options: [
       ["--old-file PATH", "File containing the exact raw note text to replace"],
@@ -429,6 +434,21 @@ const COMMAND_HELP = {
       ["ipa view \"Note Title\" --full", "Show full content"],
       ["ipa view \"Note A\" \"Note B\" --full", "Show several notes in one call"],
       ["ipa view \"Note Title\" --section \"Details\"", "Show one section"]
+    ]
+  }),
+  cascade: formatDetailedHelp({
+    usage: "ipa [OPTIONS] cascade plan|apply --note NOTE [--only refs,links,overlaps]",
+    summary: "Staged ripple for a new note: ref wiring and title wikilinks are appliable; overlap candidates are report-only.",
+    commands: [
+      ["ipa cascade plan --note \"New Note\"", "Preview refs, links, and overlap candidates"],
+      ["ipa cascade apply --note \"New Note\" --only links", "Apply only the wikilink wiring"]
+    ],
+    options: [
+      ["--note NOTE", "Target note title"],
+      ["--only KINDS", "Comma-separated subset: refs, links, overlaps"]
+    ],
+    notes: [
+      "Overlap candidates are never auto-merged: synthesize content yourself, then use note replace / note redirect."
     ]
   }),
   digest: formatDetailedHelp({
@@ -633,6 +653,8 @@ function render(payload) {
   if (payload.operation === "replace-in-note") return renderKeyValues("Note replace", payload);
   if (payload.operation === "set-note-field") return renderKeyValues("Note set", payload);
   if (payload.operation === "digest") return renderDigest(payload);
+  if (payload.operation === "redirect-notes") return renderRedirect(payload);
+  if (payload.operation === "cascade") return renderCascade(payload);
   if (payload.profile !== undefined && payload.vault_path && Object.hasOwn(payload, "created")) return renderKeyValues("Profile", payload);
   if (payload.profile !== undefined && payload.vault_path) return renderKeyValues("Active config", payload);
   if (payload.status && payload.checks) return renderDoctor(payload);
@@ -678,6 +700,58 @@ function renderSearchResults(payload) {
     }
     lines.push("→ 2건+ 인덱스는 `ipa view \"노트명\"` 또는 `ipa traversal --down \"인덱스명\"` 권장");
   }
+  return lines.join("\n");
+}
+
+function renderRedirect(payload) {
+  const lines = [
+    `Note redirect ${payload.apply ? "(applied)" : "(preview)"}`,
+    `  ${payload.sources.join(", ")} → ${payload.target}`
+  ];
+  if (payload.changes?.length) {
+    lines.push("", table(["Note", "Path", "Links", "Refs"], payload.changes.map((item) => [
+      item.note, item.path ?? "-", item.links ? "yes" : "", item.refs ? "yes" : ""
+    ])));
+  } else {
+    lines.push("", "No references to rewire.");
+  }
+  if (payload.archived?.length) {
+    lines.push("", ...payload.archived.map((item) => `archive: ${item.note} → ${item.to}`));
+  }
+  if (!payload.apply) lines.push("", "Run again with --apply to write the changes.");
+  else lines.push("", "Run `ipa validator` to confirm link integrity.");
+  return lines.join("\n");
+}
+
+function renderCascade(payload) {
+  const lines = [`Cascade ${payload.apply ? "(applied)" : "(plan)"} for '${payload.note}'`];
+  if (payload.ref_suggestions?.length) {
+    lines.push("", "Ref suggestions (graph membership):");
+    for (const item of payload.ref_suggestions) lines.push(`  - ${item.ref}  (${item.count} related notes)`);
+  }
+  if (payload.forward_links?.length) {
+    lines.push("", "Forward links (wrap mentions inside this note):");
+    for (const item of payload.forward_links) lines.push(`  - [[${item.target}]]  (${item.reason})`);
+  }
+  if (payload.reverse_links?.length) {
+    lines.push("", "Reverse links (other notes mentioning this title):");
+    for (const item of payload.reverse_links) lines.push(`  - ${item.note}`);
+  }
+  if (payload.overlaps?.length) {
+    lines.push("", "Overlap candidates (report only — merge by hand if warranted):");
+    for (const item of payload.overlaps) {
+      lines.push(`  - [${Number(item.score).toFixed(1)}] ${item.note}  (matched: ${item.matched_query})`);
+      if (item.snippet) lines.push(`      ${item.snippet}`);
+    }
+  }
+  if (payload.applied?.length) {
+    lines.push("", "Applied:");
+    for (const item of payload.applied) lines.push(`  - ${item.kind}: ${item.note} ← ${item.value}`);
+  }
+  if (!payload.ref_suggestions?.length && !payload.forward_links?.length && !payload.reverse_links?.length && !payload.overlaps?.length) {
+    lines.push("", "Nothing to cascade.");
+  }
+  if (!payload.apply) lines.push("", "Apply tier-1 wiring with: ipa cascade apply --note <note> [--only refs,links]");
   return lines.join("\n");
 }
 
@@ -1199,13 +1273,34 @@ function buildProgram() {
     });
 
   setHelp(program.command("digest"), "digest")
-    .argument("<note>", "Index or root note title")
+    .argument("<notes...>", "Index or root note titles")
     .option("--max <number>", "Maximum children to include")
     .option("--snippet-chars <number>", "Snippet length per child")
-    .action(async (note, options) => {
-      await withVault(globalOptions(program), async (vault) => print(await digestNote(vault, note, {
-        max: optionNumber(options.max),
-        snippetChars: optionNumber(options.snippetChars)
+    .action(async (notes, options) => {
+      await withVault(globalOptions(program), async (vault) => {
+        const results = [];
+        for (const note of notes) {
+          results.push(await digestNote(vault, note, {
+            max: optionNumber(options.max),
+            snippetChars: optionNumber(options.snippetChars)
+          }));
+        }
+        if (results.length === 1) print(results[0], jsonOutput(program));
+        else if (jsonOutput(program)) print(results, true);
+        else print(results.map((result) => render(result)).join("\n\n"));
+      });
+    });
+
+  setHelp(program.command("cascade"), "cascade")
+    .argument("<mode>", "plan or apply")
+    .requiredOption("--note <note>", "Target note title")
+    .option("--only <kinds>", "Comma-separated: refs,links,overlaps")
+    .action(async (mode, options) => {
+      if (!["plan", "apply"].includes(mode)) throw new Error(`unknown cascade mode: ${mode}`);
+      const only = String(options.only ?? "").split(",").map((item) => item.trim()).filter(Boolean);
+      await withVault(globalOptions(program), async (vault) => print(await cascadeNote(vault, options.note, {
+        apply: mode === "apply",
+        only: only.length ? only : undefined
       }), jsonOutput(program)));
     });
 
@@ -1315,17 +1410,38 @@ function buildProgram() {
 
   noteCommand
     .command("set")
-    .argument("<note>", "Note title")
+    .argument("<notes...>", "Note titles")
     .requiredOption("--field <name>", "Frontmatter field name")
     .option("--value <value>", "Scalar value to set")
     .option("--add <value>", "List item to add", collectRepeated, [])
     .option("--remove <value>", "List item to remove", collectRepeated, [])
     .option("--apply", "Apply the change")
-    .action(async (note, options) => {
-      await withVault(globalOptions(program), async (vault) => print(await setNoteField(vault, note, options.field, {
-        value: options.value,
-        add: optionalList(options.add),
-        remove: optionalList(options.remove),
+    .action(async (notes, options) => {
+      await withVault(globalOptions(program), async (vault) => {
+        const results = [];
+        for (const note of notes) {
+          results.push(await setNoteField(vault, note, options.field, {
+            value: options.value,
+            add: optionalList(options.add),
+            remove: optionalList(options.remove),
+            apply: Boolean(options.apply)
+          }));
+        }
+        if (results.length === 1) print(results[0], jsonOutput(program));
+        else if (jsonOutput(program)) print(results, true);
+        else print(results.map((result) => render(result)).join("\n\n"));
+      });
+    });
+
+  noteCommand
+    .command("redirect")
+    .argument("<notes...>", "Source note titles")
+    .requiredOption("--to <note>", "Target note title")
+    .option("--archive", "Move source notes into the archive folder")
+    .option("--apply", "Apply the redirect")
+    .action(async (notes, options) => {
+      await withVault(globalOptions(program), async (vault) => print(await redirectNotes(vault, notes, options.to, {
+        archive: Boolean(options.archive),
         apply: Boolean(options.apply)
       }), jsonOutput(program)));
     });
