@@ -579,3 +579,22 @@ test("validator --note restricts reported issues to the edited notes", async () 
   const help = run(env, ["help", "validator"]);
   assert.match(help, /--note NOTE/);
 });
+
+test("vault-wide validator text output is capped per code with a summary table", async () => {
+  const { vault, env } = await fixtureProfile();
+  for (let i = 0; i < 35; i += 1) {
+    await writeFile(
+      join(vault, "00 Inbox", `Noisy ${i}.md`),
+      `---\ndate_created: 2026/05/10 (Sun) 00:00:00\ndate_modified: 2026/05/10 (Sun) 00:00:00\nref: ["[[🔖 Topic Index]]"]\ntags: ["BadTag${i}"]\ntype: note\n---\n# Noisy ${i}\n\nBody\n`,
+      "utf8"
+    );
+  }
+  const text = run(env, ["validator"]);
+  assert.match(text, /more issue\(s\) hidden/);
+  assert.match(text, /Count/);
+  const rowCount = (text.match(/ipa\.tag\.snake_case/g) ?? []).length;
+  assert.ok(rowCount <= 7, `snake_case rows should be capped, got ${rowCount}`);
+
+  const json = JSON.parse(run(env, ["--json", "validator"]));
+  assert.ok(json.issues.filter((item) => item.code === "ipa.tag.snake_case").length >= 35, "--json keeps the full list");
+});

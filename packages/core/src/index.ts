@@ -5939,6 +5939,7 @@ function ipaCommandSelection(prefix = "ipa") {
 - Broad prior context or user-specific background: \`${prefix} context "keyword" --size medium --format markdown\`; widen with \`${prefix} search "other angle"\` only when context missed something. Search results already include snippets and modified dates — judge relevance from them before opening notes.
 - Related notes or wikilink candidates: \`${prefix} link suggest "Note Title"\`. Ref/root/sibling graph shape: \`${prefix} traversal --up|--down|--siblings "Note Title"\`.
 - New note: \`${prefix} inbox add ...\`. Body text edit: \`${prefix} note replace ...\`. Frontmatter field edit: \`${prefix} note set "Note" --field ref --add "Index Note" --apply\`.
+- Vault-wide sweeps (\`validator\`/\`review\`/\`formatter plan\` without \`--note\`) are maintenance ops whose output scales with the vault — during note work always scope with \`--note\`.
 - Unsure command or syntax: \`${prefix} help\` or \`${prefix} <command> --help\`.
 `;
 }

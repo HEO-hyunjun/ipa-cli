@@ -881,6 +881,14 @@ function renderTuneLog(payload) {
   ]));
 }
 
+// Vault-wide sweeps can report hundreds of rows; past this total the text
+// renderer switches to per-code counts plus a few examples per code so the
+// output stays proportional to the problem shape, not the vault size.
+// --json always carries the full list.
+const ISSUE_RENDER_CAP_TOTAL = 30;
+const ISSUE_RENDER_PER_CODE = 5;
+const PATCH_RENDER_CAP = 20;
+
 function renderIssues(payload) {
   const title = payload.summary?.patches !== undefined ? "Formatter report" : "Issues";
   const lines = [styleTitle(title)];
@@ -889,19 +897,46 @@ function renderIssues(payload) {
     lines.push(`Summary: ${Object.entries(payload.summary).map(([key, value]) => `${key}=${value}`).join(" ")}`);
   }
   if (payload.patches?.length) {
-    lines.push("", table(["Note", "Path", "Plugin"], payload.patches.map((item) => [item.note ?? "-", item.path ?? "-", item.plugin ?? "-"])));
+    const patchRows = payload.patches.slice(0, PATCH_RENDER_CAP).map((item) => [item.note ?? "-", item.path ?? "-", item.plugin ?? "-"]);
+    lines.push("", table(["Note", "Path", "Plugin"], patchRows));
+    if (payload.patches.length > PATCH_RENDER_CAP) {
+      lines.push(styleMuted(`… +${payload.patches.length - PATCH_RENDER_CAP} more patch(es) — narrow with --note or use --json.`));
+    }
   }
   if (!payload.issues.length) {
     lines.push("", styleGood("No issues."));
     return lines.join("\n");
   }
-  lines.push("", table(["Severity", "Code", "Note", "Path", "Message"], payload.issues.map((item) => [
+  let issues = payload.issues;
+  let hidden = 0;
+  if (issues.length > ISSUE_RENDER_CAP_TOTAL) {
+    const counts = new Map();
+    for (const item of issues) counts.set(item.code ?? "-", (counts.get(item.code ?? "-") ?? 0) + 1);
+    lines.push("", table(["Count", "Code"], [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([code, count]) => [count, code])));
+    const perCode = new Map();
+    const shown = [];
+    for (const item of issues) {
+      const code = item.code ?? "-";
+      const seen = perCode.get(code) ?? 0;
+      if (seen < ISSUE_RENDER_PER_CODE) {
+        shown.push(item);
+        perCode.set(code, seen + 1);
+      } else {
+        hidden += 1;
+      }
+    }
+    issues = shown;
+  }
+  lines.push("", table(["Severity", "Code", "Note", "Path", "Message"], issues.map((item) => [
     item.severity ?? "info",
     item.code ?? "-",
     item.note ?? "-",
     item.path ?? "-",
     item.message ?? "-"
   ])));
+  if (hidden > 0) {
+    lines.push(styleMuted(`… +${hidden} more issue(s) hidden (${ISSUE_RENDER_PER_CODE} shown per code) — narrow with --note "Note Title" or use --json for the full list.`));
+  }
   return lines.join("\n");
 }
 
