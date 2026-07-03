@@ -245,10 +245,18 @@ mapping:
     inbox: "00 Inbox"
     project: "01 Project"
     archive: "02 Archive"
+  date_format: "YYYY/MM/DD (ddd) HH:mm:ss"
 test:
   file: .ipa/tune/testsets/testset.json
 weights:
   file: .ipa/tune/results/2026-05-06T21-30-00.json
+review:
+  sot:
+    title_patterns: [계획, 결과, report, plan]
+    min: 4
+link:
+  stopwords: [참여자, 요약]
+  ignored_headings: [전사문, transcript]
 convention:
   enabled: true
   builtin: true
@@ -284,6 +292,16 @@ builtin or plugin sources.
 that surface. `plugins` can be `true`/`false`, a list like
 `["lint"]`, or a mapping of plugin directories. `only` and `ignore`
 filter by rule code after loading.
+
+`mapping.date_format` sets the timestamp format core writes into the mapped
+date fields (tokens: `YYYY MM DD ddd HH mm ss`); the default is
+`YYYY/MM/DD (ddd) HH:mm:ss`. `review.sot.title_patterns` supplies the
+report-style title vocabulary for `ipa review sot` — the scope stays silent
+until the vault declares its own patterns (`min` sets the pileup threshold,
+default 4). `link.stopwords` and `link.ignored_headings` extend the
+link-suggestion vocabulary: stopwords are dropped from semantic queries and
+body text under ignored headings is skipped, so vault-specific formats
+(meeting transcripts, boilerplate sections) stay out of link suggestions.
 
 `files.exclude` removes Markdown files from the active note set for
 search, traversal, validation, review, cache, and refactor operations.
@@ -337,7 +355,9 @@ them to a non-underscore filename.
 Builtin validation is limited to IPA concepts and configured field/folder
 mapping. Vault-specific title styles, prefix markers, and app metadata belong
 in vault-local rule plugins. A rule can expose `check()` for validator output,
-`fix()` for formatter patches, or both.
+`fix()` for formatter patches, or both. The rule context carries the parsed
+`.ipa/config.yaml` as `ctx.config`, so a rule can read its own settings from a
+vault-owned config key instead of hard-coding thresholds.
 
 ```js
 // {vault}/.ipa/plugins/rules/short-note-title.js

@@ -36,6 +36,7 @@ import {
   searchVault,
   scoreNote,
   setNoteField,
+  suggestLinks,
   traversal,
   harnessDoctor,
   harnessGuardCheck,
@@ -2095,7 +2096,7 @@ test("absolute_path rule is config-gated and fixes aliased paths", async () => {
   assert.match(fixed, /See acme\/packages\/core\/index\.ts/);
 });
 
-test("review sot flags report-style pileups under one index", async () => {
+test("review sot is config-gated and flags report-style pileups under one index", async () => {
   const vault = await fixtureVault();
   for (const title of ["AI-1 구현 계획", "AI-1 구현 결과", "AI-2 검증 결과", "AI-2 최종 보고서"]) {
     await writeFile(
@@ -2104,6 +2105,17 @@ test("review sot flags report-style pileups under one index", async () => {
       "utf8"
     );
   }
+  // The report-title vocabulary is operating policy: without config the scope
+  // stays silent.
+  const silent = await reviewVault(vault, "sot");
+  assert.equal(silent.issues.filter((item) => item.code === "review.sot.consolidation_candidate").length, 0);
+
+  const configPath = join(vault, ".ipa", "config.yaml");
+  await writeFile(
+    configPath,
+    `${await readFile(configPath, "utf8")}review:\n  sot:\n    title_patterns: [계획, 결과, 보고서?, report]\n    min: 4\n`,
+    "utf8"
+  );
   const review = await reviewVault(vault, "sot");
   const candidate = review.issues.find((item) => item.code === "review.sot.consolidation_candidate");
   assert.ok(candidate, "consolidation candidate reported");
@@ -2225,4 +2237,64 @@ test("harness status/doctor flag outdated components and harness update reinstal
   const missing = await harnessUpdate(vault, "claude", options);
   assert.equal(missing.status, "error");
   assert.equal(missing.reason, "not_installed");
+});
+
+test("mapping.date_format drives all core date stamps", async () => {
+  const vault = await fixtureVault();
+  const configPath = join(vault, ".ipa", "config.yaml");
+  await writeFile(
+    configPath,
+    (await readFile(configPath, "utf8")).replace("  folders:", "  date_format: \"YYYY-MM-DD HH:mm:ss\"\n  folders:"),
+    "utf8"
+  );
+  const draft = join(vault, ".tmp-draft.md");
+  await writeFile(draft, "# Custom Date\n\nBody\n", "utf8");
+  await inboxAdd(vault, draft, { title: "Custom Date" });
+  const { mapping } = await readVaultConfig(vault);
+  const raw = await readFile(join(vault, "00 Inbox", "Custom Date.md"), "utf8");
+  assert.match(raw, new RegExp(`${mapping.created_at}: "?\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}`));
+  assert.match(raw, new RegExp(`${mapping.updated_at}: "?\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}`));
+
+  // note set syncs updated_at through the same configured format
+  await setNoteField(vault, "Custom Date", "ref", { add: ["🔖 Topic Index"], apply: true });
+  const after = await readFile(join(vault, "00 Inbox", "Custom Date.md"), "utf8");
+  assert.match(after, new RegExp(`${mapping.updated_at}: "?\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}`));
+});
+
+test("link.ignored_headings and link.stopwords extend link-suggest vocabulary from config", async () => {
+  const vault = await fixtureVault();
+  const body = (heading) => `---\ndate_created: 2026/05/10 (Sun) 00:00:00\ndate_modified: 2026/05/10 (Sun) 00:00:00\nref: ["[[🔖 Topic Index]]"]\ntags: []\ntype: note\n---\n# Source Note\n\n## ${heading}\n\nGamma Delta uniquefeature pipeline orchestration details repeated here for weighting.\n`;
+  await writeFile(join(vault, "00 Inbox", "Vocab Target.md"),
+    `---\ndate_created: 2026/05/10 (Sun) 00:00:00\ndate_modified: 2026/05/10 (Sun) 00:00:00\nref: ["[[🔖 Topic Index]]"]\ntags: []\ntype: note\n---\n# Vocab Target\n\nGamma Delta uniquefeature pipeline orchestration reference document.\n`, "utf8");
+  await writeFile(join(vault, "00 Inbox", "Vocab Source.md"), body("업무 메모"), "utf8");
+
+  const before = await suggestLinks(vault, "Vocab Source");
+  const hadTarget = before.suggestions.some((item) => item.target === "Vocab Target");
+  assert.equal(hadTarget, true, "semantic suggestion should surface before heading is ignored");
+
+  const configPath = join(vault, ".ipa", "config.yaml");
+  await writeFile(configPath, `${await readFile(configPath, "utf8")}link:\n  ignored_headings: [업무 메모]\n`, "utf8");
+  const after = await suggestLinks(vault, "Vocab Source");
+  const semanticAfter = after.suggestions.filter((item) => item.target === "Vocab Target" && item.sources.some((source) => source.reason === "semantic_search_match"));
+  assert.equal(semanticAfter.length, 0, "ignored heading must drop semantic suggestions sourced under it");
+});
+
+test("plugin rules receive the vault config through RuleContext", async () => {
+  const vault = await fixtureVault();
+  await mkdir(join(vault, ".ipa", "plugins", "rules"), { recursive: true });
+  const rulePath = join(vault, ".ipa", "plugins", "rules", "config-probe.js");
+  await writeFile(rulePath, `
+export default {
+  code: "vault.test.config_probe",
+  severity: "info",
+  checkNote(note, ctx) {
+    if (note.id !== "Alpha") return null;
+    const probe = ctx.config?.test?.file ? "config-present" : "config-missing";
+    return { message: probe };
+  }
+};
+`, "utf8");
+  const result = await pluginDryRun(vault, "rules", ".ipa/plugins/rules/config-probe.js", { note: "Alpha" });
+  assert.equal(result.issues.length, 1);
+  assert.equal(result.issues[0].message, "config-present");
 });

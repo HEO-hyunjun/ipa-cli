@@ -25,6 +25,7 @@ export const DEFAULT_MAPPING = {
   inbox_dir: "00 Inbox",
   project_dir: "01 Project",
   archive_dir: "02 Archive",
+  date_format: "YYYY/MM/DD (ddd) HH:mm:ss",
   exclude: []
 };
 
@@ -1963,7 +1964,7 @@ export async function prepareSearchContext(vaultPath, notes = null) {
     else plugins.push(plugin);
   }
   const channels = resolveSearchChannels(config, pluginChannels);
-  return { vaultPath, mapping, notes, active, plugins, channels, preparedNotes: prepareSearchNotes(notes, mapping), queryScoreCache: new Map() };
+  return { vaultPath, config, mapping, notes, active, plugins, channels, preparedNotes: prepareSearchNotes(notes, mapping), queryScoreCache: new Map() };
 }
 
 export async function searchWithContext(context, query, options = {}) {
@@ -2577,7 +2578,7 @@ function syncUpdatedAtText(text, mapping = DEFAULT_MAPPING, now = new Date()) {
   const head = normalized.slice(0, end + 1);
   const pattern = new RegExp(`^(${escapeRegExpText(key)}:[ \\t]*).*$`, "m");
   if (!pattern.test(head)) return normalized;
-  return head.replace(pattern, `$1${JSON.stringify(formatVaultDate(now))}`) + normalized.slice(end + 1);
+  return head.replace(pattern, `$1${JSON.stringify(formatVaultDate(now, mapping.date_format))}`) + normalized.slice(end + 1);
 }
 
 function noteSnippet(note, maxChars = 100) {
@@ -2899,9 +2900,9 @@ const BUILTIN_RULES = [
       const required = [
         [ctx.mapping.created_at, async () => {
           const fileStat = await stat(note.path).catch(() => null);
-          return formatVaultDate(fileStat?.birthtime ?? new Date());
+          return formatVaultDate(fileStat?.birthtime ?? new Date(), ctx.mapping.date_format);
         }],
-        [ctx.mapping.updated_at, () => formatVaultDate(new Date())],
+        [ctx.mapping.updated_at, () => formatVaultDate(new Date(), ctx.mapping.date_format)],
         [ctx.mapping.tags, () => []],
         [ctx.mapping.note_type, () => inferNoteType(note.id)]
       ];
@@ -2928,7 +2929,7 @@ const BUILTIN_RULES = [
       for (const field of mixedIsoDateFields(note, ctx.mapping)) {
         const parsed = new Date(String(note.frontmatter[field]));
         if (Number.isNaN(parsed.getTime())) continue;
-        text = setScalarFieldText(text, field, formatVaultDate(parsed));
+        text = setScalarFieldText(text, field, formatVaultDate(parsed, ctx.mapping.date_format));
       }
       return text;
     }
@@ -3227,10 +3228,19 @@ function inferNoteType(title) {
   return "note";
 }
 
-function formatVaultDate(date) {
+function formatVaultDate(date, format = DEFAULT_MAPPING.date_format) {
   const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
   const pad = (value) => String(value).padStart(2, "0");
-  return `${date.getFullYear()}/${pad(date.getMonth() + 1)}/${pad(date.getDate())} (${days[date.getDay()]}) ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+  const tokens = {
+    YYYY: String(date.getFullYear()),
+    MM: pad(date.getMonth() + 1),
+    DD: pad(date.getDate()),
+    ddd: days[date.getDay()],
+    HH: pad(date.getHours()),
+    mm: pad(date.getMinutes()),
+    ss: pad(date.getSeconds())
+  };
+  return String(format ?? DEFAULT_MAPPING.date_format).replace(/YYYY|MM|DD|ddd|HH|mm|ss/g, (token) => tokens[token]);
 }
 
 function removeDuplicateH1(text, title) {
@@ -3885,9 +3895,25 @@ const LINK_SUGGEST_SEARCH_RESULTS_PER_QUERY = 10;
 const LINK_SUGGEST_MIN_SEMANTIC_RANK = 0.015;
 const LINK_SUGGEST_QUERY_STOPWORDS = new Set([
   "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "in", "into", "is", "it", "of", "on", "or", "the", "to", "with",
-  "true", "false", "null", "undefined", "todo", "action", "item", "items",
-  "참여자", "요약", "액션", "아이템", "전사문", "교정", "내역"
+  "true", "false", "null", "undefined", "todo", "action", "item", "items"
 ]);
+
+const LINK_SUGGEST_IGNORED_HEADINGS = ["transcript"];
+
+// Vault-specific vocabulary comes from config, merged over the generic
+// defaults, e.g.
+//   link:
+//     stopwords: [참여자, 요약]
+//     ignored_headings: [전사문, 교정]
+function linkSuggestVocab(config = {}) {
+  const stopwords = new Set(LINK_SUGGEST_QUERY_STOPWORDS);
+  for (const word of asList(config.link?.stopwords)) stopwords.add(String(word).toLowerCase());
+  const ignoredHeadings = [
+    ...LINK_SUGGEST_IGNORED_HEADINGS,
+    ...asList(config.link?.ignored_headings).map((heading) => searchableKey(heading)).filter(Boolean)
+  ];
+  return { stopwords, ignoredHeadings };
+}
 
 function stripLinkSuggestionSource(body) {
   const out = [];
@@ -3914,22 +3940,22 @@ function stripLinkSuggestionSource(body) {
   return out.join("\n");
 }
 
-function usefulLinkSuggestionQueryToken(token) {
+function usefulLinkSuggestionQueryToken(token, stopwords = LINK_SUGGEST_QUERY_STOPWORDS) {
   const value = String(token ?? "").toLowerCase();
   if (!value || value.length < 2) return false;
-  if (LINK_SUGGEST_QUERY_STOPWORDS.has(value)) return false;
+  if (stopwords.has(value)) return false;
   if (/^\d+$/.test(value)) return false;
   if (/^speaker[_-]?\d+$/.test(value)) return false;
   return true;
 }
 
-function linkSuggestionTokenList(text) {
+function linkSuggestionTokenList(text, stopwords = LINK_SUGGEST_QUERY_STOPWORDS) {
   return tokenize(text)
     .map((token) => token.toLowerCase())
-    .filter(usefulLinkSuggestionQueryToken);
+    .filter((token) => usefulLinkSuggestionQueryToken(token, stopwords));
 }
 
-function buildLinkSuggestionIdf(notes) {
+function buildLinkSuggestionIdf(notes, stopwords = LINK_SUGGEST_QUERY_STOPWORDS) {
   const documentFrequency = new Map();
   for (const note of notes) {
     const text = searchableTitle([
@@ -3940,7 +3966,7 @@ function buildLinkSuggestionIdf(notes) {
       ...(note.headings ?? []).map((heading) => heading.title),
       stripLinkSuggestionSource(note.body)
     ].filter(Boolean).join("\n"));
-    for (const token of new Set(linkSuggestionTokenList(text))) {
+    for (const token of new Set(linkSuggestionTokenList(text, stopwords))) {
       documentFrequency.set(token, (documentFrequency.get(token) ?? 0) + 1);
     }
   }
@@ -3951,13 +3977,13 @@ function buildLinkSuggestionIdf(notes) {
   return idf;
 }
 
-function ignoredLinkSuggestionHeading(title) {
+function ignoredLinkSuggestionHeading(title, ignoredHeadings = LINK_SUGGEST_IGNORED_HEADINGS) {
   const value = searchableKey(title);
-  return value.includes("전사문") || value.includes("교정") || value.includes("참여자") || value.includes("transcript");
+  return ignoredHeadings.some((heading) => value.includes(heading));
 }
 
-function addLinkSuggestionBlock(blocks, headingStack, text) {
-  if (headingStack.some(ignoredLinkSuggestionHeading)) return;
+function addLinkSuggestionBlock(blocks, headingStack, text, ignoredHeadings = LINK_SUGGEST_IGNORED_HEADINGS) {
+  if (headingStack.some((title) => ignoredLinkSuggestionHeading(title, ignoredHeadings))) return;
   const cleaned = searchableTitle(text);
   if (cleaned.length < 12) return;
   const heading = headingStack.slice(-2).join(" ");
@@ -3965,13 +3991,13 @@ function addLinkSuggestionBlock(blocks, headingStack, text) {
   blocks.push({ text: queryText, excerpt: cleaned.slice(0, 160) });
 }
 
-function linkSuggestionBlocks(note) {
+function linkSuggestionBlocks(note, ignoredHeadings = LINK_SUGGEST_IGNORED_HEADINGS) {
   const blocks = [];
   const headingStack = [];
   let paragraph = [];
   const flushParagraph = () => {
     if (!paragraph.length) return;
-    addLinkSuggestionBlock(blocks, headingStack, paragraph.join(" "));
+    addLinkSuggestionBlock(blocks, headingStack, paragraph.join(" "), ignoredHeadings);
     paragraph = [];
   };
   for (const rawLine of stripLinkSuggestionSource(note.body).split("\n")) {
@@ -3991,12 +4017,12 @@ function linkSuggestionBlocks(note) {
     const listMatch = /^(?:[-*+]\s+(?:\[[ xX]\]\s*)?|\d+\.\s+)(.+)$/.exec(line);
     if (listMatch) {
       flushParagraph();
-      addLinkSuggestionBlock(blocks, headingStack, listMatch[1]);
+      addLinkSuggestionBlock(blocks, headingStack, listMatch[1], ignoredHeadings);
       continue;
     }
     if (/^\|.*\|$/.test(line) && !/^\|?\s*:?-{3,}:?/.test(line)) {
       flushParagraph();
-      addLinkSuggestionBlock(blocks, headingStack, line.replace(/\|/g, " "));
+      addLinkSuggestionBlock(blocks, headingStack, line.replace(/\|/g, " "), ignoredHeadings);
       continue;
     }
     paragraph.push(line);
@@ -4009,8 +4035,8 @@ function linkSuggestionQueryScore(tokens, idf) {
   return tokens.length ? tokens.reduce((sum, token) => sum + (idf.get(token) ?? 0), 0) / tokens.length : 0;
 }
 
-function linkSuggestionQueriesFromBlock(block, idf) {
-  const tokens = linkSuggestionTokenList(block.text);
+function linkSuggestionQueriesFromBlock(block, idf, stopwords = LINK_SUGGEST_QUERY_STOPWORDS) {
+  const tokens = linkSuggestionTokenList(block.text, stopwords);
   if (tokens.length < 2) return [];
   const counts = new Map();
   for (const token of tokens) counts.set(token, (counts.get(token) ?? 0) + 1);
@@ -4048,10 +4074,10 @@ function linkSuggestionQueriesFromBlock(block, idf) {
   return out.filter((item) => item.score > 0);
 }
 
-function extractLinkSuggestionQueries(note, idf) {
+function extractLinkSuggestionQueries(note, idf, vocab = null) {
   const seen = new Set();
-  return linkSuggestionBlocks(note)
-    .flatMap((block) => linkSuggestionQueriesFromBlock(block, idf))
+  return linkSuggestionBlocks(note, vocab?.ignoredHeadings ?? LINK_SUGGEST_IGNORED_HEADINGS)
+    .flatMap((block) => linkSuggestionQueriesFromBlock(block, idf, vocab?.stopwords ?? LINK_SUGGEST_QUERY_STOPWORDS))
     .sort((a, b) => b.score - a.score || a.query.localeCompare(b.query))
     .filter((item) => {
       if (seen.has(item.query)) return false;
@@ -4091,8 +4117,9 @@ function linkSuggestionScore(rank) {
 export async function suggestLinks(vaultPath, noteName = null) {
   const context = await prepareSearchContext(vaultPath);
   const { notes } = context;
+  const vocab = linkSuggestVocab(context.config);
   const selected = noteName ? [findNote(notes, noteName)].filter(Boolean) : notes;
-  const idf = noteName ? buildLinkSuggestionIdf(notes) : null;
+  const idf = noteName ? buildLinkSuggestionIdf(notes, vocab.stopwords) : null;
   const rootSets = noteName ? buildRootSets(notes) : new Map();
   const suggestions = [];
   for (const note of selected) {
@@ -4108,7 +4135,7 @@ export async function suggestLinks(vaultPath, noteName = null) {
       }
     }
     if (noteName && idf) {
-      for (const query of extractLinkSuggestionQueries(note, idf)) {
+      for (const query of extractLinkSuggestionQueries(note, idf, vocab)) {
         const result = await searchWithContext(context, query.query, { threshold: 0, maxResults: LINK_SUGGEST_SEARCH_RESULTS_PER_QUERY });
         result.results.forEach((hit, index) => {
           const target = findNote(notes, hit.note);
@@ -4229,12 +4256,12 @@ export async function refactorVault(vaultPath, command, args, options = {}) {
   const changed = [];
   for (const note of notes) {
     let next = note.raw;
-    if (command === "tag-rename") next = rewriteListValue(next, mapping.tags, (items) => items.map((tag) => tag === args[0] ? args[1] : tag), mapping.updated_at);
-    if (command === "tag-remove") next = rewriteListValue(next, mapping.tags, (items) => items.filter((tag) => tag !== args[0]), mapping.updated_at);
-    if (command === "tag-add") next = rewriteListValue(next, mapping.tags, (items) => [...new Set([...items, args[0]])], mapping.updated_at);
-    if (command === "ref-replace") next = rewriteListValue(next, mapping.refs, (items) => items.map((ref) => stripWiki(ref) === args[0] ? `[[${args[1]}]]` : ref), mapping.updated_at);
-    if (command === "ref-add") next = rewriteListValue(next, mapping.refs, (items) => [...new Set([...items, `[[${args[0]}]]`])], mapping.updated_at);
-    if (command === "ref-remove") next = rewriteListValue(next, mapping.refs, (items) => items.filter((ref) => stripWiki(ref) !== args[0]), mapping.updated_at);
+    if (command === "tag-rename") next = rewriteListValue(next, mapping.tags, (items) => items.map((tag) => tag === args[0] ? args[1] : tag), mapping.updated_at, mapping.date_format);
+    if (command === "tag-remove") next = rewriteListValue(next, mapping.tags, (items) => items.filter((tag) => tag !== args[0]), mapping.updated_at, mapping.date_format);
+    if (command === "tag-add") next = rewriteListValue(next, mapping.tags, (items) => [...new Set([...items, args[0]])], mapping.updated_at, mapping.date_format);
+    if (command === "ref-replace") next = rewriteListValue(next, mapping.refs, (items) => items.map((ref) => stripWiki(ref) === args[0] ? `[[${args[1]}]]` : ref), mapping.updated_at, mapping.date_format);
+    if (command === "ref-add") next = rewriteListValue(next, mapping.refs, (items) => [...new Set([...items, `[[${args[0]}]]`])], mapping.updated_at, mapping.date_format);
+    if (command === "ref-remove") next = rewriteListValue(next, mapping.refs, (items) => items.filter((ref) => stripWiki(ref) !== args[0]), mapping.updated_at, mapping.date_format);
     if (command === "wikilink-replace") next = next.replaceAll(`[[${args[0]}]]`, `[[${args[1]}]]`);
     if (next !== note.raw) {
       changed.push(note.relPath);
@@ -4244,7 +4271,7 @@ export async function refactorVault(vaultPath, command, args, options = {}) {
   return { command, apply: Boolean(options.apply), changed };
 }
 
-function rewriteListValue(text, key, rewrite, updatedKey = DEFAULT_MAPPING.updated_at) {
+function rewriteListValue(text, key, rewrite, updatedKey = DEFAULT_MAPPING.updated_at, dateFormat = DEFAULT_MAPPING.date_format) {
   const parsed = readFrontmatter(text);
   const current = asList(parsed.frontmatter[key]);
   const next = rewrite(current).map(String);
@@ -4252,7 +4279,7 @@ function rewriteListValue(text, key, rewrite, updatedKey = DEFAULT_MAPPING.updat
     return text;
   }
   parsed.frontmatter[key] = next;
-  if (updatedKey) parsed.frontmatter[updatedKey] = formatVaultDate(new Date());
+  if (updatedKey) parsed.frontmatter[updatedKey] = formatVaultDate(new Date(), dateFormat);
   return writeFrontmatter(parsed.frontmatter, parsed.body);
 }
 
@@ -4265,8 +4292,8 @@ export async function inboxAdd(vaultPath, sourcePath, options = {}) {
   const parsed = readFrontmatter(source);
   const frontmatter = {
     ...parsed.frontmatter,
-    [mapping.created_at]: parsed.frontmatter[mapping.created_at] ?? formatVaultDate(new Date()),
-    [mapping.updated_at]: parsed.frontmatter[mapping.updated_at] ?? formatVaultDate(new Date()),
+    [mapping.created_at]: parsed.frontmatter[mapping.created_at] ?? formatVaultDate(new Date(), mapping.date_format),
+    [mapping.updated_at]: parsed.frontmatter[mapping.updated_at] ?? formatVaultDate(new Date(), mapping.date_format),
     [mapping.refs]: options.refs?.map((ref) => `[[${stripWiki(ref)}]]`) ?? asList(parsed.frontmatter[mapping.refs]),
     [mapping.tags]: options.tags ?? asList(parsed.frontmatter[mapping.tags]),
     [mapping.note_type]: parsed.frontmatter[mapping.note_type] ?? "note"
@@ -4463,7 +4490,7 @@ export async function cascadeNote(vaultPath, noteName, options = {}) {
 
 export async function reviewVault(vaultPath, scope = "all", options = {}) {
   const validation = await validateVault(vaultPath);
-  const { mapping } = await readVaultConfig(vaultPath);
+  const { config, mapping } = await readVaultConfig(vaultPath);
   const notes = await loadNotes(vaultPath, mapping);
   const issues = [];
   if (scope === "all" || scope === "convention") issues.push(...validation.issues);
@@ -4488,20 +4515,30 @@ export async function reviewVault(vaultPath, scope = "all", options = {}) {
   }
   if (scope === "all" || scope === "sot") {
     // Report-style note pileups under one index usually mean the knowledge
-    // has no single source of truth. Threshold keeps small indexes quiet.
-    const REPORT_TITLE_RE = /(계획|결과|보고서?|리포트|검증|회고|report|plan|design doc)/i;
-    const SOT_CANDIDATE_MIN = 4;
-    for (const index of notes.filter((item) => item.type === "index" || item.type === "root")) {
-      const children = notes.filter((item) => item.id !== index.id && hasNoteName(item.refs, index.id));
-      const reports = children.filter((item) => REPORT_TITLE_RE.test(item.id));
-      if (reports.length >= SOT_CANDIDATE_MIN) {
-        issues.push({
-          code: "review.sot.consolidation_candidate",
-          severity: "info",
-          note: index.id,
-          message: `${reports.length} plan/report-style children of ${children.length}; consider consolidating into a single source of truth (ipa note redirect ... --to "SoT")`,
-          notes: reports.map((item) => item.id)
-        });
+    // has no single source of truth. The report-title vocabulary is an
+    // operating policy, so it lives in config; without it this scope is
+    // silent, e.g.
+    //   review:
+    //     sot:
+    //       title_patterns: [계획, 결과, 보고서?, report, plan]
+    //       min: 4
+    const sotConfig = config.review?.sot ?? {};
+    const patterns = asList(sotConfig.title_patterns).filter(Boolean);
+    if (patterns.length) {
+      const reportTitleRe = new RegExp(`(${patterns.join("|")})`, "i");
+      const candidateMin = Number(sotConfig.min ?? 4);
+      for (const index of notes.filter((item) => item.type === "index" || item.type === "root")) {
+        const children = notes.filter((item) => item.id !== index.id && hasNoteName(item.refs, index.id));
+        const reports = children.filter((item) => reportTitleRe.test(item.id));
+        if (reports.length >= candidateMin) {
+          issues.push({
+            code: "review.sot.consolidation_candidate",
+            severity: "info",
+            note: index.id,
+            message: `${reports.length} plan/report-style children of ${children.length}; consider consolidating into a single source of truth (ipa note redirect ... --to "SoT")`,
+            notes: reports.map((item) => item.id)
+          });
+        }
       }
     }
   }
@@ -4611,6 +4648,8 @@ export interface Mapping {
 
 export interface RuleContext {
   vaultPath: string;
+  /** Parsed .ipa/config.yaml; put rule-specific settings under your own key. */
+  config?: Record<string, unknown>;
   mapping: Mapping;
   notes: Note[];
   apply?: boolean;
@@ -4899,7 +4938,7 @@ export async function validatePlugin(path, kind = null) {
 }
 
 export async function pluginDryRun(vaultPath, kind, pluginRelPath, options = {}) {
-  const { mapping } = await readVaultConfig(vaultPath);
+  const { config, mapping } = await readVaultConfig(vaultPath);
   const notes = await loadNotes(vaultPath, mapping);
   const mod = await importVaultModule(resolve(vaultPath, pluginRelPath));
   if (kind === "search") {
@@ -4913,7 +4952,7 @@ export async function pluginDryRun(vaultPath, kind, pluginRelPath, options = {})
   if (!note) throw new Error(`note not found: ${options.note}`);
   if (kind === "rules") {
     const rules = normalizeRulePlugin({ path: pluginRelPath, module: mod });
-    const ctx = { notes, mapping, vaultPath, apply: false, MarkdownDocument, IpaNoteDocument, options: { note: note.id } };
+    const ctx = { config, notes, mapping, vaultPath, apply: false, MarkdownDocument, IpaNoteDocument, options: { note: note.id } };
     const issues = [];
     for (const rule of rules.filter((item) => item.checkNote)) {
       issues.push(...normalizeRuleIssues(await rule.checkNote(note, ctx), rule, note));
@@ -6265,6 +6304,10 @@ Use this skill when a task mentions IPA, a vault note, inbox capture, note searc
 - Vault: ${vaultPath}
 - Profile registry: ${profileRegistryDisplay()}
 - Vault config: .ipa/config.yaml
+
+## Vault Operating Rules
+
+The vault owner may keep their own operating rules (note lifecycle, consolidation policy, writing style) in the user-maintained sections of the vault's \`CLAUDE.md\` / \`AGENTS.md\` — the text outside the \`IPA_HARNESS_MANAGED\` block. Sessions running outside the vault directory do not load that file automatically: before writing or reorganizing vault notes from such a session, read \`${vaultPath}/CLAUDE.md\` directly (Read tool, not \`${prefix} view\`) and follow any rules found there.
 
 ## Read First
 
