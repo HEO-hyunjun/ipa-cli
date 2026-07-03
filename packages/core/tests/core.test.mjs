@@ -2241,6 +2241,23 @@ test("harness status/doctor flag outdated components and harness update reinstal
   assert.equal(missing.reason, "not_installed");
 });
 
+test("harness guard check allows paths excluded from note indexing", async () => {
+  const vault = await fixtureVault();
+  const configPath = join(vault, ".ipa", "config.yaml");
+  const config = await readFile(configPath, "utf8");
+  await writeFile(configPath, `${config.trimEnd()}\nfiles:\n  exclude:\n    - .tmp/**\n`, "utf8");
+
+  const tmp = await harnessGuardCheck(vault, ".tmp/scratch.md", { action: "create" });
+  assert.equal(tmp.allowed, true, JSON.stringify(tmp));
+  const nested = await harnessGuardCheck(vault, ".tmp/deep/plan.md", { action: "create" });
+  assert.equal(nested.allowed, true, JSON.stringify(nested));
+  const ipaDir = await harnessGuardCheck(vault, ".ipa/plans/plan.md", { action: "create" });
+  assert.equal(ipaDir.allowed, true, JSON.stringify(ipaDir));
+
+  const blocked = await harnessGuardCheck(vault, "01 Project/New Note.md", { action: "create" });
+  assert.equal(blocked.allowed, false, JSON.stringify(blocked));
+});
+
 test("doctor --check runs a single check and rejects unknown names", async () => {
   const vault = await fixtureVault();
   await rm(join(vault, ".ipa", "config.yaml"), { force: true });

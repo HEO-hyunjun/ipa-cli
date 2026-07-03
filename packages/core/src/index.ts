@@ -6572,7 +6572,9 @@ function toVaultRelative(filePath, cwd) {
 
 function fallbackVerdict(rel, action) {
   const inbox = fallbackInbox.replace(/^\\/+/, "");
-  return action !== "create" || rel === inbox || rel.startsWith(inbox + "/");
+  if (action !== "create") return true;
+  if (rel.split("/").some((segment) => segment.startsWith("."))) return true;
+  return rel === inbox || rel.startsWith(inbox + "/");
 }
 
 const input = readInput();
@@ -7928,6 +7930,13 @@ export async function harnessGuardCheck(vaultPath, relPath, options = {}) {
   const action = options.action ?? (existsSync(absolute) ? "edit" : "create");
   if (extname(normalized).toLowerCase() !== ".md") {
     return { allowed: true, reason: "non-markdown file", path: normalized, action };
+  }
+  // Paths the note walker never indexes are not vault notes, so the inbox
+  // lifecycle policy does not apply to them (.ipa, config files.exclude, etc.).
+  const walkerSkipped = normalized === ".ipa" || normalized.startsWith(".ipa/")
+    || normalized.split("/").some((segment) => segment === ".git" || segment === ".cache" || segment === "node_modules");
+  if (walkerSkipped || isExcludedPath(normalized, asList(mapping.exclude))) {
+    return { allowed: true, reason: "path is excluded from note indexing", path: normalized, action };
   }
   if (action !== "create") {
     return { allowed: true, reason: "existing markdown edit", path: normalized, action };
