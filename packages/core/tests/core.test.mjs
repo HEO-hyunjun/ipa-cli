@@ -13,6 +13,7 @@ import {
   cascadeNote,
   cliVersionInfo,
   digestNote,
+  doctor,
   formatVault,
   inboxAdd,
   IpaNoteDocument,
@@ -24,6 +25,7 @@ import {
   listPlugins,
   listRules,
   listSearchChannels,
+  pluginDoctor,
   pluginDryRun,
   readVaultConfig,
   refactorVault,
@@ -2237,6 +2239,88 @@ test("harness status/doctor flag outdated components and harness update reinstal
   const missing = await harnessUpdate(vault, "claude", options);
   assert.equal(missing.status, "error");
   assert.equal(missing.reason, "not_installed");
+});
+
+test("doctor --check runs a single check and rejects unknown names", async () => {
+  const vault = await fixtureVault();
+  await rm(join(vault, ".ipa", "config.yaml"), { force: true });
+  await mkdir(join(vault, ".ipa", "cache"), { recursive: true });
+  await writeFile(join(vault, ".ipa", "cache", "stale.json"), JSON.stringify({ path: vault }), "utf8");
+
+  const full = await doctor(vault);
+  assert.ok(full.issues.some((issue) => issue.code === "doctor.config.missing"));
+  assert.ok(full.issues.some((issue) => issue.code === "doctor.cache.absolute_path"));
+
+  const cacheOnly = await doctor(vault, { check: "cache" });
+  assert.ok(cacheOnly.issues.length >= 1);
+  assert.ok(cacheOnly.issues.every((issue) => issue.code.startsWith("doctor.cache.")));
+
+  const configOnly = await doctor(vault, { check: "config" });
+  assert.deepEqual(configOnly.issues.map((issue) => issue.code), ["doctor.config.missing"]);
+
+  await assert.rejects(doctor(vault, { check: "nope" }), /unknown doctor check: nope/);
+});
+
+test("plugin doctor attributes issues to the failing plugin path", async () => {
+  const vault = await fixtureVault();
+  await mkdir(join(vault, ".ipa", "plugins", "rules"), { recursive: true });
+  await writeFile(join(vault, ".ipa", "plugins", "rules", "broken.js"), "export const nope = {", "utf8");
+  const report = await pluginDoctor(vault);
+  assert.equal(report.status, "error");
+  const broken = report.issues.find((issue) => issue.code === "plugin.load_failed");
+  assert.ok(broken, JSON.stringify(report.issues));
+  assert.match(broken.path ?? "", /broken\.js/);
+});
+
+test("harness doctor flags installed hook scripts that lost their hooks-config registration", async () => {
+  const vault = await fixtureVault();
+  const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
+  const options = { homeDir: home, profile: "ipa-test" };
+  await harnessInstall(vault, "codex", options);
+
+  let report = await harnessDoctor(vault, options);
+  assert.ok(
+    report.issues.every((issue) => !issue.code.includes("_hook_unregistered") && issue.code !== "harness.hooks_config_invalid"),
+    JSON.stringify(report.issues)
+  );
+
+  const hooksConfigPath = join(home, ".codex", "hooks.json");
+  const config = JSON.parse(await readFile(hooksConfigPath, "utf8"));
+  config.hooks.PreToolUse = (config.hooks.PreToolUse ?? []).filter(
+    (group) => !(group.hooks ?? []).some((hook) => (hook.command ?? "").includes("ipa-inbox-guard.mjs"))
+  );
+  await writeFile(hooksConfigPath, JSON.stringify(config, null, 2), "utf8");
+
+  report = await harnessDoctor(vault, options);
+  const unregistered = report.issues.filter((issue) => issue.code === "harness.global_guard_hook_unregistered");
+  assert.equal(unregistered.length, 1, JSON.stringify(report.issues));
+  assert.equal(unregistered[0].target, "codex");
+  assert.match(unregistered[0].message, /ipa harness update codex/);
+
+  await writeFile(hooksConfigPath, "{ not json", "utf8");
+  report = await harnessDoctor(vault, options);
+  assert.ok(report.issues.some((issue) => issue.code === "harness.hooks_config_invalid"));
+  assert.equal(report.status, "error");
+});
+
+test("harness doctor detects a removed vault-local prompt block", async () => {
+  const vault = await fixtureVault();
+  const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
+  const options = { homeDir: home, profile: "ipa-test" };
+  await harnessInstall(vault, "codex", options);
+
+  const localPrompt = join(vault, "AGENTS.md");
+  const text = await readFile(localPrompt, "utf8");
+  await writeFile(
+    localPrompt,
+    text.replace(/<!-- IPA_HARNESS_MANAGED_BEGIN:ipa-harness -->[\s\S]*?<!-- IPA_HARNESS_MANAGED_END:ipa-harness -->/, ""),
+    "utf8"
+  );
+
+  const report = await harnessDoctor(vault, options);
+  const missing = report.issues.filter((issue) => issue.code === "harness.local_prompt_missing");
+  assert.equal(missing.length, 1, JSON.stringify(report.issues));
+  assert.match(missing[0].message, /IPA harness block/);
 });
 
 test("mapping.date_format drives all core date stamps", async () => {

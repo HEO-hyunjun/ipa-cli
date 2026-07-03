@@ -3427,7 +3427,13 @@ function normalizeFormatterPatches(output, pluginPath, note) {
     }));
 }
 
+const DOCTOR_CHECKS = ["config", "cache"];
+
 export async function doctor(vaultPath, options = {}) {
+  const check = options.check ? String(options.check) : null;
+  if (check && !DOCTOR_CHECKS.includes(check)) {
+    throw new Error(`unknown doctor check: ${check}. Expected ${DOCTOR_CHECKS.join(" or ")}`);
+  }
   if (options.fixDirs) {
     for (const rel of [".ipa", ".ipa/cache", ".ipa/tune", ".ipa/plugins", ".ipa/plans", ".ipa/fixtures/contracts"]) {
       await mkdir(join(vaultPath, rel), { recursive: true });
@@ -3436,11 +3442,11 @@ export async function doctor(vaultPath, options = {}) {
   const { mapping } = await readVaultConfig(vaultPath);
   const notes = await loadNotes(vaultPath, mapping);
   const issues = [];
-  if (!existsSync(join(vaultPath, ".ipa", "config.yaml"))) {
+  if ((!check || check === "config") && !existsSync(join(vaultPath, ".ipa", "config.yaml"))) {
     issues.push({ code: "doctor.config.missing", severity: "warn", message: ".ipa/config.yaml missing" });
   }
   const cacheRoot = join(vaultPath, ".ipa", "cache");
-  if (existsSync(cacheRoot)) {
+  if ((!check || check === "cache") && existsSync(cacheRoot)) {
     const files = await walkAll(cacheRoot);
     for (const file of files) {
       const text = await readFile(file, "utf8").catch(() => "");
@@ -4926,7 +4932,7 @@ export async function pluginDoctor(vaultPath) {
   const issues = [];
   for (const item of plugins) {
     const report = await validatePlugin(join(vaultPath, item.path), item.kind);
-    issues.push(...report.issues);
+    issues.push(...report.issues.map((issue) => ({ ...issue, path: issue.path ?? item.path })));
   }
   return { status: issues.some((item) => item.severity === "error") ? "error" : "ok", plugins, issues };
 }
@@ -7606,6 +7612,8 @@ export async function harnessStatus(vaultPath, options = {}) {
     if (outdatedComponents.length) outdatedByTarget[target] = outdatedComponents;
     global[target] = {
       outdated_components: outdatedComponents,
+      selected_components: selected,
+      omitted_components: omitted,
       cli_version: targetManifest?.cli_version ?? null,
       cli_commit: targetManifest?.cli_commit ?? null,
       skill: hasManagedFile(spec.skillFile),
@@ -7828,6 +7836,34 @@ export async function harnessDoctor(vaultPath, options = {}) {
         }
       }
     }
+    if (spec.name !== "opencode") {
+      const hooksConfigDisplay = target === "claude" ? "~/.claude/settings.json" : "~/.codex/hooks.json";
+      const hookComponents = Object.keys(HARNESS_HOOK_COMPONENT_TO_SCRIPT).filter((component) => componentSelected(selected, component));
+      let hooksConfig = null;
+      if (hookComponents.length) {
+        try {
+          hooksConfig = JSON.parse(readFileSyncText(spec.hooksConfig) || "{}");
+        } catch (error) {
+          issues.push({ severity: "error", code: "harness.hooks_config_invalid", target, message: `cannot parse ${hooksConfigDisplay}: ${error.message}` });
+        }
+      }
+      if (hooksConfig) {
+        for (const component of hookComponents) {
+          const script = HARNESS_HOOK_COMPONENT_TO_SCRIPT[component];
+          // A missing script is already reported above; only flag scripts that
+          // exist but lost their hooks-config entry (e.g. settings.json was
+          // replaced by a sync tool), because those silently never run.
+          if (!hasManagedFile(join(spec.hooksDir, script))) continue;
+          const event = HARNESS_HOOK_COMPONENT_TO_EVENT[component];
+          const registered = (hooksConfig.hooks?.[event] ?? []).some((group) =>
+            (group.hooks ?? []).some((hook) => typeof hook.command === "string" && hook.command.includes(script))
+          );
+          if (!registered) {
+            issues.push({ severity: "warn", code: `harness.global_${component.replace("hook:", "")}_hook_unregistered`, target, message: `hook ${script} is installed but not registered under ${event} in ${hooksConfigDisplay}; run ipa harness update ${target}` });
+          }
+        }
+      }
+    }
     if (spec.name === "opencode" && spec.pluginFile && componentSelected(selected, "opencode-plugin") && !hasManagedFile(spec.pluginFile)) {
       issues.push({ severity: "warn", code: "harness.global_opencode_plugin_missing", target, message: "missing managed OpenCode plugin at ~/.config/opencode/plugins/ipa-harness.js" });
     }
@@ -7835,8 +7871,8 @@ export async function harnessDoctor(vaultPath, options = {}) {
       const promptPath = target === "opencode" ? "~/.config/opencode/AGENTS.md" : `~/.${target}/${spec.localPrompt}`;
       issues.push({ severity: "warn", code: "harness.global_prompt_missing", target, message: `missing IPA harness block in ${promptPath}` });
     }
-    if (componentSelected(selected, "local-prompt") && !existsSync(join(vaultPath, entry.local_prompt ?? spec.localPrompt))) {
-      issues.push({ severity: "warn", code: "harness.local_prompt_missing", target, message: `missing ${entry.local_prompt ?? spec.localPrompt}` });
+    if (componentSelected(selected, "local-prompt") && !hasManagedFile(join(vaultPath, entry.local_prompt ?? spec.localPrompt))) {
+      issues.push({ severity: "warn", code: "harness.local_prompt_missing", target, message: `missing IPA harness block in ${entry.local_prompt ?? spec.localPrompt}; run ipa harness update ${target}` });
     }
     if (componentSelected(selected, "local-skills")) {
       for (const skill of VAULT_LOCAL_SKILLS) {

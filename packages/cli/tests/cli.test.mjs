@@ -565,6 +565,52 @@ test("harness status flags stale components and harness update reinstalls them v
   assert.match(missing.stdout, /not_installed/);
 });
 
+test("doctor text output shows the checks summary", async () => {
+  const { env } = await fixtureProfile();
+  const text = run(env, ["doctor"]);
+  assert.match(text, /Doctor/);
+  assert.match(text, /notes\s+\d+/);
+  assert.match(text, /No issues\./);
+});
+
+test("harness status lists selected and omitted components per target", async () => {
+  const { env } = await fixtureProfile();
+  const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
+  const harnessEnv = { ...env, IPA_HARNESS_HOME: home };
+  run(harnessEnv, ["--json", "harness", "install", "codex"]);
+  run(harnessEnv, ["--json", "harness", "install", "claude", "--without", "hook:evidence"]);
+  const text = run(harnessEnv, ["harness", "status"]);
+  assert.match(text, /omitted \(codex\)\s+-/);
+  assert.match(text, /omitted \(claude\)\s+hook:evidence/);
+});
+
+test("harness status prompt column reflects the global prompt block, not the evidence hook", async () => {
+  const { env } = await fixtureProfile();
+  const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
+  const harnessEnv = { ...env, IPA_HARNESS_HOME: home };
+  run(harnessEnv, ["--json", "harness", "install", "claude", "--without", "hook:evidence"]);
+  const status = run(harnessEnv, ["harness", "status"]);
+  const row = status.split("\n").find((line) => line.trim().startsWith("claude"));
+  assert.ok(row, `missing claude row in:\n${status}`);
+  assert.match(row, /claude\s+yes\s+yes\s+yes\s+yes/);
+});
+
+test("harness doctor text output groups issues per installed target", async () => {
+  const { env } = await fixtureProfile();
+  const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
+  const harnessEnv = { ...env, IPA_HARNESS_HOME: home };
+  run(harnessEnv, ["--json", "harness", "install", "codex"]);
+  run(harnessEnv, ["--json", "harness", "install", "claude"]);
+  const hook = join(home, ".codex", "hooks", "ipa-inbox-guard.mjs");
+  await writeFile(hook, `${await readFile(hook, "utf8")}\n// stale\n`, "utf8");
+  const text = run(harnessEnv, ["harness", "doctor"]);
+  assert.match(text, /codex[\s\S]*harness\.component_outdated/);
+  assert.match(text, /claude: no issues/);
+  const codexIssueIndex = text.indexOf("harness.component_outdated");
+  const claudeSectionIndex = text.indexOf("claude: no issues");
+  assert.ok(codexIssueIndex >= 0 && claudeSectionIndex > codexIssueIndex, `codex issues should render inside the codex section:\n${text}`);
+});
+
 test("validator --note restricts reported issues to the edited notes", async () => {
   const { vault, env } = await fixtureProfile();
   await writeFile(

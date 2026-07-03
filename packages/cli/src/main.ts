@@ -186,7 +186,7 @@ const COMMAND_HELP = {
     summary: "Run basic vault setup checks.",
     options: [
       ["--fix-dirs", "Create missing expected directories"],
-      ["--check NAME", "Run one check"]
+      ["--check NAME", "Run one check (config or cache)"]
     ]
   }),
   engine: formatDetailedHelp({
@@ -665,6 +665,8 @@ function render(payload) {
   if (payload.installed && payload.guard) return renderHarnessStatus(payload);
   if (payload.target && Object.hasOwn(payload, "installed") && (payload.files || payload.removed)) return renderHarnessChange(payload);
   if (payload.plugin_root && payload.created && payload.skipped) return renderPluginInit(payload);
+  if (payload.installed && payload.issues) return renderHarnessDoctor(payload);
+  if (payload.status && payload.checks) return renderDoctor(payload);
   if (payload.issues) return renderIssues(payload);
   if (payload.plugins) return renderPlugins(payload);
   if (payload.paths || payload.tree || payload.roots || payload.siblings) return renderTraversal(payload);
@@ -679,7 +681,6 @@ function render(payload) {
   if (payload.operation === "cascade") return renderCascade(payload);
   if (payload.profile !== undefined && payload.vault_path && Object.hasOwn(payload, "created")) return renderKeyValues("Profile", payload);
   if (payload.profile !== undefined && payload.vault_path) return renderKeyValues("Active config", payload);
-  if (payload.status && payload.checks) return renderDoctor(payload);
   if (payload.suggestions) return renderTableReport("Link suggestions", ["Suggestion", "Score"], payload.suggestions.map((item) => [item.target, item.score ?? "-"]));
   if (Object.hasOwn(payload, "up_to_date") || payload.reason === "not_a_git_checkout") return renderSelfUpdate(payload);
   if (payload.target && Object.hasOwn(payload, "updated")) return renderKeyValues("Harness update", { status: payload.status, target: payload.target, updated: payload.updated, components: (payload.components ?? []).join(", "), omitted: (payload.omitted_components ?? []).join(", ") || "-" });
@@ -1115,7 +1116,8 @@ function renderDoctor(payload) {
     "",
     formatRows(Object.entries(payload.checks).map(([key, value]) => [key, String(value)]))
   ];
-  if (payload.issues?.length) lines.push("", renderIssues(payload));
+  if (payload.issues?.length) lines.push("", renderIssues({ issues: payload.issues }));
+  else lines.push("", styleGood("No issues."));
   return lines.join("\n");
 }
 
@@ -1136,17 +1138,54 @@ function renderHarnessStatus(payload) {
     target,
     state.skill ? "yes" : "no",
     state.guard_hook ? "yes" : "no",
-    state.prompt_hook ? "yes" : "no",
+    state.prompt ? "yes" : "no",
     state.markdown_nudge_hook ? "yes" : "no"
   ]);
   if (globalRows.length) lines.push("", table(["target", "skill", "guard", "prompt", "md nudge"], globalRows));
-  const selectedComponents = payload.components?.selected ?? [];
-  const omittedComponents = payload.components?.omitted ?? [];
-  if (selectedComponents.length || omittedComponents.length) {
-    lines.push("", formatRows([
-      ["selected", selectedComponents.length ? selectedComponents.join(", ") : "-"],
-      ["omitted", omittedComponents.length ? omittedComponents.join(", ") : "-"]
-    ]));
+  const componentRows = Object.entries(payload.global ?? {}).flatMap(([target, state]) => {
+    if (!state.selected_components) return [];
+    return [
+      [`selected (${target})`, state.selected_components.length ? state.selected_components.join(", ") : "-"],
+      [`omitted (${target})`, (state.omitted_components ?? []).length ? state.omitted_components.join(", ") : "-"]
+    ];
+  });
+  if (componentRows.length) {
+    lines.push("", formatRows(componentRows));
+  } else {
+    const selectedComponents = payload.components?.selected ?? [];
+    const omittedComponents = payload.components?.omitted ?? [];
+    if (selectedComponents.length || omittedComponents.length) {
+      lines.push("", formatRows([
+        ["selected", selectedComponents.length ? selectedComponents.join(", ") : "-"],
+        ["omitted", omittedComponents.length ? omittedComponents.join(", ") : "-"]
+      ]));
+    }
+  }
+  return lines.join("\n");
+}
+
+function renderHarnessDoctor(payload) {
+  const lines = [styleTitle("Harness doctor"), `Status: ${styleStatus(payload.status)}`];
+  const targets = [...(payload.installed ?? [])];
+  for (const issue of payload.issues ?? []) {
+    const target = issue.target ?? "-";
+    if (!targets.includes(target)) targets.push(target);
+  }
+  if (!targets.length) {
+    lines.push("", styleGood("No issues."));
+    return lines.join("\n");
+  }
+  for (const target of targets) {
+    const issues = (payload.issues ?? []).filter((item) => (item.target ?? "-") === target);
+    if (!issues.length) {
+      lines.push("", `${target}: ${styleGood("no issues")}`);
+      continue;
+    }
+    lines.push("", styleTitle(target), table(["Severity", "Code", "Message"], issues.map((item) => [
+      item.severity ?? "info",
+      item.code ?? "-",
+      item.message ?? "-"
+    ])));
   }
   return lines.join("\n");
 }
@@ -1420,7 +1459,7 @@ function buildProgram() {
 
   setHelp(program.command("doctor"), "doctor")
     .option("--fix-dirs", "Create missing expected directories")
-    .option("--check <name>", "Run one check")
+    .option("--check <name>", "Run one check (config or cache)")
     .action(async (options) => {
       await withVault(globalOptions(program), async (vault) => print(await doctor(vault, {
         fixDirs: Boolean(options.fixDirs),
