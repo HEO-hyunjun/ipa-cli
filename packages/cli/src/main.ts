@@ -679,6 +679,8 @@ function render(payload) {
   if (payload.profile !== undefined && payload.vault_path) return renderKeyValues("Active config", payload);
   if (payload.status && payload.checks) return renderDoctor(payload);
   if (payload.suggestions) return renderTableReport("Link suggestions", ["Suggestion", "Score"], payload.suggestions.map((item) => [item.target, item.score ?? "-"]));
+  if (Object.hasOwn(payload, "up_to_date") || payload.reason === "not_a_git_checkout") return renderSelfUpdate(payload);
+  if (payload.target && Object.hasOwn(payload, "updated")) return renderKeyValues("Harness update", { status: payload.status, target: payload.target, updated: payload.updated, components: (payload.components ?? []).join(", "), omitted: (payload.omitted_components ?? []).join(", ") || "-" });
   if (Array.isArray(payload.changes)) return renderTableReport("Planned changes", ["Note", "Path", "Target"], payload.changes.map((item) => [item.note ?? "-", item.path ?? "-", item.target ?? item.to ?? "-"]));
   return JSON.stringify(payload, null, 2);
 }
@@ -1128,6 +1130,34 @@ function renderHarnessChange(payload) {
   if (payload.global_files?.length) lines.push("", "Global files:", ...payload.global_files.map((file) => `  ${file}`));
   if (payload.removed?.length) lines.push("", "Removed vault-local files:", ...payload.removed.map((file) => `  ${file}`));
   if (payload.global_removed?.length) lines.push("", "Removed global files:", ...payload.global_removed.map((file) => `  ${file}`));
+  return lines.join("\n");
+}
+
+function renderSelfUpdate(payload) {
+  if (payload.reason === "not_a_git_checkout") {
+    return `${styleTitle("ipa update")}\n\n${styleWarn(payload.message)}`;
+  }
+  const lines = [styleTitle(`ipa update (${payload.mode})`), ""];
+  lines.push(`repo     ${payload.repo_root}`);
+  lines.push(`version  ${payload.version ?? "unknown"}${payload.commit ? ` (${payload.commit})` : ""}  branch ${payload.branch ?? "-"} -> ${payload.upstream}`);
+  if (!payload.fetch_ok) lines.push(styleWarn("git fetch failed; behind/ahead counts may be stale"));
+  if (payload.dirty) lines.push(styleWarn("worktree has uncommitted changes"));
+  if (payload.status === "error") {
+    lines.push("", styleWarn(`error: ${payload.message}`));
+    return lines.join("\n");
+  }
+  if (payload.up_to_date) {
+    lines.push("", "already up to date");
+  } else {
+    lines.push("", `behind ${payload.behind} commit(s)${payload.ahead ? `, ahead ${payload.ahead}` : ""}:`);
+    lines.push(...payload.changes.map((change) => `  ${change}`));
+    if (payload.mode === "plan") {
+      lines.push("", "to update, run `ipa update --apply` or:", ...payload.commands.map((cmd) => `  ${cmd}`));
+    }
+  }
+  if (payload.applied) {
+    lines.push("", `updated to ${payload.commit_after}`, styleMuted(payload.next));
+  }
   return lines.join("\n");
 }
 
