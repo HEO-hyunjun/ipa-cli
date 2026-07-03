@@ -20,3 +20,5 @@ packages/test-vaults/fixtures/**/.cache/
 packages/test-vaults/fixtures/**/*.pkl
 
 .claude/
+
+.omo/*
