@@ -12,6 +12,7 @@ import {
   cacheDoctor,
   cacheInspect,
   cacheStatus,
+  cliVersionInfo,
   contractExportFixtures,
   contractList,
   contractValidate,
@@ -26,6 +27,7 @@ import {
   harnessInstall,
   harnessStatus,
   harnessUninstall,
+  harnessUpdate,
   inboxAdd,
   inboxTriage,
   initProfileRegistry,
@@ -47,6 +49,7 @@ import {
   resolveSettings,
   reviewVault,
   searchVault,
+  selfUpdate,
   suggestLinks,
   setDefaultProfile,
   setNoteField,
@@ -105,7 +108,8 @@ const COMMAND_GROUPS = [
       ["cache", "Rebuild, inspect, and diagnose vault cache"],
       ["plugin", "Scaffold, list, validate, and dry-run vault plugins"],
       ["contract", "Validate runtime contract fixtures"],
-      ["harness", "Install, uninstall, and inspect AI harness hooks"],
+      ["harness", "Install, uninstall, update, and inspect AI harness hooks"],
+      ["update", "Update the ipa CLI from its git checkout"],
       ["list-channels / list-rules / list-refactors", "Inspect builtin registries"]
     ]
   }
@@ -207,15 +211,16 @@ const COMMAND_HELP = {
     ]
   }),
   harness: formatDetailedHelp({
-    usage: "ipa [OPTIONS] harness status|init|install|uninstall|doctor|guard",
+    usage: "ipa [OPTIONS] harness status|init|install|uninstall|update|doctor|guard",
     summary: "Install and inspect AI harness skills, hooks, vault prompt blocks, and plugin scaffold.",
     commands: [
-      ["ipa harness status", "Show installed target state"],
+      ["ipa harness status", "Show installed target state and outdated components"],
       ["ipa harness init codex", "Initialize Codex skill/hooks, vault prompt block, and plugin scaffold"],
       ["ipa harness install codex", "Install Codex skill/hooks, vault prompt block, and plugin scaffold"],
       ["ipa harness install claude", "Install Claude Code skill/hooks, vault prompt block, and plugin scaffold"],
       ["ipa harness install opencode", "Install OpenCode skill/hooks, vault prompt block, and plugin scaffold"],
       ["ipa harness uninstall codex", "Remove Codex harness files"],
+      ["ipa harness update claude", "Reinstall harness files with the current CLI templates, keeping component selection"],
       ["ipa harness doctor", "Validate installed harness files"],
       ["ipa harness guard status", "Show guard policy state"],
       ["ipa harness guard check PATH --action create", "Check inbox-only write policy"]
@@ -411,6 +416,21 @@ const COMMAND_HELP = {
     ]
   }),
   tune: formatTuneHelp(),
+  update: formatDetailedHelp({
+    usage: "ipa [OPTIONS] update [--apply]",
+    summary: "Update the ipa CLI from its git checkout: show pending upstream commits, then fast-forward pull and rebuild.",
+    options: [
+      ["--apply", "Run git pull --ff-only, pnpm install, and pnpm run build in the repo"]
+    ],
+    examples: [
+      ["ipa update", "Show how far behind upstream the checkout is and the commands to run"],
+      ["ipa update --apply", "Fast-forward pull and rebuild; the ipa symlink keeps pointing at the fresh build"]
+    ],
+    notes: [
+      "Refuses to apply while the checkout has uncommitted changes or has diverged from upstream.",
+      "After updating, run `ipa harness status` and `ipa harness update <target>` if components are outdated."
+    ]
+  }),
   validator: formatDetailedHelp({
     usage: "ipa [OPTIONS] validator [--json]",
     summary: "Validate active IPA notes after applying files.exclude.",
@@ -1226,9 +1246,16 @@ function buildProgram() {
     .option("--profile <name>", "Use a profile from ~/.config/ipa/profile.yaml")
     .option("--vault <path>", "Use a vault path directly")
     .option("--json", "Print machine-readable JSON")
+    .option("--version", "Show version information")
     .helpOption("--help", "Show this help message")
     .addHelpCommand(false)
     .action(() => {
+      if (program.opts().version) {
+        const info = cliVersionInfo();
+        if (jsonOutput(program)) print(info, true);
+        else console.log(`ipa ${info.version ?? "unknown"}${info.commit ? ` (${info.commit})` : ""}`);
+        return;
+      }
       console.log(HELP);
     });
   program.helpInformation = () => HELP;
@@ -1595,6 +1622,14 @@ function buildProgram() {
       await withVault(globalOptions(program), async (vault) => print(await inboxTriage(vault, Boolean(options.apply), options.note), jsonOutput(program)));
     });
 
+  setHelp(program.command("update"), "update")
+    .option("--apply", "Fast-forward pull, install dependencies, and rebuild")
+    .action(async (options) => {
+      const result = await selfUpdate({ apply: Boolean(options.apply), stream: !jsonOutput(program) });
+      print(result, jsonOutput(program));
+      if (result.status === "error") process.exitCode = 1;
+    });
+
   const harnessCommand = setHelp(program.command("harness"), "harness");
   harnessCommand
     .command("status")
@@ -1642,6 +1677,16 @@ function buildProgram() {
       await withVault(globalOptions(program), async (vault, resolved) => print(await harnessUninstall(vault, target, {
         profile: resolved.profile
       }), jsonOutput(program)));
+    });
+  harnessCommand
+    .command("update")
+    .argument("[target]", "Harness target", "codex")
+    .action(async (target) => {
+      await withVault(globalOptions(program), async (vault, resolved) => {
+        const result = await harnessUpdate(vault, target, { profile: resolved.profile });
+        print(result, jsonOutput(program));
+        if (result.status === "error") process.exitCode = 1;
+      });
     });
   harnessCommand
     .command("doctor")
