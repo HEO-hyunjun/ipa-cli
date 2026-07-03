@@ -564,3 +564,18 @@ test("harness status flags stale components and harness update reinstalls them v
   assert.equal(missing.status, 1);
   assert.match(missing.stdout, /not_installed/);
 });
+
+test("validator --note restricts reported issues to the edited notes", async () => {
+  const { vault, env } = await fixtureProfile();
+  await writeFile(
+    join(vault, "00 Inbox", "Scoped.md"),
+    `---\ndate_created: 2026/05/10 (Sun) 00:00:00\ndate_modified: 2026/05/10 (Sun) 00:00:00\nref: ["[[🔖 Topic Index]]"]\ntags: ["BadTag"]\ntype: note\n---\n# Scoped\n\nBody\n`,
+    "utf8"
+  );
+  const scoped = JSON.parse(run(env, ["--json", "validator", "--note", "Scoped"]));
+  assert.deepEqual(scoped.scope_notes, ["Scoped"]);
+  assert.ok(scoped.issues.length >= 1);
+  assert.ok(scoped.issues.every((item) => item.note === "Scoped" || (item.path ?? "").includes("Scoped")));
+  const help = run(env, ["help", "validator"]);
+  assert.match(help, /--note NOTE/);
+});

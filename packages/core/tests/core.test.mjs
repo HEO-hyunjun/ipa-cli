@@ -2298,3 +2298,22 @@ export default {
   assert.equal(result.issues.length, 1);
   assert.equal(result.issues[0].message, "config-present");
 });
+
+test("validateVault --note scoping filters issues to the requested notes", async () => {
+  const vault = await fixtureVault();
+  // A note with a guaranteed issue: tag not in snake_case
+  await writeFile(
+    join(vault, "00 Inbox", "Scoped.md"),
+    `---\ndate_created: 2026/05/10 (Sun) 00:00:00\ndate_modified: 2026/05/10 (Sun) 00:00:00\nref: ["[[🔖 Topic Index]]"]\ntags: ["BadTag"]\ntype: note\n---\n# Scoped\n\nBody\n`,
+    "utf8"
+  );
+  const scoped = await validateVault(vault, null, { notes: ["Scoped"] });
+  assert.deepEqual(scoped.scope_notes, ["Scoped"]);
+  assert.ok(scoped.issues.length >= 1, "scoped note issues reported");
+  assert.ok(scoped.issues.every((item) => item.note === "Scoped" || item.path?.includes("Scoped")), JSON.stringify(scoped.issues));
+
+  const other = await validateVault(vault, null, { notes: ["Alpha"] });
+  assert.equal(other.issues.some((item) => item.note === "Scoped"), false, "other-note scope must not include Scoped issues");
+
+  await assert.rejects(() => validateVault(vault, null, { notes: ["존재하지 않는 노트"] }), /note not found/);
+});

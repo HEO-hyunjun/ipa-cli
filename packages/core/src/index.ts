@@ -3129,7 +3129,7 @@ function normalizeRuleIssues(output, rule, note = null) {
     }));
 }
 
-export async function validateVault(vaultPath, notes = null) {
+export async function validateVault(vaultPath, notes = null, options = {}) {
   const { config, mapping } = await readVaultConfig(vaultPath);
   if (!notes) notes = await loadNotes(vaultPath, mapping);
   const ctx = {
@@ -3142,7 +3142,7 @@ export async function validateVault(vaultPath, notes = null) {
     attachmentTitles: await loadAttachmentTitles(vaultPath, mapping)
   };
   const rules = await activeRulesForVault(vaultPath, config);
-  const issues = [];
+  let issues = [];
   const rawCaptureRule = rules.find((rule) => rule.code === "ipa.inbox.raw_capture");
   const noteRules = rules.filter((rule) => rule.checkNote && rule.code !== "ipa.inbox.raw_capture");
   const vaultRules = rules.filter((rule) => rule.checkVault);
@@ -3157,7 +3157,25 @@ export async function validateVault(vaultPath, notes = null) {
   for (const rule of vaultRules) {
     if (rule.checkVault) issues.push(...normalizeRuleIssues(await rule.checkVault(ctx), rule));
   }
-  return { notes: notes.length, issues, status: issues.some((item) => item.severity === "error") ? "error" : "ok" };
+  // Note-scoped output: validation still runs vault-wide (vault-scope rules
+  // need every note), but only issues attached to the requested notes are
+  // returned — keeps agent-facing output proportional to the edit.
+  const scopedNames = asList(options.notes ?? options.note);
+  let scoped = null;
+  if (scopedNames.length) {
+    const targets = scopedNames.map((name) => {
+      const note = findNote(notes, name);
+      if (!note) throw new Error(`note not found: ${name}`);
+      return note;
+    });
+    const targetIds = new Set(targets.map((note) => note.id));
+    const targetPaths = new Set(targets.map((note) => note.relPath));
+    issues = issues.filter((item) => targetIds.has(item.note) || targetPaths.has(item.path));
+    scoped = targets.map((note) => note.id);
+  }
+  const result = { notes: notes.length, issues, status: issues.some((item) => item.severity === "error") ? "error" : "ok" };
+  if (scoped) result.scope_notes = scoped;
+  return result;
 }
 
 async function loadActiveMarkdownTitles(vaultPath, mapping) {
@@ -5957,7 +5975,7 @@ ipa digest "Index Note"                                        # index summary: 
 ipa context "<short keyword>" --size medium --format markdown   # bootstrap for broad/history questions
 ipa search "<keyword>"                                          # discovery; results include snippets + dates
 ipa link suggest "Note Title"                                  # find related notes/link candidates
-ipa validator                                                   # after editing vault Markdown
+ipa validator --note "Edited Note"                              # note-scoped issues after editing
 ipa formatter plan --note "Edited Note"
 ipa formatter apply --note "Edited Note"
 ipa inbox add ./draft.md --title "Title"                        # new notes go through inbox
@@ -6343,10 +6361,10 @@ New Markdown notes belong in the configured inbox. Prefer:
 ${prefix} inbox add ./draft.md --title "Title" --ref "Index Note" --tag "topic"
 \`\`\`
 
-After editing vault Markdown, run validation and formatting checks:
+After editing vault Markdown, run note-scoped validation and formatting checks — vault-wide \`validator\` output grows with unrelated issues, so scope it to what you touched:
 
 \`\`\`bash
-${prefix} validator
+${prefix} validator --note "Edited Note"
 ${prefix} formatter plan --note "Edited Note"
 ${prefix} formatter apply --note "Edited Note"
 \`\`\`
@@ -6409,7 +6427,7 @@ ${prefix} context "keyword" --size medium --format markdown
 ${prefix} search "keyword"
 ${prefix} view "Note Title" --full
 ${prefix} link suggest "Note Title"
-${prefix} validator
+${prefix} validator --note "Edited Note"
 ${prefix} formatter plan --note "Edited Note"
 ${prefix} formatter apply --note "Edited Note"
 ${prefix} plugin init
@@ -6696,7 +6714,7 @@ const lines = [
   "Do this even when the user did not explicitly ask to search/view. Use short keywords or exact titles, not raw paths/full prompts.",
   \`For one-note related-note, previous-meeting, comparison, or wikilink-candidate tasks, run \${prefix} link suggest "Note Title". If unsure about IPA syntax, run \${prefix} help or \${prefix} <command> --help.\`,
   \`Current behavior claims need workspace inspection/commands. External/current facts need web/official docs. New notes: \${prefix} inbox add. Existing scripted edits/frontmatter fixes: \${prefix} note replace.\`,
-  \`After vault Markdown edits: \${prefix} validator; \${prefix} formatter plan --note "Title"; \${prefix} formatter apply --note "Title".\`
+  \`After vault Markdown edits: \${prefix} validator --note "Title"; \${prefix} formatter plan --note "Title"; \${prefix} formatter apply --note "Title".\`
 ];
 
 process.stdout.write(JSON.stringify({
@@ -6803,7 +6821,7 @@ const noteArg = JSON.stringify(noteTitle);
 const message = [
   \`[IPA CLI] Vault Markdown changed: \${note}\`,
   "Before finishing, validate and complete note-scoped formatting. Run plan first, then apply if the planned changes are expected:",
-  \`  \${prefix} validator\`,
+  \`  \${prefix} validator --note \${noteArg}\`,
   \`  \${prefix} formatter plan --note \${noteArg}\`,
   \`  \${prefix} formatter apply --note \${noteArg}\`,
   "Do not stop at formatter plan unless the plan shows unexpected changes that need user review.",
@@ -7029,7 +7047,7 @@ const plan = spawnSync("ipa", ["--vault", vaultPath, "--json", "formatter", "pla
 
 const noteArgs = uniqueNotes.map(shellArg).join(" ");
 const commands = [
-  \`\${prefix} validator\`,
+  \`\${prefix} validator --note \${noteArgs}\`,
   \`\${prefix} formatter plan --note \${noteArgs}\`,
   \`\${prefix} formatter apply --note \${noteArgs}\`
 ].join("\\n");
@@ -7228,7 +7246,7 @@ function runFormatterGate(block) {
   if (!uniqueNotes.length) return;
   const plan = spawnSync("ipa", ["--vault", vaultPath, "--json", "formatter", "plan", "--note", ...uniqueNotes], { encoding: "utf8", timeout: 15000 });
   const noteArgs = uniqueNotes.map((value) => JSON.stringify(String(value))).join(" ");
-  const commands = [\`ipa validator\`, \`ipa formatter plan --note \${noteArgs}\`, \`ipa formatter apply --note \${noteArgs}\`].join("\\n");
+  const commands = [\`ipa validator --note \${noteArgs}\`, \`ipa formatter plan --note \${noteArgs}\`, \`ipa formatter apply --note \${noteArgs}\`].join("\\n");
   if (plan.status !== 0) {
     block([
       "[IPA CLI] Formatter gate could not verify pending vault Markdown edits.",

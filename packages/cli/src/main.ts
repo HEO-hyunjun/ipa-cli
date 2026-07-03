@@ -432,13 +432,15 @@ const COMMAND_HELP = {
     ]
   }),
   validator: formatDetailedHelp({
-    usage: "ipa [OPTIONS] validator [--json]",
+    usage: "ipa [OPTIONS] validator [--note NOTE...] [--json]",
     summary: "Validate active IPA notes after applying files.exclude.",
     examples: [
-      ["ipa validator", "Human-readable issue report"],
+      ["ipa validator", "Human-readable vault-wide issue report"],
+      ["ipa validator --note \"Edited Note\"", "Only issues attached to the edited note(s)"],
       ["ipa validator --json", "Machine-readable issue payload"]
     ],
     options: [
+      ["--note NOTE...", "Restrict reported issues to the named notes (validation still runs vault-wide)"],
       ["--json", "Print machine-readable JSON"]
     ]
   }),
@@ -1374,8 +1376,11 @@ function buildProgram() {
     });
 
   setHelp(program.command("validator"), "validator")
-    .action(async () => {
-      await withVault(globalOptions(program), async (vault) => print(await validateVault(vault), jsonOutput(program)));
+    .option("--note <notes...>", "Restrict reported issues to note titles")
+    .action(async (options) => {
+      await withVault(globalOptions(program), async (vault) => print(await validateVault(vault, null, {
+        notes: optionalList(options.note)
+      }), jsonOutput(program)));
     });
 
   setHelp(program.command("doctor"), "doctor")

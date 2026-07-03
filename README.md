@@ -570,7 +570,7 @@ old in-package parity oracle has been removed.
 | `view`             | `@ipa/core.viewNote`                 | Note rendering with context header, frontmatter, body/structure, footer. |
 | `traversal`        | `@ipa/core.traversal`                | Ref-based up/down/siblings/root traversal.                             |
 | `context`          | `@ipa/core.buildContext`             | Compact agent context pack with selected notes, excerpts, and local graph. |
-| `validator`        | `@ipa/core.validateVault`            | Validator engine plus formatter-aware issue reporting.                 |
+| `validator`        | `@ipa/core.validateVault`            | Validator engine plus formatter-aware issue reporting; `--note` scopes output to edited notes. |
 | `search`           | `@ipa/core.searchVault`              | Weighted builtin and vault-local JS plugin search.                     |
 | `refactor`         | `@ipa/core.refactorVault`            | Parse-layer scan/filter plus frontmatter/body mutation.                |
 | `note replace`     | `@ipa/core.replaceInNote`            | Core note lookup plus raw-note replacement; syncs `date_modified` and cleans consumed `.tmp` inputs on apply. |
