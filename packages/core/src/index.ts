@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import {
@@ -11,7 +12,7 @@ import {
   writeFile
 } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { homedir } from "node:os";
 
 export const DEFAULT_MAPPING = {
@@ -5598,6 +5599,122 @@ export async function tuneLog(vaultPath, options = {}) {
   return { file: toPosix(relative(vaultPath, path)), count: events.length, events };
 }
 
+function findRepoRoot(startDir) {
+  let dir = startDir;
+  while (true) {
+    if (existsSync(join(dir, ".git"))) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
+function gitOutput(repoRoot, args) {
+  const result = spawnSync("git", ["-C", repoRoot, ...args], { encoding: "utf8" });
+  if (result.error || result.status !== 0) return null;
+  return result.stdout.trim();
+}
+
+export function cliVersionInfo() {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const repoRoot = findRepoRoot(here);
+  let version = null;
+  for (const pkgPath of [repoRoot ? join(repoRoot, "package.json") : null, resolve(here, "..", "package.json")]) {
+    if (!pkgPath || !existsSync(pkgPath)) continue;
+    try {
+      const parsed = JSON.parse(readFileSync(pkgPath, "utf8"));
+      if (parsed.version) {
+        version = parsed.version;
+        break;
+      }
+    } catch {
+      // fall through to the next candidate
+    }
+  }
+  const commit = repoRoot ? gitOutput(repoRoot, ["rev-parse", "--short", "HEAD"]) : null;
+  return { version, commit, repo_root: repoRoot };
+}
+
+const SELF_UPDATE_STEPS = [
+  ["git", "pull", "--ff-only"],
+  ["pnpm", "install"],
+  ["pnpm", "run", "build"]
+];
+
+export async function selfUpdate(options = {}) {
+  const info = cliVersionInfo();
+  const repoRoot = options.repoRoot ?? process.env.IPA_UPDATE_REPO_ROOT ?? info.repo_root;
+  if (!repoRoot) {
+    return {
+      status: "error",
+      reason: "not_a_git_checkout",
+      message: "could not locate the ipa-cli git checkout from the running binary"
+    };
+  }
+  const fetchResult = spawnSync("git", ["-C", repoRoot, "fetch", "--quiet"], { encoding: "utf8" });
+  const fetchOk = !fetchResult.error && fetchResult.status === 0;
+  const branch = gitOutput(repoRoot, ["rev-parse", "--abbrev-ref", "HEAD"]);
+  const upstream = gitOutput(repoRoot, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]) ?? "origin/main";
+  const behind = Number(gitOutput(repoRoot, ["rev-list", "--count", `HEAD..${upstream}`]) ?? 0);
+  const ahead = Number(gitOutput(repoRoot, ["rev-list", "--count", `${upstream}..HEAD`]) ?? 0);
+  const dirty = (gitOutput(repoRoot, ["status", "--porcelain"]) ?? "") !== "";
+  const changes = behind > 0
+    ? (gitOutput(repoRoot, ["log", "--oneline", `HEAD..${upstream}`]) ?? "").split("\n").filter(Boolean).slice(0, 20)
+    : [];
+  const commands = SELF_UPDATE_STEPS.map((cmd) => cmd.join(" "));
+  const base = {
+    status: "ok",
+    repo_root: repoRoot,
+    version: info.version,
+    commit: info.commit,
+    branch,
+    upstream,
+    fetch_ok: fetchOk,
+    behind,
+    ahead,
+    dirty,
+    up_to_date: behind === 0,
+    changes,
+    commands
+  };
+  if (!options.apply) {
+    return { ...base, mode: "plan", hint: behind > 0 ? "run `ipa update --apply` or the commands above from the repo root" : null };
+  }
+  if (dirty) {
+    return { ...base, mode: "apply", status: "error", reason: "dirty_worktree", message: "commit or stash local changes before updating" };
+  }
+  if (behind === 0) {
+    return { ...base, mode: "apply", applied: false, steps: [], message: "already up to date" };
+  }
+  if (ahead > 0) {
+    return { ...base, mode: "apply", status: "error", reason: "diverged", message: `local branch is ahead of ${upstream}; fast-forward pull is not possible` };
+  }
+  const stepsToRun = options.steps ?? SELF_UPDATE_STEPS;
+  const steps = [];
+  for (const cmd of stepsToRun) {
+    const run = spawnSync(cmd[0], cmd.slice(1), {
+      cwd: repoRoot,
+      encoding: "utf8",
+      stdio: options.stream ? ["ignore", "inherit", "inherit"] : undefined
+    });
+    const ok = !run.error && run.status === 0;
+    const step = { command: cmd.join(" "), ok };
+    if (!ok && !options.stream) step.output = `${run.stdout ?? ""}${run.stderr ?? ""}`.slice(-2000);
+    steps.push(step);
+    if (!ok) {
+      return { ...base, mode: "apply", status: "error", reason: "step_failed", steps, message: `command failed: ${cmd.join(" ")}` };
+    }
+  }
+  return {
+    ...base,
+    mode: "apply",
+    applied: true,
+    steps,
+    commit_after: gitOutput(repoRoot, ["rev-parse", "--short", "HEAD"]),
+    next: "run `ipa harness status` to check for outdated harness components, then `ipa harness update <target>` if needed"
+  };
+}
+
 function harnessRoot(vaultPath) {
   return join(vaultPath, ".ipa", "harness");
 }
@@ -7180,6 +7297,79 @@ export default IPAHarnessPlugin;
 `;
 }
 
+function harnessHookScriptContent(component, vaultPath, spec, mapping, options = {}) {
+  switch (component) {
+    case "hook:session-env": return sessionEnvScript();
+    case "hook:guard": return inboxGuardScript(vaultPath, mapping.inbox_dir, options);
+    case "hook:evidence": return userPromptNudgeScript(vaultPath, { ...options, agent: spec.name });
+    case "hook:markdown-nudge": return markdownWriteNudgeScript(vaultPath, mapping, options);
+    case "hook:call-counter": return callCounterScript(vaultPath, options);
+    case "hook:formatter-gate": return formatterGateScript(vaultPath, options);
+    default: return null;
+  }
+}
+
+// Single source of truth for every content-bearing harness artifact: install
+// writes these entries and the outdated check re-renders them for comparison.
+function harnessExpectedArtifacts(vaultPath, spec, mapping, selected, options = {}) {
+  const artifacts = [];
+  const isOpencode = spec.name === "opencode";
+  if (componentSelected(selected, "skill")) {
+    artifacts.push({ component: "skill", scope: "global", kind: "file", path: spec.skillFile, content: harnessSkillContent(vaultPath, spec, options) });
+  }
+  if (!isOpencode) {
+    for (const [component, script] of Object.entries(HARNESS_HOOK_COMPONENT_TO_SCRIPT)) {
+      if (!componentSelected(selected, component)) continue;
+      artifacts.push({ component, scope: "global", kind: "file", path: join(spec.hooksDir, script), content: harnessHookScriptContent(component, vaultPath, spec, mapping, options) });
+    }
+  } else if (spec.pluginFile) {
+    const needsPlugin = componentSelected(selected, "opencode-plugin") || selected.some((component) => component.startsWith("hook:"));
+    if (needsPlugin) {
+      artifacts.push({ component: "opencode-plugin", scope: "global", kind: "file", path: spec.pluginFile, content: opencodePluginScript(vaultPath, mapping, selected, options) });
+    }
+  }
+  if (componentSelected(selected, "prompt")) {
+    artifacts.push({ component: "prompt", scope: "global", kind: "block", path: spec.globalPromptFile, content: globalPromptContent(spec) });
+  }
+  if (componentSelected(selected, "local-prompt")) {
+    artifacts.push({ component: "local-prompt", scope: "vault", kind: "block", path: join(vaultPath, spec.localPrompt), content: localPromptContent(vaultPath, spec, mapping, options) });
+  }
+  if (componentSelected(selected, "local-skills")) {
+    for (const skill of VAULT_LOCAL_SKILLS) {
+      artifacts.push({ component: "local-skills", scope: "vault", kind: "file", path: join(vaultPath, vaultLocalSkillRelPath(spec, skill.name)), content: vaultLocalSkillContent(skill) });
+    }
+  }
+  return artifacts;
+}
+
+function readManagedBlockBody(path) {
+  if (!existsSync(path)) return null;
+  const begin = `<!-- ${HARNESS_MARKER}_BEGIN:${HARNESS_MANAGED_BLOCK} -->`;
+  const end = `<!-- ${HARNESS_MARKER}_END:${HARNESS_MANAGED_BLOCK} -->`;
+  const text = readFileSyncText(path);
+  const beginIdx = text.indexOf(begin);
+  const endIdx = text.indexOf(end);
+  if (beginIdx === -1 || endIdx === -1 || endIdx < beginIdx) return null;
+  return text.slice(beginIdx + begin.length, endIdx).trim();
+}
+
+// Installed-but-different components. Missing artifacts stay out of this list;
+// presence is already reported by status/doctor. Files whose HARNESS_MARKER was
+// stripped are treated as user-owned and skipped.
+function harnessOutdatedComponents(vaultPath, spec, mapping, selected, options = {}) {
+  const outdated = new Set();
+  for (const artifact of harnessExpectedArtifacts(vaultPath, spec, mapping, selected, options)) {
+    if (artifact.kind === "block") {
+      const body = readManagedBlockBody(artifact.path);
+      if (body !== null && body !== artifact.content.trim()) outdated.add(artifact.component);
+    } else if (existsSync(artifact.path)) {
+      const text = readFileSyncText(artifact.path);
+      if (text.includes(HARNESS_MARKER) && text !== artifact.content) outdated.add(artifact.component);
+    }
+  }
+  return [...outdated];
+}
+
 async function installGlobalHarness(vaultPath, spec, mapping, options = {}) {
   const selected = options.components?.selected
     ? options.components.selected
@@ -7193,30 +7383,17 @@ async function installGlobalHarness(vaultPath, spec, mapping, options = {}) {
   const callCounterPath = join(spec.hooksDir, "ipa-call-counter.mjs");
   const formatterGatePath = join(spec.hooksDir, "ipa-formatter-gate.mjs");
 
-  if (componentSelected(selected, "skill")) {
-    await writeManagedFile(spec.skillFile, harnessSkillContent(vaultPath, spec, options), files);
+  for (const artifact of harnessExpectedArtifacts(vaultPath, spec, mapping, selected, options)) {
+    if (artifact.scope !== "global") continue;
+    if (artifact.kind === "block") {
+      await upsertManagedBlock(artifact.path, artifact.content);
+      files.push(artifact.path);
+    } else {
+      await writeManagedFile(artifact.path, artifact.content, files);
+    }
   }
 
   if (!isOpencode) {
-    if (componentSelected(selected, "hook:session-env")) {
-      await writeManagedFile(envPath, sessionEnvScript(), files);
-    }
-    if (componentSelected(selected, "hook:guard")) {
-      await writeManagedFile(guardPath, inboxGuardScript(vaultPath, mapping.inbox_dir, options), files);
-    }
-    if (componentSelected(selected, "hook:evidence")) {
-      await writeManagedFile(promptPath, userPromptNudgeScript(vaultPath, { ...options, agent: spec.name }), files);
-    }
-    if (componentSelected(selected, "hook:markdown-nudge")) {
-      await writeManagedFile(writeNudgePath, markdownWriteNudgeScript(vaultPath, mapping, options), files);
-    }
-    if (componentSelected(selected, "hook:call-counter")) {
-      await writeManagedFile(callCounterPath, callCounterScript(vaultPath, options), files);
-    }
-    if (componentSelected(selected, "hook:formatter-gate")) {
-      await writeManagedFile(formatterGatePath, formatterGateScript(vaultPath, options), files);
-    }
-
     const config = await readJsonObject(spec.hooksConfig);
     removeManagedHookCommands(config);
     if (componentSelected(selected, "hook:session-env")) {
@@ -7239,16 +7416,6 @@ async function installGlobalHarness(vaultPath, spec, mapping, options = {}) {
     }
     await writeJsonObject(spec.hooksConfig, config);
     files.push(spec.hooksConfig);
-  } else {
-    const needsPlugin = componentSelected(selected, "opencode-plugin") || selected.some((component) => component.startsWith("hook:"));
-    if (needsPlugin && spec.pluginFile) {
-      await writeManagedFile(spec.pluginFile, opencodePluginScript(vaultPath, mapping, selected, options), files);
-    }
-  }
-
-  if (componentSelected(selected, "prompt")) {
-    await upsertManagedBlock(spec.globalPromptFile, globalPromptContent(spec));
-    files.push(spec.globalPromptFile);
   }
   return files;
 }
@@ -7359,7 +7526,9 @@ function componentPresence(spec, vaultPath, selected) {
 
 export async function harnessStatus(vaultPath, options = {}) {
   const index = await readHarnessIndex(vaultPath);
+  const { mapping } = await readVaultConfig(vaultPath);
   const global = {};
+  const outdatedByTarget = {};
   let aggregateSelected = [];
   let aggregateOmitted = [];
   for (const target of Object.keys(index.targets ?? {})) {
@@ -7371,7 +7540,12 @@ export async function harnessStatus(vaultPath, options = {}) {
       aggregateSelected = [...new Set([...aggregateSelected, ...selected])];
       aggregateOmitted = [...new Set([...aggregateOmitted, ...omitted])];
     }
+    const outdatedComponents = harnessOutdatedComponents(vaultPath, spec, mapping, selected, options);
+    if (outdatedComponents.length) outdatedByTarget[target] = outdatedComponents;
     global[target] = {
+      outdated_components: outdatedComponents,
+      cli_version: targetManifest?.cli_version ?? null,
+      cli_commit: targetManifest?.cli_commit ?? null,
       skill: hasManagedFile(spec.skillFile),
       session_env_hook: hasManagedFile(join(spec.hooksDir, "ipa-session-env.mjs")),
       guard_hook: hasManagedFile(join(spec.hooksDir, "ipa-inbox-guard.mjs")),
@@ -7385,6 +7559,7 @@ export async function harnessStatus(vaultPath, options = {}) {
       components: componentPresence(spec, vaultPath, selected)
     };
   }
+  const outdatedTargets = Object.keys(outdatedByTarget);
   return {
     status: "ok",
     installed: Object.keys(index.targets ?? {}),
@@ -7394,6 +7569,10 @@ export async function harnessStatus(vaultPath, options = {}) {
       selected: aggregateSelected,
       omitted: aggregateOmitted
     },
+    outdated: outdatedByTarget,
+    update_hint: outdatedTargets.length
+      ? `harness components are older than the installed CLI templates; run: ${outdatedTargets.map((target) => `ipa harness update ${target}`).join(", ")}`
+      : null,
     plugin_scaffold: pluginScaffoldStatus(vaultPath),
     guard: await harnessGuardStatus(vaultPath)
   };
@@ -7413,10 +7592,13 @@ export async function harnessInstall(vaultPath, target = "codex", options = {}) 
   const globalSkill = name === "opencode" ? "~/.config/opencode/skills/ipa/SKILL.md" : `~/.${name}/skills/ipa/SKILL.md`;
   const globalPrompt = name === "opencode" ? "~/.config/opencode/AGENTS.md" : `~/.${name}/${spec.localPrompt}`;
   const globalHooksConfig = name === "claude" ? "~/.claude/settings.json" : name === "opencode" ? "~/.config/opencode/settings.json" : "~/.codex/hooks.json";
+  const cliInfo = cliVersionInfo();
   const manifest = {
     version: 1,
     target: name,
     installed_at: nowIso(),
+    cli_version: cliInfo.version,
+    cli_commit: cliInfo.commit,
     scope: ["global", "vault-local"],
     local_prompt: spec.localPrompt,
     components: selected,
@@ -7522,13 +7704,45 @@ export async function harnessUninstall(vaultPath, target = "codex", options = {}
   return { status: "ok", target: name, installed: false, removed: [`.ipa/harness/${name}`, spec.localPrompt, ...localSkillRemoved], global_removed: globalRemoved };
 }
 
+export async function harnessUpdate(vaultPath, target = "codex", options = {}) {
+  const spec = harnessTargetSpec(target, options);
+  const name = spec.name;
+  const index = await readHarnessIndex(vaultPath);
+  if (!index.targets?.[name]) {
+    return { status: "error", target: name, reason: "not_installed", message: `harness target ${name} is not installed; run ipa harness install ${name}` };
+  }
+  const targetManifest = await readTargetManifest(vaultPath, name);
+  const selected = targetManifest?.components ?? index.targets[name].components ?? defaultComponentsForTarget(name);
+  const omitted = targetManifest?.omitted_components ?? index.targets[name].omitted_components ?? [];
+  // Uninstall first so hook scripts renamed or dropped by newer CLI versions do
+  // not survive as orphans, then reinstall with the previous component selection.
+  const uninstall = await harnessUninstall(vaultPath, name, options);
+  const install = await harnessInstall(vaultPath, name, { ...options, components: { only: selected } });
+  return {
+    status: "ok",
+    target: name,
+    updated: true,
+    components: selected,
+    omitted_components: omitted,
+    removed: uninstall.removed,
+    global_removed: uninstall.global_removed,
+    files: install.files,
+    global_files: install.global_files,
+    plugin_init: install.plugin_init
+  };
+}
+
 export async function harnessDoctor(vaultPath, options = {}) {
   const index = await readHarnessIndex(vaultPath);
+  const { mapping } = await readVaultConfig(vaultPath);
   const issues = [];
   for (const [target, entry] of Object.entries(index.targets ?? {})) {
     const spec = harnessTargetSpec(target, options);
     const targetManifest = await readTargetManifest(vaultPath, target);
     const selected = targetManifest?.components ?? entry.components ?? defaultComponentsForTarget(target);
+    for (const component of harnessOutdatedComponents(vaultPath, spec, mapping, selected, options)) {
+      issues.push({ severity: "warn", code: "harness.component_outdated", target, message: `component ${component} differs from the current CLI template; run ipa harness update ${target}` });
+    }
     if (!existsSync(resolve(vaultPath, entry.path))) {
       issues.push({ severity: "error", code: "harness.manifest_missing", target, message: `missing ${entry.path}` });
     }

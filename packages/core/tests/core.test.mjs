@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { chmod, cp, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -11,6 +11,7 @@ import {
   buildContext,
   cacheStatus,
   cascadeNote,
+  cliVersionInfo,
   digestNote,
   formatVault,
   inboxAdd,
@@ -41,6 +42,8 @@ import {
   harnessInstall,
   harnessStatus,
   harnessUninstall,
+  harnessUpdate,
+  selfUpdate,
   tuneAnalyze,
   tuneEval,
   tuneLabel,
@@ -2124,4 +2127,102 @@ test("formatter apply keeps plan clean afterwards even when non-date patches mov
   assert.equal(after.summary.patches, 0, JSON.stringify(after.patches));
   const raw = await readFile(join(vault, "00 Inbox", "Converge.md"), "utf8");
   assert.match(raw, /date_modified: "?\d{4}\/\d{2}\/\d{2}/);
+});
+
+function gitCmd(cwd, ...args) {
+  const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  return result.stdout.trim();
+}
+
+test("cliVersionInfo reports workspace version, commit, and repo root", () => {
+  const info = cliVersionInfo();
+  assert.match(info.version, /^\d+\.\d+\.\d+/);
+  assert.ok(info.repo_root && existsSync(join(info.repo_root, "package.json")));
+  assert.match(info.commit ?? "", /^[0-9a-f]{6,}$/);
+});
+
+test("selfUpdate plans behind commits and applies a fast-forward pull on a fixture checkout", async () => {
+  const work = await mkdtemp(join(tmpdir(), "ipa-update-test-"));
+  const origin = join(work, "origin");
+  await mkdir(origin, { recursive: true });
+  gitCmd(origin, "init", "-b", "main");
+  gitCmd(origin, "config", "user.email", "test@example.com");
+  gitCmd(origin, "config", "user.name", "test");
+  await writeFile(join(origin, "README.md"), "v1\n", "utf8");
+  gitCmd(origin, "add", ".");
+  gitCmd(origin, "commit", "-m", "first");
+  const clone = join(work, "clone");
+  gitCmd(work, "clone", origin, clone);
+  await writeFile(join(origin, "README.md"), "v2\n", "utf8");
+  gitCmd(origin, "add", ".");
+  gitCmd(origin, "commit", "-m", "second change");
+
+  const plan = await selfUpdate({ repoRoot: clone });
+  assert.equal(plan.mode, "plan");
+  assert.equal(plan.behind, 1);
+  assert.equal(plan.up_to_date, false);
+  assert.match(plan.changes[0], /second change/);
+  assert.deepEqual(plan.commands, ["git pull --ff-only", "pnpm install", "pnpm run build"]);
+  assert.match(plan.hint, /ipa update --apply/);
+
+  await writeFile(join(clone, "local.txt"), "dirty\n", "utf8");
+  const dirty = await selfUpdate({ repoRoot: clone, apply: true, steps: [["git", "pull", "--ff-only"]] });
+  assert.equal(dirty.status, "error");
+  assert.equal(dirty.reason, "dirty_worktree");
+  await rm(join(clone, "local.txt"));
+
+  const applied = await selfUpdate({ repoRoot: clone, apply: true, steps: [["git", "pull", "--ff-only"]] });
+  assert.equal(applied.applied, true);
+  assert.equal(applied.steps.length, 1);
+  assert.equal(applied.steps[0].ok, true);
+  assert.match(applied.commit_after ?? "", /^[0-9a-f]{6,}$/);
+  assert.match(applied.next, /ipa harness update/);
+
+  const after = await selfUpdate({ repoRoot: clone, apply: true });
+  assert.equal(after.up_to_date, true);
+  assert.equal(after.applied, false);
+});
+
+test("harness status/doctor flag outdated components and harness update reinstalls with preserved selection", async () => {
+  const vault = await fixtureVault();
+  const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
+  const options = { homeDir: home, profile: "ipa-test" };
+  await harnessInstall(vault, "codex", { ...options, components: { without: ["hook:evidence"] } });
+
+  let status = await harnessStatus(vault, options);
+  assert.deepEqual(status.outdated, {});
+  assert.equal(status.update_hint, null);
+  assert.match(status.global.codex.cli_version ?? "", /^\d+\.\d+\.\d+/);
+
+  // Simulate files written by an older CLI: managed marker intact, content stale.
+  const guardHook = join(home, ".codex", "hooks", "ipa-inbox-guard.mjs");
+  await writeFile(guardHook, `${await readFile(guardHook, "utf8")}\n// stale template line\n`, "utf8");
+  const localPrompt = join(vault, "AGENTS.md");
+  const promptText = await readFile(localPrompt, "utf8");
+  await writeFile(localPrompt, promptText.replace("<!-- IPA_HARNESS_MANAGED_BEGIN:ipa-harness -->", "<!-- IPA_HARNESS_MANAGED_BEGIN:ipa-harness -->\nSTALE"), "utf8");
+
+  status = await harnessStatus(vault, options);
+  assert.deepEqual([...status.outdated.codex].sort(), ["hook:guard", "local-prompt"]);
+  assert.match(status.update_hint, /ipa harness update codex/);
+  assert.deepEqual(status.global.codex.outdated_components.sort(), ["hook:guard", "local-prompt"]);
+  const doctorReport = await harnessDoctor(vault, options);
+  const outdatedIssues = doctorReport.issues.filter((issue) => issue.code === "harness.component_outdated");
+  assert.equal(outdatedIssues.length, 2);
+  assert.match(outdatedIssues[0].message, /ipa harness update codex/);
+
+  const updated = await harnessUpdate(vault, "codex", options);
+  assert.equal(updated.status, "ok");
+  assert.equal(updated.updated, true);
+  assert.ok(!updated.components.includes("hook:evidence"));
+  assert.deepEqual(updated.omitted_components, ["hook:evidence"]);
+
+  status = await harnessStatus(vault, options);
+  assert.deepEqual(status.outdated, {});
+  assert.equal(existsSync(join(home, ".codex", "hooks", "ipa-user-prompt-nudge.mjs")), false, "omitted evidence hook must stay uninstalled after update");
+  assert.equal(existsSync(guardHook), true);
+
+  const missing = await harnessUpdate(vault, "claude", options);
+  assert.equal(missing.status, "error");
+  assert.equal(missing.reason, "not_installed");
 });

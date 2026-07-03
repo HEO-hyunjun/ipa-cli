@@ -497,3 +497,70 @@ test("multi-title set/digest, note redirect, and cascade run through the CLI", a
   const reviewOut = run(env, ["--profile", "ipa-test", "review", "sot"]);
   assert.match(reviewOut, /Issues|No issues\./);
 });
+
+test("--version prints the workspace version with commit hash", async () => {
+  const { env } = await fixtureProfile();
+  const out = run(env, ["--version"]);
+  assert.match(out, /^ipa \d+\.\d+\.\d+/);
+  const json = JSON.parse(run(env, ["--json", "--version"]));
+  assert.match(json.version, /^\d+\.\d+\.\d+/);
+  assert.ok(json.repo_root);
+});
+
+test("update plans against an IPA_UPDATE_REPO_ROOT checkout without modifying it", async () => {
+  const { env } = await fixtureProfile();
+  const git = (cwd, ...args) => {
+    const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  const work = await mkdtemp(join(tmpdir(), "ipa-cli-update-"));
+  const origin = join(work, "origin");
+  await mkdir(origin, { recursive: true });
+  git(origin, "init", "-b", "main");
+  git(origin, "config", "user.email", "test@example.com");
+  git(origin, "config", "user.name", "test");
+  await writeFile(join(origin, "README.md"), "v1\n", "utf8");
+  git(origin, "add", ".");
+  git(origin, "commit", "-m", "first");
+  const clone = join(work, "clone");
+  git(work, "clone", origin, clone);
+  await writeFile(join(origin, "README.md"), "v2\n", "utf8");
+  git(origin, "add", ".");
+  git(origin, "commit", "-m", "second");
+
+  const plan = JSON.parse(run({ ...env, IPA_UPDATE_REPO_ROOT: clone }, ["--json", "update"]));
+  assert.equal(plan.mode, "plan");
+  assert.equal(plan.behind, 1);
+  assert.equal(plan.up_to_date, false);
+  assert.deepEqual(plan.commands, ["git pull --ff-only", "pnpm install", "pnpm run build"]);
+  assert.equal(await readFile(join(clone, "README.md"), "utf8"), "v1\n", "plan must not modify the checkout");
+
+  const help = run(env, ["help", "update"]);
+  assert.match(help, /git pull --ff-only/);
+  assert.match(help, /ipa harness update/);
+});
+
+test("harness status flags stale components and harness update reinstalls them via CLI", async () => {
+  const { env } = await fixtureProfile();
+  const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
+  const harnessEnv = { ...env, IPA_HARNESS_HOME: home };
+  run(harnessEnv, ["--json", "harness", "install", "codex"]);
+
+  const hook = join(home, ".codex", "hooks", "ipa-inbox-guard.mjs");
+  await writeFile(hook, `${await readFile(hook, "utf8")}\n// stale\n`, "utf8");
+  const status = JSON.parse(run(harnessEnv, ["--json", "harness", "status"]));
+  assert.deepEqual(status.outdated, { codex: ["hook:guard"] });
+  assert.match(status.update_hint, /ipa harness update codex/);
+
+  const updated = JSON.parse(run(harnessEnv, ["--json", "harness", "update", "codex"]));
+  assert.equal(updated.status, "ok");
+  assert.equal(updated.updated, true);
+  const statusAfter = JSON.parse(run(harnessEnv, ["--json", "harness", "status"]));
+  assert.deepEqual(statusAfter.outdated, {});
+  assert.equal(statusAfter.update_hint, null);
+
+  const missing = runRaw(harnessEnv, ["--json", "harness", "update", "claude"]);
+  assert.equal(missing.status, 1);
+  assert.match(missing.stdout, /not_installed/);
+});

@@ -100,6 +100,23 @@ source ~/.zshrc
 The CLI entrypoint is `ipa` via `@ipa/cli`
 (`packages/cli/dist/main.js` after build).
 
+### Update
+
+`ipa update` locates the git checkout behind the running `ipa` binary, fetches
+upstream, and reports how many commits behind it is. `--apply` runs
+`git pull --ff-only`, `pnpm install`, and `pnpm run build`; the `~/.local/bin/ipa`
+symlink keeps pointing at the rebuilt output, so no relink is needed.
+
+```sh
+ipa --version        # e.g. ipa 0.1.0 (3e09d15)
+ipa update           # show pending upstream commits and the commands to run
+ipa update --apply   # fast-forward pull and rebuild
+```
+
+Apply refuses to run while the checkout has uncommitted changes or has
+diverged from upstream. After a CLI update, run `ipa harness status`; if it
+reports outdated components, refresh them with `ipa harness update <target>`.
+
 ## Quickstart
 
 ```sh
@@ -139,6 +156,7 @@ ipa harness init codex
 ipa harness install codex
 ipa harness install claude
 ipa harness install opencode
+ipa harness update claude
 ipa harness doctor
 ```
 
@@ -435,6 +453,14 @@ ipa harness install opencode --only skill,prompt
 ipa harness install codex --only hook:guard
 ```
 
+Installed harness files are generated from templates inside the CLI. After a
+CLI update, `ipa harness status` and `ipa harness doctor` compare the installed
+files against the current templates and list any target with
+`outdated_components` plus an update hint. `ipa harness update <target>`
+uninstalls and reinstalls the target with the same component selection (an
+omitted `hook:evidence` stays omitted), so renamed or dropped hook scripts do
+not survive as orphans.
+
 For the selected target, install writes:
 
 - user-global IPA CLI skill: `~/.codex/skills/ipa/SKILL.md`,
@@ -532,6 +558,8 @@ old in-package parity oracle has been removed.
 | `digest`           | `@ipa/core.digestNote`               | One-call index summary: children with modified dates, section titles, and snippets. |
 | `note redirect`    | `@ipa/core.redirectNotes`            | Repoint every wikilink/ref from source notes to a target; optional archive of sources. |
 | `cascade`          | `@ipa/core.cascadeNote`              | Staged ripple for a note: appliable ref/link wiring plus report-only overlap candidates. |
+| `update`           | `@ipa/core.selfUpdate`               | Git-checkout self-update: plan shows behind-count/commands, apply runs ff-only pull + rebuild. |
+| `harness update`   | `@ipa/core.harnessUpdate`            | Uninstall + reinstall harness files with the current templates, preserving component selection. |
 
 Compatibility is guarded by JS fixtures under
 `packages/test-vaults/fixtures/` and the CLI/core regression tests.
