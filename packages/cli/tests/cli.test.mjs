@@ -86,7 +86,7 @@ test("CLI help and key smoke commands run through ipa-test profile", async () =>
   assert.match(channels, /search channels \(9\)/);
   assert.match(channels, /body_match\s+0\.3630/);
   const rules = run(env, ["--profile", "ipa-test", "list-rules"]);
-  assert.match(rules, /validator rules \(15\)/);
+  assert.match(rules, /validator rules \(16\)/);
   assert.match(rules, /ipa\.link\.wikilink_target_missing/);
   await writeFile(join(vault, "00 Inbox", "Broken.md"), "# Broken\n", "utf8");
   const validator = run(env, ["--profile", "ipa-test", "validator"]);
@@ -338,7 +338,7 @@ test("legacy surface fixture is covered by JS fixtures", async () => {
   assert.match(channels, /fuzzy\s+0\.2680\s+0\.2680\s+Graded fuzzy match/);
   assert.match(channels, /project\s+0\.0330\s+0\.0330\s+Project folder\/ref boost/);
   const rules = run(env, [...profile, "list-rules"]);
-  assert.match(rules, /validator rules \(15\)/);
+  assert.match(rules, /validator rules \(16\)/);
   assert.match(rules, /ipa\.heading\.no_h1\s+heading\s+info\s+note\s+yes\s+on\s+builtin/);
   const refactors = run(env, [...profile, "list-refactors"]);
   assert.match(refactors, /refactor commands \(7\)/);
@@ -469,4 +469,31 @@ test("agent-efficiency surface: snippets, digest, multi-view, note set, replace 
   // formatter plan surfaces apply-gated rule patches without writing.
   const planHelp = run(env, ["digest", "--help"]);
   assert.match(planHelp, /Summarize an index\/root note/);
+});
+
+test("multi-title set/digest, note redirect, and cascade run through the CLI", async () => {
+  const { vault, env } = await fixtureProfile();
+
+  const multiSet = run(env, ["--profile", "ipa-test", "note", "set", "Alpha", "Beta", "--field", "tags", "--add", "shared", "--apply"]);
+  assert.ok((multiSet.match(/operation\s+set-note-field/g) ?? []).length === 2);
+  assert.match(await readFile(join(vault, "00 Inbox", "Alpha.md"), "utf8"), /shared/);
+  assert.match(await readFile(join(vault, "00 Inbox", "Beta.md"), "utf8"), /shared/);
+
+  const multiDigest = run(env, ["--profile", "ipa-test", "digest", "🔖 Topic Index", "🏷️ Topic Root"]);
+  assert.match(multiDigest, /Digest for '🔖 Topic Index'/);
+  assert.match(multiDigest, /Digest for '🏷️ Topic Root'/);
+
+  const cascade = run(env, ["--profile", "ipa-test", "cascade", "plan", "--note", "Beta"]);
+  assert.match(cascade, /Cascade \(plan\) for 'Beta'/);
+
+  const preview = run(env, ["--profile", "ipa-test", "note", "redirect", "Alpha", "--to", "Beta"]);
+  assert.match(preview, /Note redirect \(preview\)/);
+  assert.match(preview, /--apply/);
+  const applied = run(env, ["--profile", "ipa-test", "note", "redirect", "Alpha", "--to", "Beta", "--archive", "--apply"]);
+  assert.match(applied, /Note redirect \(applied\)/);
+  assert.equal(existsSync(join(vault, "02 Archive", "Alpha.md")), true);
+  assert.doesNotMatch(await readFile(join(vault, "01 Project", "🔖 Topic Index.md"), "utf8"), /\[\[Alpha\]\]/);
+
+  const reviewOut = run(env, ["--profile", "ipa-test", "review", "sot"]);
+  assert.match(reviewOut, /Issues|No issues\./);
 });

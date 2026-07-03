@@ -10,6 +10,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   buildContext,
   cacheStatus,
+  cascadeNote,
   digestNote,
   formatVault,
   inboxAdd,
@@ -29,6 +30,7 @@ import {
   resolveSettings,
   rewriteNote,
   rebuildCache,
+  redirectNotes,
   reviewVault,
   searchVault,
   scoreNote,
@@ -585,7 +587,7 @@ test("builtin linter rules are listed, applied and configurable", async () => {
   );
 
   const listed = await listRules(vault);
-  assert.equal(listed.rules.length, 15);
+  assert.equal(listed.rules.length, 16);
   assert.equal(listed.rules.find((item) => item.code === "ipa.title.index_prefix").enabled, true);
 
   const issues = (await validateVault(vault)).issues;
@@ -1996,4 +1998,111 @@ test("digestNote returns children with snippets and dates in one call", async ()
   const capped = await digestNote(vault, "🔖 Topic Index", { max: 1 });
   assert.equal(capped.children_shown, 1);
   assert.equal(capped.children_total, digest.children_total);
+});
+
+test("redirectNotes rewires wikilinks and refs to the target and archives sources", async () => {
+  const vault = await fixtureVault();
+
+  const preview = await redirectNotes(vault, ["Alpha"], "Beta", { archive: true });
+  assert.equal(preview.apply, false);
+  assert.ok(preview.changes.some((item) => item.note === "🔖 Topic Index" && item.links));
+  assert.match(await readFile(join(vault, "01 Project", "🔖 Topic Index.md"), "utf8"), /\[\[Alpha\]\]/);
+  assert.equal(existsSync(join(vault, "00 Inbox", "Alpha.md")), true);
+
+  const applied = await redirectNotes(vault, ["Alpha"], "Beta", { archive: true, apply: true });
+  assert.equal(applied.apply, true);
+  const index = await readFile(join(vault, "01 Project", "🔖 Topic Index.md"), "utf8");
+  assert.doesNotMatch(index, /\[\[Alpha\]\]/);
+  assert.match(index, /\[\[Beta\]\]/);
+  const beta = await readFile(join(vault, "00 Inbox", "Beta.md"), "utf8");
+  assert.doesNotMatch(beta, /Beta links to \[\[Alpha\]\]/);
+  assert.equal(existsSync(join(vault, "00 Inbox", "Alpha.md")), false);
+  assert.equal(existsSync(join(vault, "02 Archive", "Alpha.md")), true);
+
+  await assert.rejects(() => redirectNotes(vault, ["Beta"], "Beta", { apply: false }), /source equals target/);
+});
+
+test("cascadeNote plans ref/link wiring and reports overlaps without editing content", async () => {
+  const vault = await fixtureVault();
+  await writeFile(
+    join(vault, "00 Inbox", "Gamma.md"),
+    "---\ndate_created: 2026/05/10 (Sun) 00:00:00\ndate_modified: 2026/05/10 (Sun) 00:00:00\nref: []\ntags: []\ntype: note\n---\n# Gamma\n\nGamma extends Alpha with new findings.\n\n## Details\n\nMore on the topic index subject.\n",
+    "utf8"
+  );
+
+  const plan = await cascadeNote(vault, "Gamma");
+  assert.equal(plan.apply, false);
+  assert.ok(plan.forward_links.some((item) => item.target === "Alpha"), "plain-text Alpha mention becomes a forward link");
+  assert.ok(plan.ref_suggestions.some((item) => item.ref === "🔖 Topic Index"), "ref suggestion from related notes");
+  assert.ok(Array.isArray(plan.overlaps));
+  const untouched = await readFile(join(vault, "00 Inbox", "Gamma.md"), "utf8");
+  assert.doesNotMatch(untouched, /\[\[Alpha\]\]/);
+
+  const applied = await cascadeNote(vault, "Gamma", { apply: true, only: ["refs", "links"] });
+  assert.ok(applied.applied.length >= 2);
+  const gamma = await readFile(join(vault, "00 Inbox", "Gamma.md"), "utf8");
+  assert.match(gamma, /\[\[Alpha\]\]/);
+  assert.match(gamma, /\[\[🔖 Topic Index\]\]/);
+});
+
+test("write paths stamp vault-format dates and formatter fixes mixed ISO pollution", async () => {
+  const vault = await fixtureVault();
+
+  await refactorVault(vault, "tag-add", ["fresh"], { apply: true });
+  const alpha = await readFile(join(vault, "00 Inbox", "Alpha.md"), "utf8");
+  const stamp = alpha.match(/date_modified: (.*)/)[1];
+  assert.match(stamp, /^"?\d{4}\/\d{2}\/\d{2} \([A-Z][a-z]{2}\) \d{2}:\d{2}:\d{2}"?$/, `vault format expected, got ${stamp}`);
+
+  // Simulate legacy ISO pollution in one field only (mixed formats).
+  await writeFile(
+    join(vault, "00 Inbox", "Mixed.md"),
+    "---\ndate_created: 2026/05/10 (Sun) 00:00:00\ndate_modified: 2026-06-23T06:48:04.214Z\nref: [\"[[🔖 Topic Index]]\"]\ntags: []\ntype: note\n---\n# Mixed\n\nBody\n",
+    "utf8"
+  );
+  const plan = await formatVault(vault, false, { notes: ["Mixed"], ruleApply: true });
+  assert.ok(plan.patches.some((patch) => patch.rules.includes("ipa.frontmatter.date_format")));
+  await formatVault(vault, true, { notes: ["Mixed"] });
+  const mixed = await readFile(join(vault, "00 Inbox", "Mixed.md"), "utf8");
+  assert.doesNotMatch(mixed, /date_modified: 2026-06-23T/);
+  assert.match(mixed, /date_modified: "?2026\/06\/23/);
+});
+
+test("absolute_path rule is config-gated and fixes aliased paths", async () => {
+  const vault = await fixtureVault();
+  await writeFile(
+    join(vault, "00 Inbox", "Paths.md"),
+    "---\ndate_created: 2026/05/10 (Sun) 00:00:00\ndate_modified: 2026/05/10 (Sun) 00:00:00\nref: [\"[[🔖 Topic Index]]\"]\ntags: []\ntype: note\n---\n# Paths\n\nSee /Users/someone/workspace/acme/packages/core/index.ts for details.\n",
+    "utf8"
+  );
+
+  // Without path_aliases config the rule stays silent.
+  const silent = await validateVault(vault);
+  assert.ok(!silent.issues.some((item) => item.code === "ipa.content.absolute_path"));
+
+  const configPath = join(vault, ".ipa", "config.yaml");
+  await writeFile(configPath, (await readFile(configPath, "utf8")) + "path_aliases:\n  acme: /Users/someone/workspace/acme\n", "utf8");
+
+  const flagged = await validateVault(vault);
+  assert.ok(flagged.issues.some((item) => item.code === "ipa.content.absolute_path" && item.note === "Paths"));
+
+  await formatVault(vault, true, { notes: ["Paths"] });
+  const fixed = await readFile(join(vault, "00 Inbox", "Paths.md"), "utf8");
+  assert.doesNotMatch(fixed, /\/Users\/someone\/workspace\/acme/);
+  assert.match(fixed, /See acme\/packages\/core\/index\.ts/);
+});
+
+test("review sot flags report-style pileups under one index", async () => {
+  const vault = await fixtureVault();
+  for (const title of ["AI-1 구현 계획", "AI-1 구현 결과", "AI-2 검증 결과", "AI-2 최종 보고서"]) {
+    await writeFile(
+      join(vault, "00 Inbox", `${title}.md`),
+      `---\ndate_created: 2026/05/10 (Sun) 00:00:00\ndate_modified: 2026/05/10 (Sun) 00:00:00\nref: ["[[🔖 Topic Index]]"]\ntags: []\ntype: note\n---\n# ${title}\n\nBody\n`,
+      "utf8"
+    );
+  }
+  const review = await reviewVault(vault, "sot");
+  const candidate = review.issues.find((item) => item.code === "review.sot.consolidation_candidate");
+  assert.ok(candidate, "consolidation candidate reported");
+  assert.equal(candidate.note, "🔖 Topic Index");
+  assert.ok(candidate.notes.length >= 4);
 });
