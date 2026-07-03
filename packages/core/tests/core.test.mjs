@@ -2064,7 +2064,8 @@ test("write paths stamp vault-format dates and formatter fixes mixed ISO polluti
   await formatVault(vault, true, { notes: ["Mixed"] });
   const mixed = await readFile(join(vault, "00 Inbox", "Mixed.md"), "utf8");
   assert.doesNotMatch(mixed, /date_modified: 2026-06-23T/);
-  assert.match(mixed, /date_modified: "?2026\/06\/23/);
+  // apply re-stamps updated_at at write time, so only the format is asserted.
+  assert.match(mixed, /date_modified: "?\d{4}\/\d{2}\/\d{2} \([A-Z][a-z]{2}\)/);
 });
 
 test("absolute_path rule is config-gated and fixes aliased paths", async () => {
@@ -2105,4 +2106,22 @@ test("review sot flags report-style pileups under one index", async () => {
   assert.ok(candidate, "consolidation candidate reported");
   assert.equal(candidate.note, "🔖 Topic Index");
   assert.ok(candidate.notes.length >= 4);
+});
+
+test("formatter apply keeps plan clean afterwards even when non-date patches move mtime", async () => {
+  const vault = await fixtureVault();
+  // Note with a spacing violation the obsidian rules would fix — but the
+  // fixture vault has no plugin rules, so simulate with a mixed-ISO date
+  // (date_format fix) plus verify updated_at is stamped at write time.
+  await writeFile(
+    join(vault, "00 Inbox", "Converge.md"),
+    "---\ndate_created: 2026/05/10 (Sun) 00:00:00\ndate_modified: 2026-06-23T06:48:04.214Z\nref: [\"[[🔖 Topic Index]]\"]\ntags: []\ntype: note\n---\n# Converge\n\nBody\n",
+    "utf8"
+  );
+  const first = await formatVault(vault, true, { notes: ["Converge"] });
+  assert.ok(first.applied.length >= 1);
+  const after = await formatVault(vault, false, { notes: ["Converge"], ruleApply: true });
+  assert.equal(after.summary.patches, 0, JSON.stringify(after.patches));
+  const raw = await readFile(join(vault, "00 Inbox", "Converge.md"), "utf8");
+  assert.match(raw, /date_modified: "?\d{4}\/\d{2}\/\d{2}/);
 });

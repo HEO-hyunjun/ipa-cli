@@ -3345,7 +3345,7 @@ export async function formatVault(vaultPath, apply = false, options = {}) {
     }
   };
   patches.push(...await ruleFixPatches(notes, ruleContext, rules));
-  const applied = apply ? await applyFormatterPatches(notes, patches) : undefined;
+  const applied = apply ? await applyFormatterPatches(notes, patches, mapping) : undefined;
   return {
     summary: { issues: issues.length, patches: patches.length },
     patches,
@@ -3354,7 +3354,7 @@ export async function formatVault(vaultPath, apply = false, options = {}) {
   };
 }
 
-async function applyFormatterPatches(notes, patches) {
+async function applyFormatterPatches(notes, patches, mapping = DEFAULT_MAPPING) {
   const byNote = new Map(notes.map((note) => [note.id, { note, patches: [] }]));
   for (const patch of patches) {
     const entry = byNote.get(patch.note);
@@ -3368,7 +3368,9 @@ async function applyFormatterPatches(notes, patches) {
       text = applyFormatterPatch(text, patch);
     }
     if (text !== note.raw) {
-      await writeFile(note.path, text, "utf8");
+      // Stamp updated_at at write time so the post-write mtime stays inside
+      // the date rule's tolerance window and the next plan run is clean.
+      await writeFile(note.path, syncUpdatedAtText(text, mapping), "utf8");
       applied.push({ note: note.id, path: note.relPath, patches: notePatches.length });
     }
   }
