@@ -913,6 +913,10 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   assert.match(skill, /within ~3 ipa calls/);
   assert.match(skill, /ipa digest "Index Note"/);
   assert.match(skill, /ipa config init/);
+  // Command Selection surfaces the plain rename (note stays, links rewired) and
+  // the onboarding close that points at the operating-rules fragment.
+  assert.match(skill, /ipa rename "Old" "New" --apply/);
+  assert.match(skill, /\.ipa\/harness\/fragments\/prompt\.md/);
   assert.match(skill, /Never edit the time fields \(`date_created`\/`date_modified`\) by hand/);
   assert.match(skill, /ipa convention/);
   assert.doesNotMatch(skill, /current prompt context/);
@@ -986,6 +990,11 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   assert.match(configSkill, /ipa config init/);
   assert.match(configSkill, /ipa profile current/);
   assert.match(configSkill, /\.ipa\/config\.yaml/);
+  // The onboarding close teaches the mapping-vs-fragment split and the hard rule.
+  assert.match(configSkill, /Onboarding Close/);
+  assert.match(configSkill, /CLI에 담을 칸이 있으면 config\.yaml, 없으면 fragment/);
+  assert.match(configSkill, /\.ipa\/harness\/fragments\/prompt\.md/);
+  assert.match(configSkill, /never rename the user's folders/);
   const tuneSkill = await readFile(join(vault, ".agents", "skills", "ipa-tune", "SKILL.md"), "utf8");
   assert.match(tuneSkill, /Use this skill whenever the user wants better IPA search results/);
   assert.match(tuneSkill, /ipa tune log --limit 50/);
@@ -1010,6 +1019,9 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   assert.match(consultSkill, /ipa convention/);
   assert.match(consultSkill, /Friction Counseling/);
   assert.match(consultSkill, /Apply fixes, move notes, or edit config in this skill/);
+  // Operating rules go through the fragment, never a hand-edited managed block.
+  assert.match(consultSkill, /\.ipa\/harness\/fragments\/prompt\.md/);
+  assert.match(consultSkill, /IPA_HARNESS_MANAGED/);
   const hooks = await readFile(join(home, ".codex", "hooks.json"), "utf8");
   assert.match(hooks, /ipa-session-env\.mjs/);
   assert.match(hooks, /SessionStart/);
@@ -1779,6 +1791,8 @@ test("harness prompt surfaces render field and folder names from the config mapp
   assert.match(skill, /--field link --add "Index Note" --apply/);
   assert.match(skill, /`created`\/`modified`/);
   assert.match(skill, /`link`\/`keywords`\) at capture time/);
+  // The rename router row names the mapped refs field for the inbound rewire.
+  assert.match(skill, /inbound link\/wikilinks auto-rewired/);
   assert.doesNotMatch(skill, /--field ref --add/);
   assert.doesNotMatch(skill, /date_created/);
 

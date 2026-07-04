@@ -6604,8 +6604,9 @@ function ipaCommandSelection(prefix = "ipa", mapping = DEFAULT_MAPPING) {
 - Index/root summary: \`${prefix} digest "Index Note"\` (children + snippets + dates), then \`view --full\` on at most the 2-3 most relevant children — never open every child.
 - Broad prior context or user-specific background: \`${prefix} context "keyword" --size medium --format markdown\`; widen with \`${prefix} search "other angle"\` only when context missed something. Several search angles go in one call — \`${prefix} search "A" "B" "C"\` (vault loads once). Results already carry snippets and dates — judge relevance from them before opening notes.
 - Related notes: \`${prefix} link suggest "Note Title"\`. Graph shape: \`${prefix} traversal --up|--down|--siblings "Note Title"\`.
-- New/empty vault with no \`.ipa/config.yaml\`: \`${prefix} config init\` (absorb existing folders with \`--inbox/--project/--archive\`, then edit to match), verify with \`${prefix} doctor\`.
+- New/empty vault with no \`.ipa/config.yaml\`: \`${prefix} config init\` (absorb existing folders with \`--inbox/--project/--archive\`, then edit to match), verify with \`${prefix} doctor\`. Closing setup: optionally confirm folder/field mapping (config.yaml) and operating rules (\`.ipa/harness/fragments/prompt.md\` → \`${prefix} harness update <target>\`) — the ipa-config skill has the interview. Never rename the user's folders or do vault-wide moves/backfills to fit defaults; absorb existing structure via mapping.
 - New note: \`${prefix} inbox add ...\`. Body edit: \`${prefix} note replace ...\`. Frontmatter edit: \`${prefix} note set "Note" --field ${mapping.refs} --add "Index Note" --apply\`.
+- Rename a note/index (note stays, inbound ${mapping.refs}/wikilinks auto-rewired): \`${prefix} rename "Old" "New" --apply\` (drop \`--apply\` for preview). Only when merging several notes into one: \`${prefix} note redirect\`.
 - During note work always scope \`validator\`/\`formatter plan\` with \`--note\`; without it they are vault-wide maintenance sweeps.
 - Unsure command or syntax: \`${prefix} help\` or \`${prefix} <command> --help\`.
 `;
@@ -6674,6 +6675,15 @@ Use this skill when the user wants to inspect or change IPA profile selection, v
 7. For vault-local config, prefer minimal edits to mapping, folders, files.exclude, plugins, search channel toggles, test.file, and weights.file.
 8. After changing \`mapping\` fields or folder names, re-render the installed harness with \`ipa harness update <target>\` (for example \`ipa harness update claude\`): prompt blocks and skills print the mapped field/folder names, so they stay stale until re-rendered.
 9. Verify config-sensitive behavior with \`ipa config show\`, \`ipa list-rules\`, \`ipa list-channels\`, \`ipa validator\`, and a focused \`ipa search "keyword"\`.
+
+## Onboarding Close
+
+Before finishing a fresh setup, optionally (offer it; the user may skip) confirm two categories of vault policy. The organizing principle: CLI에 담을 칸이 있으면 config.yaml, 없으면 fragment.
+
+- **Mapping — has a config slot.** Existing folder names → inbox/project/archive and frontmatter field names go in \`.ipa/config.yaml\` via \`ipa config init --inbox/--project/--archive\` (then edit \`mapping\`). Absorb the vault's real structure; do not reshape the vault to the defaults.
+- **Operating rules — no config slot, pure policy.** Ask up to four short questions: ⓐ where work/scratch docs go, ⓑ auto-migrate/organize vs confirm each time, ⓒ folders/notes never to touch, ⓓ title/tag conventions. Write the answers into \`.ipa/harness/fragments/prompt.md\` (\`ipa config init\` seeds an empty template there), then \`ipa harness update <target>\` to inline them into managed prompts.
+
+Hard rule regardless of answers: never rename the user's folders or run vault-wide changes (mass move/backfill) without asking — absorb the existing structure through mapping instead.
 
 Do not hard-code one user's absolute vault path into vault-local files. Use project-local selectors, profiles, or documented setup commands instead.`
   },
@@ -6874,6 +6884,8 @@ Answer from \`ipa convention\` using this vault's real field/folder names, expla
 | "The same manual fix repeats" | Rule plugin with a safe fix so the formatter applies it |
 
 4. Prefer the smallest lever that removes the cause; a one-off manual cleanup that will recur is not a resolution.
+
+Vault operating rules belong in \`.ipa/harness/fragments/prompt.md\` (then \`ipa harness update <target>\`), never in the \`IPA_HARNESS_MANAGED\` block of \`CLAUDE.md\`/\`AGENTS.md\` — doctor flags a hand-edited managed block as drift and \`harness update\` overwrites it.
 
 ## Must Not
 
