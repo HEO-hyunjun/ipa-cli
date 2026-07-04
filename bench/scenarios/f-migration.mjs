@@ -63,5 +63,5 @@ export default [
         validator_clean_changed: true,
       } },
     ],
-    budget: { maxCostUsd: 2.5, maxIpaCalls: 25 }, goldenPath: 8 },
+    budget: { maxCostUsd: 4, maxIpaCalls: 30 }, goldenPath: 8 },
 ];

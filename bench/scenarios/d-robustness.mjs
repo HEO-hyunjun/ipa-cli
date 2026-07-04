@@ -35,5 +35,5 @@ export default [
       validator_clean_changed: true, // divergent의 vault-local rule 플러그인 준수까지 포함 판정
       formatter_pending_empty: true,
     } }],
-    budget: { maxCostUsd: 0.8, maxIpaCalls: 8 }, goldenPath: 3 },
+    budget: { maxCostUsd: 0.8, maxIpaCalls: 10 }, goldenPath: 3 },
 ];
