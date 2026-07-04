@@ -169,7 +169,7 @@ test("link plan uses semantic search queries and ignores collapsed transcript no
   const vault = await fixtureVault();
   await mkdir(join(vault, "02 Archive"), { recursive: true });
   await writeFile(
-    join(vault, "01 Project", "🔖 빅스데이터 회의.md"),
+    join(vault, "01 Project", "🔖 플랫폼 회의.md"),
     `---
 date_created: 2026/05/22 (Fri) 00:00:00
 date_modified: 2026/05/22 (Fri) 00:00:00
@@ -177,7 +177,7 @@ ref: []
 tags: []
 type: index
 ---
-# 빅스데이터 회의
+# 플랫폼 회의
 `,
     "utf8"
   );
@@ -200,14 +200,14 @@ type: index
     `---
 date_created: 2026/05/22 (Fri) 09:31:47
 date_modified: 2026/05/22 (Fri) 10:38:19
-ref: ["[[🔖 빅스데이터 회의]]"]
+ref: ["[[🔖 플랫폼 회의]]"]
 tags: []
 type: note
 ---
 ## 요약
 
-- Entity Mapping은 도메인 선택 채팅을 위해 Spring/gRPC 호출부와 OPA 권한 세팅을 진행한다.
-- DeployKit/build 파일만 전제로 두지 말고 BIX 빌드와 로컬 개발 환경을 함께 확인한다.
+- Entity Mapping은 도메인 선택 검색을 위해 API 호출부와 권한 게이트 세팅을 진행한다.
+- deploy-kit 빌드 파일만 전제로 두지 말고 캐시 빌드와 로컬 개발 환경을 함께 확인한다.
 - 신규 노트북 2대 배정은 장비 도착 후 결정한다.
 
 > [!note]- 전사문
@@ -221,18 +221,18 @@ type: note
     `---
 date_created: 2026/05/21 (Thu) 09:30:58
 date_modified: 2026/05/21 (Thu) 11:07:15
-ref: ["[[🔖 빅스데이터 회의]]"]
-tags: [bigxdata/sprint]
+ref: ["[[🔖 플랫폼 회의]]"]
+tags: [demo/sprint]
 type: note
 ---
 ## 개발 장비
 
-Gateway/OPA/MariaDB/FastAPI/JVM Parser를 함께 띄우면 16GB RAM으로는 부족하므로 팀 노트북은 최소 32GB RAM을 목표로 한다.
+게이트웨이/DB/파서 서비스를 함께 띄우면 16GB RAM으로는 부족하므로 팀 노트북은 최소 32GB RAM을 목표로 한다.
 `,
     "utf8"
   );
   await writeFile(
-    join(vault, "02 Archive", "AI-1354 도메인 선택 기반 Cypher query 제어 구현 결과.md"),
+    join(vault, "02 Archive", "TICKET-42 도메인 선택 기반 query 제어 구현 결과.md"),
     `---
 date_created: 2026/05/18 (Mon) 00:00:00
 date_modified: 2026/05/18 (Mon) 00:00:00
@@ -242,22 +242,22 @@ type: note
 ---
 ## 회고
 
-도메인 선택 기반 Cypher query 제어는 OPA/Query Gateway와 연결되어야 하며 target domain contract와 guardrail decision을 audit으로 남긴다.
+도메인 선택 기반 query 제어는 권한 게이트웨이와 연결되어야 하며 domain contract와 guardrail decision을 audit으로 남긴다.
 `,
     "utf8"
   );
   await writeFile(
-    join(vault, "02 Archive", "agentworks-deploy-kit 사용법 - BIX 빌드와 WAR 배포의 함정.md"),
+    join(vault, "02 Archive", "deploy-kit 사용법 - 캐시 빌드와 WAR 배포의 함정.md"),
     `---
 date_created: 2026/04/27 (Mon) 16:08:00
 date_modified: 2026/05/19 (Tue) 11:01:55
 ref: []
-tags: [bigxdata/deploy_kit, bigxdata/bix_build]
+tags: [demo/deploy_kit, demo/cache_build]
 type: note
 ---
-## BIX 빌드
+## 캐시 빌드
 
-agentworks-deploy-kit에서 DeployKit, BIX 빌드, WAR 배포, 로컬 개발 환경 문제를 함께 다룬다.
+deploy-kit에서 캐시 빌드, WAR 배포, 로컬 개발 환경 문제를 함께 다룬다.
 `,
     "utf8"
   );
@@ -265,12 +265,12 @@ agentworks-deploy-kit에서 DeployKit, BIX 빌드, WAR 배포, 로컬 개발 환
   const plan = await linkPlan(vault, { note: "260522 스크럼" });
   const targets = plan.changes.map((change) => change.target);
   assert.ok(targets.includes("260521 스프린트 회고"));
-  assert.ok(targets.includes("AI-1354 도메인 선택 기반 Cypher query 제어 구현 결과"));
-  assert.ok(targets.includes("agentworks-deploy-kit 사용법 - BIX 빌드와 WAR 배포의 함정"));
+  assert.ok(targets.includes("TICKET-42 도메인 선택 기반 query 제어 구현 결과"));
+  assert.ok(targets.includes("deploy-kit 사용법 - 캐시 빌드와 WAR 배포의 함정"));
   assert.ok(!targets.includes("🔖 커피"));
-  const semantic = plan.changes.find((change) => change.target === "AI-1354 도메인 선택 기반 Cypher query 제어 구현 결과");
+  const semantic = plan.changes.find((change) => change.target === "TICKET-42 도메인 선택 기반 query 제어 구현 결과");
   assert.equal(semantic.reason, "semantic_search_match");
-  assert.match(semantic.source_query, /opa|도메인/);
+  assert.match(semantic.source_query, /도메인|권한/);
 });
 
 test("search, view, traversal and context work in the JS runtime", async () => {
@@ -2362,7 +2362,7 @@ test("absolute_path rule is config-gated and fixes aliased paths", async () => {
 
 test("review sot is config-gated and flags report-style pileups under one index", async () => {
   const vault = await fixtureVault();
-  for (const title of ["AI-1 구현 계획", "AI-1 구현 결과", "AI-2 검증 결과", "AI-2 최종 보고서"]) {
+  for (const title of ["TICKET-1 구현 계획", "TICKET-1 구현 결과", "TICKET-2 검증 결과", "TICKET-2 최종 보고서"]) {
     await writeFile(
       join(vault, "00 Inbox", `${title}.md`),
       `---\ndate_created: 2026/05/10 (Sun) 00:00:00\ndate_modified: 2026/05/10 (Sun) 00:00:00\nref: ["[[🔖 Topic Index]]"]\ntags: []\ntype: note\n---\n# ${title}\n\nBody\n`,
