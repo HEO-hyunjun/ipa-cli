@@ -1010,6 +1010,7 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   assert.match(hooks, /ipa-user-prompt-nudge\.mjs/);
   assert.match(hooks, /ipa-md-write-nudge\.mjs/);
   assert.match(hooks, /ipa-formatter-gate\.mjs/);
+  assert.match(hooks, /ipa-vault-ref-nudge\.mjs/);
   assert.match(hooks, /Stop/);
   const promptCwd = join(home, "workspace");
   const promptNudge = spawnSync(process.execPath, [promptHook], {
@@ -1646,6 +1647,10 @@ test("harness prompt surfaces render field and folder names from the config mapp
   const consultSkill = await readFile(join(vault, ".claude", "skills", "ipa-consult", "SKILL.md"), "utf8");
   assert.match(consultSkill, /`link` vertical, `keywords` horizontal/);
 
+  // Then: the global skill description names the mapped folder paths so path
+  // mentions ("10 Intake/노트.md") trigger the skill outside the vault.
+  assert.match(skill, /`10 Intake\/`/);
+
   // Then: the vault-local block carries the mapped folder names.
   const localPrompt = await readFile(join(vault, "CLAUDE.md"), "utf8");
   assert.match(localPrompt, /inbox `10 Intake`/);
@@ -1655,6 +1660,39 @@ test("harness prompt surfaces render field and folder names from the config mapp
   assert.match(triageSkill, /--field link --add "Index Note" --apply/);
 
   await harnessUninstall(vault, "claude", options);
+});
+
+test("vault-ref nudge hook points path-referencing prompts at the ipa skill from outside the vault", async () => {
+  // Given: an installed harness whose vault uses the default folder mapping.
+  const vault = await fixtureVault();
+  const home = await mkdtemp(join(tmpdir(), "ipa-vaultref-home-"));
+  const options = { homeDir: home, profile: "ipa-test" };
+  await harnessInstall(vault, "codex", options);
+  const script = join(home, ".codex", "hooks", "ipa-vault-ref-nudge.mjs");
+  assert.ok(existsSync(script), "vault-ref hook script must be installed");
+  const run = (payload) => spawnSync(process.execPath, [script], {
+    input: JSON.stringify(payload),
+    encoding: "utf8",
+    env: { ...process.env, IPA_VAULT_PATH: vault }
+  });
+
+  // Then: a vault note path mentioned from outside the vault injects the pointer.
+  const outside = run({ prompt: "00 Inbox/Alpha.md 이거 보고 요약해줘", cwd: tmpdir() });
+  assert.equal(outside.status, 0);
+  assert.match(outside.stdout, /\[IPA\]/);
+  assert.match(outside.stdout, /ipa view "Note Title"/);
+
+  // Then: the same prompt inside the vault stays silent (local surfaces cover it).
+  const inside = run({ prompt: "00 Inbox/Alpha.md 이거 보고 요약해줘", cwd: vault });
+  assert.equal(inside.status, 0);
+  assert.equal(inside.stdout.trim(), "");
+
+  // Then: prompts without a vault path reference stay silent.
+  const unrelated = run({ prompt: "git rebase랑 merge 차이 알려줘", cwd: tmpdir() });
+  assert.equal(unrelated.status, 0);
+  assert.equal(unrelated.stdout.trim(), "");
+
+  await harnessUninstall(vault, "codex", options);
 });
 
 test("convention show renders concepts through the active config mapping and vault fragments", async () => {

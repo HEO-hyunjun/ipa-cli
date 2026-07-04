@@ -6141,6 +6141,7 @@ const HARNESS_COMPONENTS = [
   "hook:markdown-nudge",
   "hook:call-counter",
   "hook:formatter-gate",
+  "hook:vault-ref",
   "hook:evidence"
 ];
 
@@ -6150,6 +6151,7 @@ const HARNESS_HOOK_COMPONENT_TO_SCRIPT = {
   "hook:markdown-nudge": "ipa-md-write-nudge.mjs",
   "hook:call-counter": "ipa-call-counter.mjs",
   "hook:formatter-gate": "ipa-formatter-gate.mjs",
+  "hook:vault-ref": "ipa-vault-ref-nudge.mjs",
   "hook:evidence": "ipa-user-prompt-nudge.mjs"
 };
 
@@ -6159,6 +6161,7 @@ const HARNESS_HOOK_COMPONENT_TO_EVENT = {
   "hook:markdown-nudge": "PostToolUse",
   "hook:call-counter": "PostToolUse",
   "hook:formatter-gate": "Stop",
+  "hook:vault-ref": "UserPromptSubmit",
   "hook:evidence": "UserPromptSubmit"
 };
 
@@ -6168,6 +6171,7 @@ const HARNESS_HOOK_COMPONENT_TO_MATCHER = {
   "hook:markdown-nudge": "Write|Edit|MultiEdit",
   "hook:call-counter": "Bash",
   "hook:formatter-gate": null,
+  "hook:vault-ref": null,
   "hook:evidence": null
 };
 
@@ -6181,9 +6185,9 @@ const HARNESS_HOOK_COMPONENT_TO_PLUGIN_MARKER = {
 };
 
 function componentsValidForTarget(name) {
-  // The Bash call counter is a claude/codex hook; the opencode plugin has no
-  // equivalent shell matcher yet.
-  if (name === "opencode") return HARNESS_COMPONENTS.filter((component) => component !== "hook:call-counter");
+  // The Bash call counter and the vault path-reference nudge are claude/codex
+  // hooks; the opencode plugin has no equivalent handlers yet.
+  if (name === "opencode") return HARNESS_COMPONENTS.filter((component) => component !== "hook:call-counter" && component !== "hook:vault-ref");
   return HARNESS_COMPONENTS.filter((component) => component !== "opencode-plugin");
 }
 
@@ -6665,7 +6669,8 @@ const IPA_MANAGED_HOOK_SCRIPTS = [
   "ipa-user-prompt-nudge.mjs",
   "ipa-md-write-nudge.mjs",
   "ipa-call-counter.mjs",
-  "ipa-formatter-gate.mjs"
+  "ipa-formatter-gate.mjs",
+  "ipa-vault-ref-nudge.mjs"
 ];
 
 function isManagedHookCommand(command) {
@@ -6756,7 +6761,7 @@ function harnessSkillContent(vaultPath, spec, mapping = DEFAULT_MAPPING, options
   const prefix = commandPrefix(vaultPath, options);
   return `---
 name: ipa
-description: Entry point for every IPA vault task — search, read, validate, format, and safely write vault notes with the ipa CLI, and route focused work (concept questions, triage, review, tuning, rules, config) to the vault's helper skills. Use when a task mentions IPA, the vault, a vault note, inbox capture, note search, note validation, note formatting, or asks what an IPA concept means.
+description: Entry point for every IPA vault task — search, read, validate, format, and safely write vault notes with the ipa CLI, and route focused work (concept questions, triage, review, tuning, rules, config) to the vault's helper skills. Use when a task mentions IPA, the vault, a vault note, inbox capture, note search, note validation, note formatting, asks what an IPA concept means, or references a note path under the vault folders (\`${mapping.inbox_dir}/\`, \`${mapping.project_dir}/\`, \`${mapping.archive_dir}/\`, or \`.md\` files in ${vaultPath}).
 ---
 
 <!-- ${HARNESS_MARKER} -->
@@ -6982,6 +6987,45 @@ if (!allowed) {
   process.stdout.write(JSON.stringify({ decision: "block", reason: message }) + "\\n");
   process.exit(2);
 }
+`;
+}
+
+// UserPromptSubmit nudge for sessions running OUTSIDE the vault: when the
+// prompt references a vault note by path (mapped folder name + "/", or the
+// vault's absolute path), inject a pointer to the ipa skill/CLI so the agent
+// resolves the note through `ipa view` instead of raw file reads. Inside the
+// vault the local prompt surfaces already cover this, so the hook stays silent.
+function vaultRefNudgeScript(vaultPath, mapping, options = {}) {
+  const folders = JSON.stringify([mapping.inbox_dir, mapping.project_dir, mapping.archive_dir].filter(Boolean));
+  return `#!/usr/bin/env node
+// ${HARNESS_MARKER}: IPA vault path-reference nudge.
+import { readFileSync } from "node:fs";
+import { resolve, sep } from "node:path";
+
+const vaultPath = ${vaultResolverSnippet(vaultPath, options)};
+const folders = ${folders};
+
+let input = {};
+try { input = JSON.parse(readFileSync(0, "utf8")); } catch {}
+const prompt = [input.prompt, input.user_prompt, input.message, input.text]
+  .find((value) => typeof value === "string" && value.trim()) ?? "";
+if (!prompt) process.exit(0);
+
+const cwdRaw = typeof input.cwd === "string" && input.cwd.trim() ? input.cwd : process.cwd();
+const cwd = resolve(cwdRaw);
+const vaultRoot = resolve(vaultPath);
+if (cwd === vaultRoot || cwd.startsWith(vaultRoot + sep)) process.exit(0);
+
+const mentionsVault = folders.some((name) => prompt.includes(name + "/")) || prompt.includes(vaultPath);
+if (!mentionsVault) process.exit(0);
+
+console.log([
+  "[IPA] This prompt references a note path in the IPA vault (" + vaultPath + ").",
+  "Resolve it through the ipa CLI (global ipa skill) instead of reading the file directly:",
+  '- Note title = filename without the folder and ".md": ipa view "Note Title" (--full for the whole note).',
+  '- Surrounding context: ipa search "keyword", ipa digest "Index Note".',
+  "- Any vault edit goes through ipa commands and ends with the note-scoped validator/formatter loop."
+].join("\\n"));
 `;
 }
 
@@ -7772,6 +7816,7 @@ function harnessHookScriptContent(component, vaultPath, spec, mapping, options =
   switch (component) {
     case "hook:session-env": return sessionEnvScript();
     case "hook:guard": return inboxGuardScript(vaultPath, mapping.inbox_dir, options);
+    case "hook:vault-ref": return vaultRefNudgeScript(vaultPath, mapping, options);
     case "hook:evidence": return userPromptNudgeScript(vaultPath, { ...options, agent: spec.name });
     case "hook:markdown-nudge": return markdownWriteNudgeScript(vaultPath, mapping, options);
     case "hook:call-counter": return callCounterScript(vaultPath, options);
@@ -7866,6 +7911,7 @@ async function installGlobalHarness(vaultPath, spec, mapping, options = {}) {
   const writeNudgePath = join(spec.hooksDir, "ipa-md-write-nudge.mjs");
   const callCounterPath = join(spec.hooksDir, "ipa-call-counter.mjs");
   const formatterGatePath = join(spec.hooksDir, "ipa-formatter-gate.mjs");
+  const vaultRefPath = join(spec.hooksDir, "ipa-vault-ref-nudge.mjs");
 
   for (const artifact of harnessExpectedArtifacts(vaultPath, spec, mapping, selected, options)) {
     if (artifact.scope !== "global") continue;
@@ -7892,6 +7938,9 @@ async function installGlobalHarness(vaultPath, spec, mapping, options = {}) {
     if (componentSelected(selected, "hook:call-counter")) {
       addHookCommand(config, "PostToolUse", "Bash", hookCommand(callCounterPath, spec), null, 5);
     }
+    if (componentSelected(selected, "hook:vault-ref")) {
+      addHookCommand(config, "UserPromptSubmit", null, hookCommand(vaultRefPath, spec), null, 5);
+    }
     if (componentSelected(selected, "hook:evidence")) {
       addHookCommand(config, "UserPromptSubmit", null, hookCommand(promptPath, spec), null, 5);
     }
@@ -7912,7 +7961,8 @@ async function uninstallGlobalHarness(spec) {
     join(spec.hooksDir, "ipa-user-prompt-nudge.mjs"),
     join(spec.hooksDir, "ipa-md-write-nudge.mjs"),
     join(spec.hooksDir, "ipa-call-counter.mjs"),
-    join(spec.hooksDir, "ipa-formatter-gate.mjs")
+    join(spec.hooksDir, "ipa-formatter-gate.mjs"),
+    join(spec.hooksDir, "ipa-vault-ref-nudge.mjs")
   ];
   for (const path of [spec.skillFile, ...scripts]) await removeManagedFile(path, removed);
   if (spec.pluginFile) await removeManagedFile(spec.pluginFile, removed);
