@@ -20,7 +20,7 @@ const FAKE_CLAUDE = join(REPO, "bench", "tests", "fixtures", "fake-claude.mjs");
 
 function parseArgs(argv) {
   const args = { scenario: [], model: null, smoke: false, full: false, holdout: false,
-    dryRun: false, updateBaseline: false, promptIndex: null, keepSandbox: false };
+    dryRun: false, updateBaseline: false, promptIndex: null, keepSandbox: false, maxWorkers: 5 };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--smoke") args.smoke = true;
@@ -32,11 +32,29 @@ function parseArgs(argv) {
     else if (a === "--scenario") args.scenario.push(argv[++i]);
     else if (a === "--model") args.model = argv[++i];
     else if (a === "--prompt-index") args.promptIndex = Number(argv[++i]);
+    else if (a === "--max-workers") args.maxWorkers = Number(argv[++i]);
     else throw new Error(`unknown arg: ${a}`);
   }
   if (!args.smoke && !args.full && args.scenario.length === 0)
     throw new Error("one of --smoke | --full | --scenario <id> is required");
+  if (!Number.isInteger(args.maxWorkers) || args.maxWorkers < 1)
+    throw new Error("--max-workers must be a positive integer");
   return args;
+}
+
+// 고정 크기 워커 풀: 최대 limit개의 worker(item)만 동시 실행. 결과는 matrix 순서로 반환한다.
+async function runPool(matrix, limit, worker) {
+  const results = new Array(matrix.length);
+  let next = 0;
+  async function drain() {
+    while (true) {
+      const i = next++;
+      if (i >= matrix.length) return;
+      results[i] = await worker(matrix[i], i);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, matrix.length) }, drain));
+  return results;
 }
 
 function selectMatrix(scenarios, args) {
@@ -133,21 +151,22 @@ async function main() {
   const ts = new Date().toISOString().replace(/[:.]/g, "-");
   const runDir = join(RESULTS_DIR, "runs", ts);
   mkdirSync(runDir, { recursive: true });
-  console.log(`bench run ${ts}: ${matrix.length} sessions${args.dryRun ? " (dry-run)" : ""}`);
+  const workers = Math.min(args.maxWorkers, matrix.length);
+  console.log(`bench run ${ts}: ${matrix.length} sessions, ${workers} workers${args.dryRun ? " (dry-run)" : ""}`);
 
-  const rows = [];
-  for (const item of matrix) {
-    process.stdout.write(`▶ ${item.scenario.id} [${item.model}] ... `);
+  // 동시 실행이므로 시작-후-덧붙이기 대신 완료 시점에 한 줄을 통째로 출력한다.
+  const rows = await runPool(matrix, args.maxWorkers, async (item) => {
+    const head = `${item.scenario.id} [${item.model}]`;
     try {
       const summary = await runOne(item, args, runDir);
-      rows.push(summary);
-      console.log(summary.pass ? `PASS ($${summary.costUsd.toFixed(3)}, ipa ${summary.ipaCalls})` : "FAIL");
+      console.log(summary.pass ? `PASS ${head} ($${summary.costUsd.toFixed(3)}, ipa ${summary.ipaCalls})` : `FAIL ${head}`);
       for (const a of summary.assertions.filter((x) => !x.pass)) console.log(`    ✗ ${a.name}: ${a.detail}`);
+      return summary;
     } catch (e) {
-      rows.push({ id: item.scenario.id, model: item.model, pass: false, infraError: String(e).slice(0, 500), assertions: [], costUsd: 0, ipaCalls: 0 });
-      console.log(`INFRA-ERROR ${String(e).slice(0, 200)}`);
+      console.log(`INFRA-ERROR ${head} ${String(e).slice(0, 200)}`);
+      return { id: item.scenario.id, model: item.model, pass: false, infraError: String(e).slice(0, 500), assertions: [], costUsd: 0, ipaCalls: 0 };
     }
-  }
+  });
 
   const baselineFile = join(RESULTS_DIR, "baseline.jsonl");
   const report = compareToBaseline(loadBaseline(baselineFile), rows);
