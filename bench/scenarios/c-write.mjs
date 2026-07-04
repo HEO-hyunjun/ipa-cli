@@ -8,6 +8,8 @@ export default [
     ],
     turns: [{ user: "$PROMPT", expect: {
       used_command: "inbox add",
+      // 정답 경로: inbox add로 캡처 → note-scoped 루프(validator/formatter)로 마무리
+      command_flow: ["inbox add", "validator|formatter"],
       notes_added: { folder: "00 Inbox", min: 1 },
       formatter_pending_empty: true,
       validator_clean_changed: true,
@@ -21,7 +23,11 @@ export default [
     ],
     turns: [
       { user: "$PROMPT", expect: { file_modified: "오후 커피 컷오프 실험", md_changed_max: 1 } },
-      { user: "고마워, 마무리까지 해줘.", expect: { formatter_pending_empty: true, validator_clean_changed: true, md_changed_max: 1 } },
+      { user: "고마워, 마무리까지 해줘.", expect: {
+        // note-scoped 루프 완주: --note 스코프 validator → formatter 순서
+        command_flow: ["validator --note|validator", "formatter (plan|apply)|formatter"],
+        formatter_pending_empty: true, validator_clean_changed: true, md_changed_max: 1,
+      } },
     ],
     budget: { maxCostUsd: 1.0, maxIpaCalls: 10 }, goldenPath: 4 },
 

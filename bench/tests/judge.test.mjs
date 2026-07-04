@@ -29,6 +29,20 @@ test("call assertions", () => {
   assert.ok(!allPass(evaluateExpect({ no_ipa_calls: true }, baseCtx({ parsed }))));
 });
 
+test("command_flow matches ordered subsequence of ipa calls", () => {
+  const parsed = { ...emptyParsed(), ipaCalls: [
+    { id: "1", command: 'ipa search "커피" "드립"', isError: false },
+    { id: "2", command: 'ipa validator --note "Alpha"', isError: false },
+    { id: "3", command: 'ipa view "V60 15g 240g 기본 레시피" --full', isError: false },
+  ] };
+  // 순서대로 매칭 (중간에 다른 호출이 끼어도 부분수열이면 통과)
+  assert.ok(allPass(evaluateExpect({ command_flow: ["search", "view.*V60"] }, baseCtx({ parsed }))));
+  // 역순은 실패
+  assert.ok(!allPass(evaluateExpect({ command_flow: ["view", "search"] }, baseCtx({ parsed }))));
+  // 없는 스텝은 실패
+  assert.ok(!allPass(evaluateExpect({ command_flow: ["search", "note set"] }, baseCtx({ parsed }))));
+});
+
 test("diff assertions ignore harness md and .ipa internals", () => {
   const diff = { added: ["00 Inbox/새 메모.md", "CLAUDE.md", ".ipa/cache/files.jsonl"], removed: [], modified: ["01 Project/기존.md"] };
   const rs = evaluateExpect({

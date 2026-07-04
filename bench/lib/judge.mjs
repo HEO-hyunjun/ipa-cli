@@ -37,6 +37,15 @@ export function evaluateExpect(expect, ctx) {
         push(key, parsed.ipaCalls.some((c) => new RegExp(value).test(c.command)), value); break;
       case "not_used_command":
         push(key, !parsed.ipaCalls.some((c) => new RegExp(value).test(c.command)), value); break;
+      case "command_flow": {
+        // value: 정규식 배열 — ipa 호출 시퀀스에 순서대로(부분수열) 매칭되어야 한다.
+        // 한 호출이 `ipa a && ipa b`처럼 체이닝된 경우 연속 스텝을 한 호출에서 전진시킬 수 있다.
+        let idx = 0;
+        for (const c of parsed.ipaCalls) {
+          while (idx < value.length && new RegExp(value[idx]).test(c.command)) idx += 1;
+        }
+        push(key, idx === value.length, `matched ${idx}/${value.length} steps`); break;
+      }
       case "file_added":
         push(key, diff.added.some((p) => new RegExp(value).test(p)), value); break;
       case "file_modified":
