@@ -39,6 +39,7 @@ test("scenario-referenced note titles exist in canonical", () => {
     "00 Inbox/러닝화 후보 메모.md",
     "02 Archive/무릎 통증 신호 체크리스트.md",
     "00 Inbox/아침 식사와 집중도 로그.md",
+    "02 Archive/수면 개선 22시 루틴.md",
   ];
   for (const rel of needed) assert.ok(existsSync(join(VAULTS, "canonical", rel)), rel);
 });
