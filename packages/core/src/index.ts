@@ -6669,6 +6669,7 @@ Use this skill when the user wants to inspect or change IPA profile selection, v
 
 1. Resolve the active context first with \`ipa config show\`.
 2. If \`.ipa/config.yaml\` is missing (new/empty vault), create it with \`ipa config init\` — absorb an existing folder layout via \`--inbox/--project/--archive\`, then edit \`mapping\` so folder/field names match the vault. Match the config to the vault, not the vault to the defaults.
+3. Propose the setup plan from a quick structural scan — the folder layout plus a handful of sample notes' frontmatter. Do not exhaustively enumerate every note or every frontmatter key before proposing; refine after the user confirms.
 4. Inspect profile state with \`ipa profile current\` and \`ipa profile list\`.
 5. Create or update profiles with \`ipa profile init --vault <path>\`, \`ipa profile new <name> <path>\`, or \`ipa profile use <name>\`.
 6. Keep machine-global profile concerns in the profile registry and vault-specific policy in \`.ipa/config.yaml\`.

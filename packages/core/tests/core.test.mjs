@@ -995,6 +995,9 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   assert.match(configSkill, /CLI에 담을 칸이 있으면 config\.yaml, 없으면 fragment/);
   assert.match(configSkill, /\.ipa\/harness\/fragments\/prompt\.md/);
   assert.match(configSkill, /never rename the user's folders/);
+  // Convergence nudge: propose from a quick scan, not exhaustive enumeration.
+  assert.match(configSkill, /quick structural scan/);
+  assert.match(configSkill, /Do not exhaustively enumerate/);
   const tuneSkill = await readFile(join(vault, ".agents", "skills", "ipa-tune", "SKILL.md"), "utf8");
   assert.match(tuneSkill, /Use this skill whenever the user wants better IPA search results/);
   assert.match(tuneSkill, /ipa tune log --limit 50/);
