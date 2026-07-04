@@ -566,6 +566,19 @@ test("harness status flags stale components and harness update reinstalls them v
   assert.match(missing.stdout, /not_installed/);
 });
 
+test("convention show renders config-mapped concepts in text and json", async () => {
+  const { env } = await fixtureProfile();
+  const text = run(env, ["convention"]);
+  assert.match(text, /IPA convention/);
+  assert.match(text, /## Concepts/);
+  assert.match(text, /`ref` — wikilinks to parent index\/root notes/);
+  assert.match(text, /## Editing Workflow/);
+  const json = JSON.parse(run(env, ["--json", "convention", "show"]));
+  assert.equal(json.status, "ok");
+  assert.ok(Array.isArray(json.sections));
+  assert.match(json.markdown, /## Frontmatter Fields/);
+});
+
 test("doctor text output shows the checks summary", async () => {
   const { env } = await fixtureProfile();
   const text = run(env, ["doctor"]);

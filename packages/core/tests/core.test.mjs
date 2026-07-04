@@ -12,6 +12,7 @@ import {
   cacheStatus,
   cascadeNote,
   cliVersionInfo,
+  conventionShow,
   digestNote,
   doctor,
   formatVault,
@@ -1575,6 +1576,44 @@ test("vault fragments are inlined into managed prompt surfaces and accepted by d
   assert.ok((unknown.issues ?? []).some((issue) => issue.code === "harness.fragment_unknown"), "unknown fragment names must warn");
 
   await harnessUninstall(vault, "claude", options);
+});
+
+test("convention show renders concepts through the active config mapping and vault fragments", async () => {
+  // Given: a vault whose config remaps the refs field and inbox folder, plus
+  // one operating-rules fragment.
+  const vault = await fixtureVault();
+  const configPath = join(vault, ".ipa", "config.yaml");
+  const config = await readFile(configPath, "utf8");
+  await writeFile(
+    configPath,
+    `${config.trimEnd()}\nmapping:\n  fields:\n    refs: link\n  folders:\n    inbox: "10 Intake"\n`,
+    "utf8"
+  );
+  const fragmentsDir = join(vault, ".ipa", "harness", "fragments");
+  await mkdir(fragmentsDir, { recursive: true });
+  await writeFile(join(fragmentsDir, "local-prompt.md"), "회의록은 참석자 노트를 먼저 검색한다.\n", "utf8");
+
+  // When: convention show renders.
+  const result = await conventionShow(vault);
+
+  // Then: field/folder names come from the config, not IPA defaults.
+  assert.equal(result.status, "ok");
+  assert.match(result.markdown, /`link` — wikilinks to parent index\/root notes/);
+  assert.match(result.markdown, /--field link --add/);
+  assert.match(result.markdown, /`10 Intake` — every new note is created here/);
+  assert.doesNotMatch(result.markdown, /`ref` — wikilinks/);
+
+  // Then: vault operating rules from fragments appear as a section.
+  assert.match(result.markdown, /## Vault Operating Rules/);
+  assert.match(result.markdown, /### local-prompt/);
+  assert.match(result.markdown, /참석자 노트를 먼저 검색/);
+  assert.deepEqual(result.fragments, ["local-prompt"]);
+
+  // Then: without fragments the section is omitted.
+  await rm(fragmentsDir, { recursive: true, force: true });
+  const bare = await conventionShow(vault);
+  assert.doesNotMatch(bare.markdown, /## Vault Operating Rules/);
+  assert.deepEqual(bare.fragments, []);
 });
 
 test("harness install with --only hook:guard creates guard hook and required opencode-plugin dependency for opencode", async () => {

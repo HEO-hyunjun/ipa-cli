@@ -17,6 +17,7 @@ import {
   contractList,
   contractValidate,
   contractValidateOutput,
+  conventionShow,
   createProfile,
   digestNote,
   doctor,
@@ -143,10 +144,15 @@ const COMMAND_HELP = {
     ]
   }),
   convention: formatDetailedHelp({
-    usage: "ipa [OPTIONS] convention check",
-    summary: "Compatibility alias for validator checks.",
-    examples: [
-      ["ipa convention check", "Run the active vault validator"]
+    usage: "ipa [OPTIONS] convention [show|check]",
+    summary: "Show IPA concepts rendered through the active vault config, or run validator checks.",
+    commands: [
+      ["ipa convention", "Show IPA concepts with this vault's real field/folder names plus vault operating rules"],
+      ["ipa convention show", "Same as bare ipa convention"],
+      ["ipa convention check", "Run the active vault validator (compatibility alias)"]
+    ],
+    notes: [
+      "Vault operating rules come from .ipa/harness/fragments/*.md — the same fragments the harness inlines into managed prompts."
     ]
   }),
   context: formatDetailedHelp({
@@ -662,6 +668,7 @@ function render(payload) {
   if (payload.file && Object.hasOwn(payload, "config_updated") && Object.hasOwn(payload, "created")) return renderKeyValues("Tune testset", payload);
   if (payload.testsets) return renderTableReport("Tune testsets", ["Active", "File"], payload.testsets.map((item) => [payload.active === item ? "yes" : "", item]));
   if (Object.hasOwn(payload, "allowed")) return renderKeyValues("Harness guard", payload);
+  if (payload.convention && payload.markdown) return `${styleTitle("IPA convention")}\n\n${payload.markdown.trimEnd()}`;
   if (payload.installed && payload.guard) return renderHarnessStatus(payload);
   if (payload.target && Object.hasOwn(payload, "installed") && (payload.files || payload.removed)) return renderHarnessChange(payload);
   if (payload.plugin_root && payload.created && payload.skipped) return renderPluginInit(payload);
@@ -1689,6 +1696,11 @@ function buildProgram() {
     });
 
   const conventionCommand = setHelp(program.command("convention"), "convention");
+  conventionCommand
+    .command("show", { isDefault: true })
+    .action(async () => {
+      await withVault(globalOptions(program), async (vault) => print(await conventionShow(vault), jsonOutput(program)));
+    });
   conventionCommand
     .command("check")
     .action(async () => {

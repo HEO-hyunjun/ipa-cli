@@ -8044,6 +8044,84 @@ export async function harnessGuardCheck(vaultPath, relPath, options = {}) {
   };
 }
 
+// `ipa convention show`: the built-in IPA concepts rendered through the active
+// config (real field/folder names) plus the vault's own operating rules from
+// .ipa/harness/fragments/ — the same source the harness inlines into prompts.
+export async function conventionShow(vaultPath) {
+  const { config, mapping } = await readVaultConfig(vaultPath);
+  const guardAllow = guardAllowPatterns(config);
+  const sections = [
+    {
+      title: "Concepts",
+      body: [
+        "IPA organizes knowledge as small atomic notes connected upward: each note",
+        `points at its parent index/root notes through the \`${mapping.refs}\` frontmatter`,
+        "field (wikilinks). Index notes aggregate children through those backlinks;",
+        "they do not maintain child lists by hand. New material enters through the",
+        "inbox, gains refs/tags during triage, and then moves to the archive."
+      ].join("\n")
+    },
+    {
+      title: "Note Types",
+      body: [
+        `\`${mapping.note_type}: note\` — an atomic content note.`,
+        `\`${mapping.note_type}: index\` — a hub note; children point at it via \`${mapping.refs}\`.`,
+        `\`${mapping.note_type}: root\` — a top-level index that anchors a whole area.`
+      ].join("\n")
+    },
+    {
+      title: "Frontmatter Fields",
+      body: [
+        `\`${mapping.note_type}\` — note | index | root.`,
+        `\`${mapping.refs}\` — wikilinks to parent index/root notes, e.g. "[[Index Note]]". Edit with \`ipa note set "Note" --field ${mapping.refs} --add "Index Note" --apply\`.`,
+        `\`${mapping.tags}\` — flat keyword list for retrieval.`,
+        `\`${mapping.aliases}\` — alternative titles used by search.`,
+        `\`${mapping.created_at}\` / \`${mapping.updated_at}\` — timestamps in \`${mapping.date_format}\`; maintained automatically by CLI writes and \`ipa formatter apply\`. Never edit them by hand.`
+      ].join("\n")
+    },
+    {
+      title: "Folders And Lifecycle",
+      body: [
+        `\`${mapping.inbox_dir}\` — every new note is created here (\`ipa inbox add\`); the harness guard blocks new markdown elsewhere.`,
+        `\`${mapping.project_dir}\` — active project material.`,
+        `\`${mapping.archive_dir}\` — triaged notes that carry \`${mapping.refs}\`.`,
+        guardAllow.length
+          ? `Guard allow patterns from .ipa/config.yaml permit new markdown outside the inbox: ${guardAllow.map((pattern) => `\`${pattern}\``).join(", ")}.`
+          : null
+      ].filter(Boolean).join("\n")
+    },
+    {
+      title: "Editing Workflow",
+      body: [
+        "Read with `ipa view`/`ipa digest`, discover with `ipa search`/`ipa context`.",
+        "Edit note bodies with `ipa note replace`, frontmatter with `ipa note set`.",
+        "After editing, run `ipa validator --note \"Note\"` and finish with",
+        "`ipa formatter plan --note ...` + `ipa formatter apply --note ...`.",
+        "Vault-specific rule enforcement lives in `.ipa/plugins/rules/*.js`."
+      ].join("\n")
+    }
+  ];
+  const fragments = [];
+  for (const name of await listHarnessFragments(vaultPath)) {
+    const content = readHarnessFragment(vaultPath, name);
+    if (content) fragments.push({ name, content });
+  }
+  if (fragments.length) {
+    sections.push({
+      title: "Vault Operating Rules",
+      body: fragments.map((fragment) => `### ${fragment.name}\n\n${fragment.content}`).join("\n\n")
+    });
+  }
+  return {
+    status: "ok",
+    convention: true,
+    mapping,
+    fragments: fragments.map((fragment) => fragment.name),
+    sections,
+    markdown: sections.map((section) => `## ${section.title}\n\n${section.body}`).join("\n\n") + "\n"
+  };
+}
+
 export async function resolveSettings(options = {}) {
   const registry = await readProfileRegistry();
   const localSelection = await readLocalSelection(options.cwd ?? process.cwd());

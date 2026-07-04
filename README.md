@@ -134,6 +134,10 @@ ipa engine search "ipa cli" --explain --max 5
 # List the active search channels (builtin/profile + vault-local plugins).
 ipa engine channels
 
+# Show IPA concepts rendered with this vault's real field/folder names,
+# plus vault operating rules from .ipa/harness/fragments/.
+ipa convention
+
 # Validate convention (per-note rules by default).
 ipa convention check --summary
 
