@@ -5943,7 +5943,7 @@ function harnessTargetSpec(target = "codex", options = {}) {
 function ipaCommandSelection(prefix = "ipa", mapping = DEFAULT_MAPPING) {
   return `## IPA Command Selection
 
-- Exact note title known: \`${prefix} view "Note Title"\` (overview first), \`--full\` only for chosen notes. Several notes: \`${prefix} view "A" "B" --full\` in one call.
+- Exact note title known: \`${prefix} view "Note Title"\` (overview first), then \`--section\`/\`--full\` for the parts you actually need. Several notes: \`${prefix} view "A" "B" --full\` in one call.
 - Index/root summary: \`${prefix} digest "Index Note"\` (children + snippets + dates), then \`view --full\` on at most the 2-3 most relevant children — never open every child.
 - Broad prior context or user-specific background: \`${prefix} context "keyword" --size medium --format markdown\`; widen with \`${prefix} search "other angle"\` only when context missed something. Results already carry snippets and dates — judge relevance from them before opening notes.
 - Related notes: \`${prefix} link suggest "Note Title"\`. Graph shape: \`${prefix} traversal --up|--down|--siblings "Note Title"\`.
@@ -6096,6 +6096,79 @@ Which note should be the correct target for this query?
 If the user has not answered this question, do not run \`ipa tune testset add\` for that case. This applies even when the top result looks correct.
 
 Treat tuning as an evaluation loop, not a one-off command. Prefer better labels and representative cases over simply increasing trial count.`
+  },
+  {
+    name: "ipa-triage",
+    description: "Triage IPA inbox notes into the archive: confirm refs/tags, wire wikilinks, validate, and move approved notes. Use this skill whenever the user wants to clean up or empty the inbox, triage notes, confirm refs/tags for new notes, or move finished notes to the archive.",
+    body: (mapping) => `# IPA Triage Skill
+
+Move finished inbox notes into the archive: confirm refs/tags → wire links → validate → move after approval. Triage connects and moves notes that are already written; it does not create notes or deepen their content.
+
+## Workflow
+
+1. Scan the inbox: \`ipa review inbox\` lists notes and issues (missing refs/tags). If the user named specific notes, triage only those; with 10+ notes, work in batches the user confirms.
+2. Confirm refs/tags per note:
+
+\`\`\`bash
+ipa view "Note" --full
+ipa inbox triage --note "Note"           # ref/tag suggestions
+ipa search "keyword"                     # verify suggestions, find candidates
+ipa traversal --down "Candidate Index"   # see what already lives under a candidate
+\`\`\`
+
+   Refs must point at existing index notes — a note points at an index, not directly at a root. Reuse existing tags; add a new tag only when it cuts across more than one index. If no index fits, ask the user whether to create one. A note that is only a line or two, or clearly unfinished, stays in the inbox — report it as needing enrichment instead of forcing a move.
+
+   Apply confirmed values with \`ipa inbox triage --apply --note "Note"\`, or adjust manually with \`ipa note set "Note" --field ${mapping.refs} --add "Index Note" --apply\`.
+3. Wire the note into the graph: \`ipa cascade plan --note "Note"\`, then \`ipa cascade apply --note "Note" --only links\`. Never auto-merge duplicate candidates — compare contents, ask the user, and on an approved merge combine with \`ipa note replace\` then rewire references with \`ipa note redirect --archive --apply\`.
+4. Validate: \`ipa validator --note "Note"\` → \`ipa formatter plan --note "Note"\` → \`ipa formatter apply --note "Note"\`.
+5. Move after approval: present a summary table (note, refs, tags, action) and ask which notes to move. Move only the approved ones: \`ipa move "Note" "${mapping.archive_dir}" --apply\` (wikilinks update automatically).
+6. Report moved notes, held notes with reasons, and recommended follow-ups.
+
+## Must Not
+
+- Move a note to the archive without user approval.
+- Edit note bodies beyond wikilink insertion or an approved merge.
+- Add a ref to an index that does not exist.
+- Auto-merge suspected duplicates.`
+  },
+  {
+    name: "ipa-review",
+    description: "Diagnose IPA vault structural health — tag hygiene, index/root structure, link integrity, frontmatter consistency — vault-wide or for one subtree, then fix approved issues. Use this skill whenever the user asks for a vault review, health check, tag cleanup, orphan notes, broken links, index structure, or frontmatter consistency.",
+    body: (mapping) => `# IPA Review Skill
+
+Diagnose vault structure, report by category, and fix only what the user approves.
+
+## Workflow
+
+1. Scope: vault-wide by default; when the user names a root/index, limit the review to its subtree (\`ipa traversal --down "Root Note"\`).
+2. Scan:
+
+\`\`\`bash
+ipa review all --suggest-refactor   # tags, indexes, duplicates, inbox issues
+ipa validator                       # frontmatter, broken links, orphan notes
+\`\`\`
+
+   Categories to cover: tag health (near-duplicate or one-off tags), index structure (overcrowded, empty, or overlapping indexes), root structure (areas missing a root), link health (orphan notes without \`${mapping.refs}\`, broken wikilinks, notes pointing directly at a root), and frontmatter consistency.
+3. Report a chat summary per category with issue counts and affected notes, then ask which items to fix.
+4. Fix approved items only:
+
+\`\`\`bash
+ipa note set "Note" --field ${mapping.tags} --add "tag" --apply     # few notes
+ipa move "Note" "${mapping.archive_dir}" --apply                    # relocation
+ipa formatter plan --note "Note A" "Note B"                         # then matching apply
+ipa refactor ref-replace "Old Index" "New Index" --apply            # bulk changes: plan first (no --apply), then apply
+ipa refactor tag-rename old_tag new_tag --apply
+ipa refactor wikilink-replace "Old" "New" --apply
+\`\`\`
+
+   \`ipa refactor\` also supports \`ref-add\`, \`ref-remove\`, \`tag-remove\` and \`--filter\`/\`--scope-ref\` narrowing — see \`ipa refactor --help\`.
+5. Summarize the applied changes.
+
+## Must Not
+
+- Edit a single note's body content (that is enrichment work, not review).
+- Apply any fix without user approval.
+- Create index/root notes without user approval.`
   }
 ];
 
@@ -6109,7 +6182,8 @@ function vaultLocalSkillRelPath(spec, name) {
   return `${vaultLocalSkillRootRel(spec)}/${name}/SKILL.md`;
 }
 
-function vaultLocalSkillContent(skill) {
+function vaultLocalSkillContent(skill, mapping = DEFAULT_MAPPING) {
+  const body = typeof skill.body === "function" ? skill.body(mapping) : skill.body;
   return `---
 name: ${skill.name}
 description: ${JSON.stringify(skill.description)}
@@ -6117,7 +6191,7 @@ description: ${JSON.stringify(skill.description)}
 
 <!-- ${HARNESS_MARKER} -->
 
-${skill.body.trim()}
+${body.trim()}
 `;
 }
 
@@ -6377,7 +6451,7 @@ This vault has an IPA CLI harness installed for ${spec.name}. Vault work goes th
 - Vault-specific conventions are enforced by \`.ipa/plugins/rules/*.js\`, retrieval boosts by \`.ipa/plugins/search/*.js\`; verify with \`${prefix} plugin validate\` and \`${prefix} plugin dry-run\`.
 - In harness sessions plain \`${prefix} search "keyword"\` calls are logged as tune evidence automatically.
 
-Helper skills under \`${skillRoot}/\`: \`ipa-rule\` (vault convention rules), \`ipa-config\` (config/profile management), \`ipa-tune\` (search tuning workflow).
+Helper skills under \`${skillRoot}/\`: \`ipa-rule\` (vault convention rules), \`ipa-config\` (config/profile management), \`ipa-tune\` (search tuning workflow), \`ipa-triage\` (inbox → archive triage), \`ipa-review\` (vault structure health review).
 `;
 }
 
@@ -7330,7 +7404,7 @@ function harnessExpectedArtifacts(vaultPath, spec, mapping, selected, options = 
   }
   if (componentSelected(selected, "local-skills")) {
     for (const skill of VAULT_LOCAL_SKILLS) {
-      artifacts.push({ component: "local-skills", scope: "vault", kind: "file", path: join(vaultPath, vaultLocalSkillRelPath(spec, skill.name)), content: withVaultFragment(vaultPath, skill.name, vaultLocalSkillContent(skill)) });
+      artifacts.push({ component: "local-skills", scope: "vault", kind: "file", path: join(vaultPath, vaultLocalSkillRelPath(spec, skill.name)), content: withVaultFragment(vaultPath, skill.name, vaultLocalSkillContent(skill, mapping)) });
     }
   }
   return artifacts;

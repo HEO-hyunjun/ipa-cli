@@ -977,6 +977,17 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   assert.doesNotMatch(tuneSkill, /IPA_SEARCH_LOG=1 ipa search "keyword"/);
   assert.match(tuneSkill, /Label Confirmation Protocol/);
   assert.match(tuneSkill, /Do not run the optimizer by default/);
+  const triageSkill = await readFile(join(vault, ".agents", "skills", "ipa-triage", "SKILL.md"), "utf8");
+  assert.match(triageSkill, /name: ipa-triage/);
+  assert.match(triageSkill, /ipa review inbox/);
+  assert.match(triageSkill, /ipa cascade plan --note/);
+  assert.match(triageSkill, /Move a note to the archive without user approval/);
+  assert.match(triageSkill, /ipa move "Note" "02 Archive" --apply/, "triage skill must render the mapped archive folder");
+  const reviewSkill = await readFile(join(vault, ".agents", "skills", "ipa-review", "SKILL.md"), "utf8");
+  assert.match(reviewSkill, /name: ipa-review/);
+  assert.match(reviewSkill, /ipa review all --suggest-refactor/);
+  assert.match(reviewSkill, /ipa refactor ref-replace/);
+  assert.match(reviewSkill, /Apply any fix without user approval/);
   const hooks = await readFile(join(home, ".codex", "hooks.json"), "utf8");
   assert.match(hooks, /ipa-session-env\.mjs/);
   assert.match(hooks, /SessionStart/);
@@ -1608,6 +1619,10 @@ test("harness prompt surfaces render field and folder names from the config mapp
   // Then: the vault-local block carries the mapped folder names.
   const localPrompt = await readFile(join(vault, "CLAUDE.md"), "utf8");
   assert.match(localPrompt, /inbox `10 Intake`/);
+
+  // Then: managed vault-local skills render the mapped refs field too.
+  const triageSkill = await readFile(join(vault, ".claude", "skills", "ipa-triage", "SKILL.md"), "utf8");
+  assert.match(triageSkill, /--field link --add "Index Note" --apply/);
 
   await harnessUninstall(vault, "claude", options);
 });

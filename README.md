@@ -584,9 +584,14 @@ behavior, use `.ipa/plugins/search/*.js` and `ipa plugin dry-run search`.
 
 The helper skills split common IPA operations into focused workflows:
 `ipa-rule` for rule plugins and formatter-backed conventions, `ipa-config` for
-`.ipa/config.yaml` and profile registry work, and `ipa-tune` for search-log
+`.ipa/config.yaml` and profile registry work, `ipa-tune` for search-log
 sampling, labelled testsets, tune result analysis, and activating selected
-results.
+results, `ipa-triage` for the inbox → refs/tags → wikilinks → archive
+lifecycle (with a user-approval gate before any move), and `ipa-review` for
+vault-wide or subtree structural health checks with approved fixes. Vault-
+specific policy for these workflows (naming conventions, thresholds, SoT
+rules) belongs in `.ipa/harness/fragments/ipa-triage.md` /
+`ipa-review.md`, not in forked skill copies.
 
 The post-write nudge hook does not format automatically, but it makes apply the
 expected completion path: run `ipa validator`, inspect the note-scoped
