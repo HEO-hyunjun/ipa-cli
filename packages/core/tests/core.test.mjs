@@ -965,9 +965,12 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   assert.match(agentsPrompt, /ipa <command> --help/);
   assert.match(agentsPrompt, /\.agents\/skills/);
   assert.match(agentsPrompt, /ipa plugin validate/);
-  assert.match(agentsPrompt, /formatter apply --note/);
+  assert.match(agentsPrompt, /routing map in the global `ipa` skill/);
   assert.doesNotMatch(agentsPrompt, /IPA Command Selection/, "vault block must not duplicate the skill's command selection");
   assert.doesNotMatch(agentsPrompt, /ipa link suggest/, "vault block must not duplicate the command catalog");
+  assert.doesNotMatch(agentsPrompt, /formatter apply --note/, "vault block must not restate the formatter loop (global prompt + skill own it)");
+  assert.doesNotMatch(agentsPrompt, /inbox add <file>/, "vault block must not restate the inbox-only rule (global prompt owns it)");
+  assert.doesNotMatch(agentsPrompt, /ipa-triage` \(/, "vault block must not duplicate the skill routing descriptions");
   const ruleSkill = await readFile(join(vault, ".agents", "skills", "ipa-rule", "SKILL.md"), "utf8");
   assert.match(ruleSkill, /name: ipa-rule/);
   assert.match(ruleSkill, /Use this skill whenever the user mentions IPA rules/);

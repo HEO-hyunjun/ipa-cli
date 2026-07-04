@@ -6835,14 +6835,7 @@ ${prefix} note set "Note Title" --field ${mapping.note_type} --value index --app
 
 ## Vault Convention And Plugins
 
-Vault-specific conventions are code, not prose: implement checks as \`.ipa/plugins/rules/*.js\` (\`// @ts-check\`, \`import("../types/ipa-plugin").Rule\`) and search boosts as \`.ipa/plugins/search/*.js\`. Scaffold with \`${prefix} plugin init\`, then verify:
-
-\`\`\`bash
-${prefix} list-rules
-${prefix} plugin validate .ipa/plugins/rules/<rule>.js
-${prefix} plugin dry-run rules .ipa/plugins/rules/<rule>.js --note "Note Title"
-${prefix} plugin dry-run search .ipa/plugins/search/<plugin>.js --query "keyword"
-\`\`\`
+Vault-specific conventions are code, not prose: convention checks live in \`.ipa/plugins/rules/*.js\`, retrieval boosts in \`.ipa/plugins/search/*.js\`. Authoring and verification (\`${prefix} plugin init\` scaffold → \`plugin validate\` → \`plugin dry-run\`) follow the \`ipa-rule\` skill workflow.
 `;
 }
 
@@ -6854,16 +6847,14 @@ function localPromptContent(vaultPath, spec, mapping, options = {}) {
   const skillRoot = vaultLocalSkillRootRel(spec);
   return `## IPA CLI Harness
 
-This vault has an IPA CLI harness installed for ${spec.name}. Vault work goes through the \`${prefix}\` CLI — full workflow in the global \`ipa\` skill, IPA concepts and this vault's operating rules via \`${prefix} convention\`, exact syntax via \`${prefix} <command> --help\`.
+This vault has an IPA CLI harness installed for ${spec.name}. Vault work goes through the \`${prefix}\` CLI — full workflow and safe-write rules in the global \`ipa\` skill, IPA concepts and this vault's operating rules via \`${prefix} convention\`, exact syntax via \`${prefix} <command> --help\`.
 
 - Folders: inbox \`${mapping.inbox_dir}\`, project \`${mapping.project_dir}\`, archive \`${mapping.archive_dir}\`
 - Vault config: .ipa/config.yaml; profile registry: ${profileRegistryDisplay()}
-- New Markdown notes only under the inbox or via \`${prefix} inbox add <file>\`; existing notes may be edited in place.
-- After editing vault Markdown: \`${prefix} validator --note ...\` → \`${prefix} formatter plan --note ...\` → \`${prefix} formatter apply --note ...\` (multiple notes: one \`--note\` followed by all titles). The Stop gate blocks final responses while patches remain — do not stop at plan-only.
 - Vault-specific conventions are enforced by \`.ipa/plugins/rules/*.js\`, retrieval boosts by \`.ipa/plugins/search/*.js\`; verify with \`${prefix} plugin validate\` and \`${prefix} plugin dry-run\`.
 - In harness sessions plain \`${prefix} search "keyword"\` calls are logged as tune evidence automatically.
 
-Helper skills under \`${skillRoot}/\`: \`ipa-rule\` (vault convention rules), \`ipa-config\` (config/profile management), \`ipa-tune\` (search tuning workflow), \`ipa-triage\` (inbox → archive triage), \`ipa-review\` (vault structure health review), \`ipa-consult\` (IPA concept Q&A and friction counseling).
+Focused workflows live as skills under \`${skillRoot}/\` — routing map in the global \`ipa\` skill.
 `;
 }
 
