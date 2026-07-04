@@ -2,11 +2,10 @@
 import { mkdirSync, writeFileSync, rmSync, appendFileSync, existsSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { execFileSync } from "node:child_process";
 import { loadScenarios } from "./lib/schema.mjs";
 import { parseTranscript, mergeParsed, emptyParsed } from "./lib/transcript.mjs";
 import { createSandbox, snapshot, diffSnapshots } from "./lib/sandbox.mjs";
-import { runClaudeTurn } from "./lib/runner.mjs";
+import { runClaudeTurn, installHarness } from "./lib/runner.mjs";
 import { pickReply } from "./lib/responder.mjs";
 import { evaluateExpect } from "./lib/judge.mjs";
 import { loadBaseline, compareToBaseline, formatBaseline } from "./lib/baseline.mjs";
@@ -71,18 +70,14 @@ function selectMatrix(scenarios, args) {
   return matrix;
 }
 
-function installHarness(sandboxDir) {
-  execFileSync(process.execPath, [IPA_BIN, "harness", "install", "claude"],
-    { cwd: sandboxDir, stdio: ["ignore", "pipe", "pipe"] });
-}
-
 async function runOne({ scenario, model }, args, runDir) {
   const personaDir = join(VAULTS_DIR, scenario.persona);
   const sandbox = createSandbox(personaDir, scenario.id, { preconfigured: scenario.preconfigured ?? true });
+  const installHome = `${sandbox}-home`; // harness install 전용 격리 홈 — 실제 ~/.claude 오염 방지
   const caseDir = join(runDir, `${scenario.id}__${model}`);
   mkdirSync(caseDir, { recursive: true });
   const claudeCmd = args.dryRun ? [process.execPath, FAKE_CLAUDE] : ["claude"];
-  if (scenario.harness && !args.dryRun) installHarness(sandbox);
+  if (scenario.harness && !args.dryRun) installHarness({ ipaBin: IPA_BIN, sandboxDir: sandbox, homeDir: installHome });
 
   const before = snapshot(sandbox);
   const promptIndex = args.promptIndex ?? new Date().getUTCDate() % scenario.prompts.length;
@@ -138,7 +133,11 @@ async function runOne({ scenario, model }, args, runDir) {
     sandbox: args.keepSandbox ? sandbox : null,
   };
   writeFileSync(join(caseDir, "summary.json"), JSON.stringify(summary, null, 2));
-  if (!args.keepSandbox) rmSync(sandbox, { recursive: true, force: true });
+  if (!args.keepSandbox) {
+    rmSync(sandbox, { recursive: true, force: true });
+    rmSync(installHome, { recursive: true, force: true });
+    rmSync(`${sandbox}-xdg`, { recursive: true, force: true });
+  }
   return summary;
 }
 
