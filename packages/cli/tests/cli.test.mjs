@@ -300,6 +300,9 @@ test("config init writes .ipa/config.yaml, refuses without --force, and lists in
   const yaml = await readFile(join(vault, ".ipa", "config.yaml"), "utf8");
   assert.match(yaml, /folders:\n {4}inbox: Inbox\n {4}project: Projects/);
   assert.match(yaml, /note_type: type/);
+  // config init also scaffolds the operating-rules fragment.
+  assert.equal(created.fragment_created, true);
+  assert.match(await readFile(join(vault, ".ipa", "harness", "fragments", "prompt.md"), "utf8"), /## Vault Operating Rules/);
 
   const refused = runRaw(env, ["--vault", vault, "config", "init"]);
   assert.notEqual(refused.status, 0);

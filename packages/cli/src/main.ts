@@ -1295,7 +1295,8 @@ function renderConfigInit(payload) {
     status,
     inbox: payload.inbox,
     project: payload.project,
-    archive: payload.archive
+    archive: payload.archive,
+    fragment: `${payload.fragment_path} (${payload.fragment_created ? "created" : "kept"})`
   });
   const hint = styleMuted(`Next: match folders/fields to your vault, then ${(payload.next_steps ?? []).join(" / ")}`);
   return `${rows}\n\n${hint}`;

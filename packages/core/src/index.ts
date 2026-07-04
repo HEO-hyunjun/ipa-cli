@@ -413,6 +413,15 @@ export async function configInit(vaultPath, options = {}) {
   };
   await mkdir(dirname(configPath), { recursive: true });
   await writeFile(configPath, renderDefaultConfigYaml(folders), "utf8");
+  // Seed the operating-rules fragment so onboarding has a place to write vault
+  // policy that has no config slot. Never overwrite an existing one — it is
+  // vault-owned and re-rendered into managed prompts via `ipa harness update`.
+  const fragmentPath = join(harnessFragmentsRoot(vaultPath), "prompt.md");
+  const fragmentExists = existsSync(fragmentPath);
+  if (!fragmentExists) {
+    await mkdir(dirname(fragmentPath), { recursive: true });
+    await writeFile(fragmentPath, operatingRulesFragmentTemplate(), "utf8");
+  }
   return {
     operation: "config-init",
     path: rel,
@@ -421,8 +430,23 @@ export async function configInit(vaultPath, options = {}) {
     inbox: folders.inbox,
     project: folders.project,
     archive: folders.archive,
+    fragment_path: toPosix(relative(vaultPath, fragmentPath)),
+    fragment_created: !fragmentExists,
     next_steps: ["ipa doctor", "ipa convention"]
   };
+}
+
+function operatingRulesFragmentTemplate() {
+  return [
+    "## Vault Operating Rules",
+    "<!-- 이 볼트만의 운영 규칙. `ipa harness update <target>`로 관리 프롬프트에 반영됩니다.",
+    "     아래 예시 중 해당하는 것만 남기고 나머지는 지우거나 새로 쓰세요. -->",
+    "<!-- 예) 작업/임시 문서는 `99 Workbench/{프로젝트}/`에 둔다 -->",
+    "<!-- 예) 폴더 이름은 볼트에 맞춘다 — 볼트를 폴더 이름에 맞추지 않는다 (폴더 rename·대량 이동 금지) -->",
+    "<!-- 예) 마이그레이션·정리는 소수 노트 시범 후 확인받고 진행한다 -->",
+    "<!-- 예) 제목에 날짜 프리픽스를 붙이지 않는다 -->",
+    ""
+  ].join("\n");
 }
 
 async function walkFiles(root, predicate, base = root) {

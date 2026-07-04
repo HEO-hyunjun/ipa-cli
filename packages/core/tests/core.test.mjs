@@ -3038,6 +3038,20 @@ test("config init writes the default mapping, honors folder overrides and --forc
   // Comment guides the human/agent to match folders to the vault, not vice versa.
   assert.match(written, /폴더 이름을 볼트에 맞추세요/);
 
+  // config init also seeds an empty operating-rules fragment so onboarding has
+  // a place to write policy that has no config slot.
+  const fragmentPath = join(vault, ".ipa", "harness", "fragments", "prompt.md");
+  assert.equal(created.fragment_created, true);
+  assert.equal(created.fragment_path, ".ipa/harness/fragments/prompt.md");
+  const fragment = await readFile(fragmentPath, "utf8");
+  assert.match(fragment, /## Vault Operating Rules/);
+  assert.match(fragment, /ipa harness update <target>/);
+  // A second config init must never overwrite the vault-owned fragment.
+  await writeFile(fragmentPath, "작업 문서는 99 Workbench에 둔다.\n", "utf8");
+  const reinit = await configInit(vault, { force: true });
+  assert.equal(reinit.fragment_created, false);
+  assert.equal(await readFile(fragmentPath, "utf8"), "작업 문서는 99 Workbench에 둔다.\n");
+
   // The written config round-trips to the shipped defaults (single source of truth).
   const { mapping } = await readVaultConfig(vault);
   assert.equal(mapping.refs, "ref");
