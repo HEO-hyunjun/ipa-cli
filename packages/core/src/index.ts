@@ -3188,6 +3188,20 @@ const RULE_BY_CODE = new Map(RULES.map((rule) => [rule.code, rule]));
 const VALID_NOTE_TYPES = new Set(["note", "index", "root"]);
 const IPA_DATE_RE = /^\d{4}\/\d{2}\/\d{2} \([A-Z][a-z]{2}\) \d{2}:\d{2}:\d{2}$/;
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/;
+// Both formatVaultDate (render) and validDateValue (validate) drive off this one
+// token table so a vault's mapping.date_format can never render a stamp that
+// fails validation.
+const DATE_FORMAT_TOKEN_RE = /YYYY|MM|DD|ddd|HH|mm|ss/g;
+const DATE_FORMAT_TOKEN_PATTERNS = {
+  YYYY: "\\d{4}",
+  MM: "\\d{2}",
+  DD: "\\d{2}",
+  ddd: "[A-Z][a-z]{2}",
+  HH: "\\d{2}",
+  mm: "\\d{2}",
+  ss: "\\d{2}"
+};
+const dateFormatRegexCache = new Map();
 
 function ruleMeta(code) {
   return RULE_BY_CODE.get(code) ?? { code, category: "custom", severity: "warn", scope: "note" };
@@ -3249,9 +3263,24 @@ function isRawInboxCapture(note, mapping) {
   return isInFolder(note, mapping.inbox_dir) && Object.keys(note.frontmatter).length === 0;
 }
 
-function validDateValue(value) {
+function dateFormatToRegExp(format) {
+  const source = String(format || DEFAULT_MAPPING.date_format);
+  let cached = dateFormatRegexCache.get(source);
+  if (cached !== undefined) return cached;
+  let re;
+  try {
+    const body = escapeRegExpText(source).replace(DATE_FORMAT_TOKEN_RE, (token) => DATE_FORMAT_TOKEN_PATTERNS[token]);
+    re = new RegExp(`^${body}$`);
+  } catch {
+    re = IPA_DATE_RE;
+  }
+  dateFormatRegexCache.set(source, re);
+  return re;
+}
+
+function validDateValue(value, format) {
   const text = String(value ?? "").trim();
-  return IPA_DATE_RE.test(text) || ISO_DATE_RE.test(text);
+  return dateFormatToRegExp(format).test(text) || ISO_DATE_RE.test(text);
 }
 
 function noteIssue(code, note, message, extra = {}) {
@@ -3324,7 +3353,7 @@ const BUILTIN_RULES = [
   builtinRule("ipa.frontmatter.date_format", {
     checkNote(note, ctx) {
       const issues = [ctx.mapping.created_at, ctx.mapping.updated_at]
-        .filter((field) => note.frontmatter[field] !== undefined && !validDateValue(note.frontmatter[field]))
+        .filter((field) => note.frontmatter[field] !== undefined && !validDateValue(note.frontmatter[field], ctx.mapping.date_format))
         .map((field) => noteIssue(this.code, note, `invalid date format in ${field}: ${note.frontmatter[field]}`));
       issues.push(...mixedIsoDateFields(note, ctx.mapping)
         .map((field) => noteIssue(this.code, note, `mixed date formats: ${field} is an ISO timestamp; formatter apply rewrites it to the vault date format`)));
@@ -3665,7 +3694,7 @@ function formatVaultDate(date, format = DEFAULT_MAPPING.date_format) {
     mm: pad(date.getMinutes()),
     ss: pad(date.getSeconds())
   };
-  return String(format ?? DEFAULT_MAPPING.date_format).replace(/YYYY|MM|DD|ddd|HH|mm|ss/g, (token) => tokens[token]);
+  return String(format ?? DEFAULT_MAPPING.date_format).replace(DATE_FORMAT_TOKEN_RE, (token) => tokens[token]);
 }
 
 function removeDuplicateH1(text, title) {

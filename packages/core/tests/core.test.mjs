@@ -3146,6 +3146,76 @@ test("mapping.date_format drives all core date stamps", async () => {
   assert.match(after, new RegExp(`${mapping.updated_at}: "?\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}`));
 });
 
+test("validator honors custom mapping.date_format for date values", async () => {
+  const vault = await fixtureVault();
+  const configPath = join(vault, ".ipa", "config.yaml");
+  await writeFile(
+    configPath,
+    (await readFile(configPath, "utf8")).replace("  folders:", "  date_format: \"DD.MM.YYYY HH:mm\"\n  folders:"),
+    "utf8"
+  );
+  await writeFile(
+    join(vault, "00 Inbox", "CustomOk.md"),
+    "---\ndate_created: 10.05.2026 00:00\ndate_modified: 10.05.2026 00:00\nref: [\"[[🔖 Topic Index]]\"]\ntags: []\ntype: note\n---\n# CustomOk\n\nBody\n",
+    "utf8"
+  );
+  // A date in the previous (default) convention no longer matches the vault's
+  // declared format and must be flagged.
+  await writeFile(
+    join(vault, "00 Inbox", "CustomBad.md"),
+    "---\ndate_created: 2026/05/10 (Sun) 00:00:00\ndate_modified: 2026/05/10 (Sun) 00:00:00\nref: [\"[[🔖 Topic Index]]\"]\ntags: []\ntype: note\n---\n# CustomBad\n\nBody\n",
+    "utf8"
+  );
+  const issues = (await validateVault(vault)).issues
+    .filter((item) => item.code === "ipa.frontmatter.date_format");
+  assert.equal(issues.some((item) => item.note === "CustomOk"), false, "date in the declared format must pass");
+  assert.equal(issues.some((item) => item.note === "CustomBad"), true, "date in a foreign format must be flagged");
+});
+
+test("validDateValue leaves default config behavior unchanged", async () => {
+  const vault = await fixtureVault();
+  await writeFile(
+    join(vault, "00 Inbox", "DefaultOk.md"),
+    "---\ndate_created: 2026/05/10 (Sun) 00:00:00\ndate_modified: 2026/05/10 (Sun) 00:00:00\nref: [\"[[🔖 Topic Index]]\"]\ntags: []\ntype: note\n---\n# DefaultOk\n\nBody\n",
+    "utf8"
+  );
+  // ISO stays accepted when both fields use it consistently (legacy escape hatch).
+  await writeFile(
+    join(vault, "00 Inbox", "DefaultIso.md"),
+    "---\ndate_created: 2026-05-10T00:00:00.000Z\ndate_modified: 2026-05-10T00:00:00.000Z\nref: [\"[[🔖 Topic Index]]\"]\ntags: []\ntype: note\n---\n# DefaultIso\n\nBody\n",
+    "utf8"
+  );
+  await writeFile(
+    join(vault, "00 Inbox", "DefaultBad.md"),
+    "---\ndate_created: not-a-date\ndate_modified: not-a-date\nref: [\"[[🔖 Topic Index]]\"]\ntags: []\ntype: note\n---\n# DefaultBad\n\nBody\n",
+    "utf8"
+  );
+  const issues = (await validateVault(vault)).issues
+    .filter((item) => item.code === "ipa.frontmatter.date_format");
+  assert.equal(issues.some((item) => item.note === "DefaultOk"), false);
+  assert.equal(issues.some((item) => item.note === "DefaultIso"), false);
+  assert.equal(issues.some((item) => item.note === "DefaultBad"), true);
+});
+
+test("core-stamped date under a custom format validates clean", async () => {
+  const vault = await fixtureVault();
+  const configPath = join(vault, ".ipa", "config.yaml");
+  await writeFile(
+    configPath,
+    (await readFile(configPath, "utf8")).replace("  folders:", "  date_format: \"DD.MM.YYYY HH:mm\"\n  folders:"),
+    "utf8"
+  );
+  const draft = join(vault, ".tmp-roundtrip.md");
+  await writeFile(draft, "# RoundTrip\n\nBody\n", "utf8");
+  await inboxAdd(vault, draft, { title: "RoundTrip" });
+  const { mapping } = await readVaultConfig(vault);
+  const raw = await readFile(join(vault, "00 Inbox", "RoundTrip.md"), "utf8");
+  assert.match(raw, new RegExp(`${mapping.created_at}: "?\\d{2}\\.\\d{2}\\.\\d{4} \\d{2}:\\d{2}`));
+  const issues = (await validateVault(vault)).issues
+    .filter((item) => item.code === "ipa.frontmatter.date_format" && item.note === "RoundTrip");
+  assert.equal(issues.length, 0, "a date the core itself stamped must never fail its own validator");
+});
+
 test("link.ignored_headings and link.stopwords extend link-suggest vocabulary from config", async () => {
   const vault = await fixtureVault();
   const body = (heading) => `---\ndate_created: 2026/05/10 (Sun) 00:00:00\ndate_modified: 2026/05/10 (Sun) 00:00:00\nref: ["[[🔖 Topic Index]]"]\ntags: []\ntype: note\n---\n# Source Note\n\n## ${heading}\n\nGamma Delta uniquefeature pipeline orchestration details repeated here for weighting.\n`;
