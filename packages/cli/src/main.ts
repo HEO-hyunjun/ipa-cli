@@ -1826,9 +1826,19 @@ function buildProgram() {
   harnessCommand
     .command("update")
     .argument("[target]", "Harness target", "codex")
-    .action(async (target) => {
+    .option("--only <component...>", "Update to exactly the named components", collectComponents, [])
+    .option("--with <component...>", "Add components to the stored selection", collectComponents, [])
+    .option("--without <component...>", "Remove components from the stored selection", collectComponents, [])
+    .action(async (target, options) => {
       await withVault(globalOptions(program), async (vault, resolved) => {
-        const result = await harnessUpdate(vault, target, { profile: resolved.profile });
+        const result = await harnessUpdate(vault, target, {
+          profile: resolved.profile,
+          components: {
+            only: optionalList(options.only),
+            with: optionalList(options["with"]),
+            without: optionalList(options.without)
+          }
+        });
         print(result, jsonOutput(program));
         if (result.status === "error") process.exitCode = 1;
       });

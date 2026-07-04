@@ -2501,6 +2501,52 @@ test("harness status/doctor flag outdated components and harness update reinstal
   assert.equal(missing.reason, "not_installed");
 });
 
+test("harness update auto-joins new default components and honors --with/--without", async () => {
+  const vault = await fixtureVault();
+  const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
+  const options = { homeDir: home, profile: "ipa-test" };
+  await harnessInstall(vault, "codex", options);
+
+  // Simulate a manifest written by an older CLI that predates hook:vault-ref:
+  // the component is neither selected nor recorded as explicitly omitted.
+  const manifestPath = join(vault, ".ipa", "harness", "codex", "manifest.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  manifest.components = manifest.components.filter((c) => c !== "hook:vault-ref");
+  manifest.omitted_components = (manifest.omitted_components ?? []).filter((c) => c !== "hook:vault-ref");
+  await writeFile(manifestPath, JSON.stringify(manifest, null, 2) + "\n", "utf8");
+
+  // Then: doctor flags the pending new default.
+  const doctor = await harnessDoctor(vault, options);
+  assert.ok(
+    doctor.issues.some((issue) => issue.code === "harness.component_new_default" && /hook:vault-ref/.test(issue.message)),
+    "doctor must flag defaults missing from an older manifest"
+  );
+
+  // When: update runs without flags — the new default auto-joins.
+  const updated = await harnessUpdate(vault, "codex", options);
+  assert.deepEqual(updated.components_added, ["hook:vault-ref"]);
+  assert.ok(updated.components.includes("hook:vault-ref"));
+  assert.equal(existsSync(join(home, ".codex", "hooks", "ipa-vault-ref-nudge.mjs")), true);
+
+  // When: update --without removes a component and records it as omitted.
+  const trimmed = await harnessUpdate(vault, "codex", { ...options, components: { without: ["hook:evidence"] } });
+  assert.ok(!trimmed.components.includes("hook:evidence"));
+  assert.ok(trimmed.omitted_components.includes("hook:evidence"));
+  assert.equal(existsSync(join(home, ".codex", "hooks", "ipa-prompt-evidence.mjs")), false);
+
+  // Then: the omitted component stays out on the next plain update…
+  const again = await harnessUpdate(vault, "codex", options);
+  assert.ok(!again.components.includes("hook:evidence"));
+  assert.deepEqual(again.components_added, []);
+
+  // …until --with brings it back.
+  const restored = await harnessUpdate(vault, "codex", { ...options, components: { with: ["hook:evidence"] } });
+  assert.ok(restored.components.includes("hook:evidence"));
+  assert.equal(existsSync(join(home, ".codex", "hooks", "ipa-prompt-evidence.mjs")), true);
+
+  await harnessUninstall(vault, "codex", options);
+});
+
 test("search plugins receive prepared data, config, lookup, phase targeting, and postRank", async () => {
   const vault = await fixtureVault();
   await mkdir(join(vault, ".ipa", "plugins", "search"), { recursive: true });

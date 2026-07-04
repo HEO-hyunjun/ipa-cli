@@ -8257,10 +8257,33 @@ export async function harnessUpdate(vaultPath, target = "codex", options = {}) {
     return { status: "error", target: name, reason: "not_installed", message: `harness target ${name} is not installed; run ipa harness install ${name}` };
   }
   const targetManifest = await readTargetManifest(vaultPath, name);
-  const selected = targetManifest?.components ?? index.targets[name].components ?? defaultComponentsForTarget(name);
-  const omitted = targetManifest?.omitted_components ?? index.targets[name].omitted_components ?? [];
+  const storedSelected = targetManifest?.components ?? index.targets[name].components ?? defaultComponentsForTarget(name);
+  const storedOmitted = targetManifest?.omitted_components ?? index.targets[name].omitted_components ?? [];
+  const valid = new Set(componentsValidForTarget(name));
+  const normalizeList = (input) => !input ? [] : input
+    .flatMap((item) => String(item).split(","))
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+  const only = normalizeList(options.components?.only);
+  const withList = normalizeList(options.components?.with);
+  const without = normalizeList(options.components?.without);
+  for (const component of [...only, ...withList, ...without]) {
+    if (!valid.has(component)) throw new Error(`unknown harness component: ${component}`);
+  }
+  // Default components introduced by newer CLI versions join automatically on
+  // update; components the user explicitly removed (recorded in
+  // omitted_components) stay out. --only/--with/--without refine the result.
+  const autoAdded = only.length ? [] : defaultComponentsForTarget(name)
+    .filter((component) => !storedSelected.includes(component) && !storedOmitted.includes(component));
+  let selected = only.length
+    ? [...new Set(only)]
+    : [...storedSelected.filter((component) => valid.has(component)), ...autoAdded];
+  for (const component of withList) {
+    if (!selected.includes(component)) selected.push(component);
+  }
+  selected = selected.filter((component) => !without.includes(component));
   // Uninstall first so hook scripts renamed or dropped by newer CLI versions do
-  // not survive as orphans, then reinstall with the previous component selection.
+  // not survive as orphans, then reinstall with the resolved selection.
   const uninstall = await harnessUninstall(vaultPath, name, options);
   const install = await harnessInstall(vaultPath, name, { ...options, components: { only: selected } });
   return {
@@ -8268,7 +8291,8 @@ export async function harnessUpdate(vaultPath, target = "codex", options = {}) {
     target: name,
     updated: true,
     components: selected,
-    omitted_components: omitted,
+    components_added: autoAdded,
+    omitted_components: componentsValidForTarget(name).filter((component) => !selected.includes(component)),
     removed: uninstall.removed,
     global_removed: uninstall.global_removed,
     files: install.files,
@@ -8299,6 +8323,12 @@ export async function harnessDoctor(vaultPath, options = {}) {
     const spec = harnessTargetSpec(target, options);
     const targetManifest = await readTargetManifest(vaultPath, target);
     const selected = targetManifest?.components ?? entry.components ?? defaultComponentsForTarget(target);
+    const omitted = targetManifest?.omitted_components ?? entry.omitted_components ?? [];
+    const pendingDefaults = defaultComponentsForTarget(target)
+      .filter((component) => !selected.includes(component) && !omitted.includes(component));
+    if (pendingDefaults.length) {
+      issues.push({ severity: "warn", code: "harness.component_new_default", target, message: `new default components available: ${pendingDefaults.join(", ")}; run ipa harness update ${target}` });
+    }
     for (const component of harnessOutdatedComponents(vaultPath, spec, mapping, selected, options)) {
       issues.push({ severity: "warn", code: "harness.component_outdated", target, message: `component ${component} differs from the current CLI template; run ipa harness update ${target}` });
     }
