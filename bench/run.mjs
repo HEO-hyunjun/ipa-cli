@@ -13,7 +13,7 @@ import { loadBaseline, compareToBaseline, formatBaseline } from "./lib/baseline.
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const IPA_BIN = join(REPO, "packages", "cli", "dist", "main.js");
-const SCENARIOS_DIR = join(REPO, "bench", "scenarios");
+const SCENARIOS_DIR = process.env.IPA_BENCH_SCENARIOS_DIR || join(REPO, "bench", "scenarios");
 const VAULTS_DIR = join(REPO, "bench", "vaults");
 const RESULTS_DIR = join(REPO, "bench", "results");
 const FAKE_CLAUDE = join(REPO, "bench", "tests", "fixtures", "fake-claude.mjs");
