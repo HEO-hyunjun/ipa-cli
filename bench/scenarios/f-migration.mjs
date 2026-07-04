@@ -8,7 +8,7 @@ export default [
     ],
     turns: [
       { user: "$PROMPT", expect: { ipa_used: true } },
-      { user: "응, 그 계획대로 진행해줘.", expect: {
+      { user: "응, 그 계획대로 진행해줘. 우선 세팅까지만 마무리하고, 노트 마이그레이션은 다음에 따로 하자.", expect: {
         file_added: "\\.ipa/config\\.yaml",
         file_contains: { path: ".ipa/config.yaml", regex: "folders" }, // 기존 폴더명(Inbox/Projects/Archive)을 mapping으로 흡수했는가
         md_changed_max: 6, // 대량 재작성 금지 (CLAUDE.md 등 하네스 산출물 여유 포함)
@@ -57,7 +57,7 @@ export default [
         used_command: "profile|config|doctor",
         file_added: "\\.ipa/config\\.yaml|\\.ipa-config",
       } },
-      { user: "좋아. 기존 노트들도 이 방식에 맞게 옮기고 싶은데, 우선 몇 개만 시범으로 해줘.", expect: {
+      { user: "좋아. 기존 노트들도 이 방식에 맞게 옮기고 싶은데, 우선 두세 개만 시범으로 해주고 나머지는 건드리지 마.", expect: {
         md_changed_min: 1,
         md_changed_max: 8, // 시범 범위 유지 — 전량 일괄 변환 금지
         validator_clean_changed: true,
