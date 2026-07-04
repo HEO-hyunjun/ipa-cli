@@ -27,6 +27,21 @@ split is the core design rule of the codebase.
 - **Hooks must fail safe.** A broken gate plugin, missing CLI, or unparseable
   output must never permanently lock a session; recording hooks must stay
   silent on stdout unless they intend to inject context.
+- **New capabilities must reach the agent surfaces.** A feature agents are
+  meant to use is not done when the code works — agents only use what the
+  harness prompts teach. When a command or option changes, check every prompt
+  surface that should mention it (global skill + IPA Command Selection, the
+  prompt blocks, the relevant vault-local skill, `ipa convention` for
+  concepts), keep the wording pointer-level, add the rendering regression
+  assertion, and run `ipa harness update <target>` so installed environments
+  pick it up.
+- **The CLI is not the only consumer of core.** The Obsidian plugin
+  (`packages/obsidian`) calls core directly — `prepareSearchContext`/
+  `searchWithContext`, `loadNotesForView`, `traversalAll`,
+  `formatVault(..., { patchesOnly, loadedNotes, ruleApply })`, plugin
+  list/doctor. When changing core signatures or return shapes, grep
+  `packages/obsidian/src/core/ipaClient.ts` and run `npm run build` (the
+  test script only builds the core bundle, not the Obsidian one).
 
 ## Repo layout
 
