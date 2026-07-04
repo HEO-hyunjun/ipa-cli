@@ -37,6 +37,7 @@ import {
   redirectNotes,
   reviewVault,
   searchVault,
+  searchVaultMany,
   scoreNote,
   setNoteField,
   suggestLinks,
@@ -2446,6 +2447,39 @@ test("harness status/doctor flag outdated components and harness update reinstal
   const missing = await harnessUpdate(vault, "claude", options);
   assert.equal(missing.status, "error");
   assert.equal(missing.reason, "not_installed");
+});
+
+test("bm25 cache persists across searches and invalidates when a note changes", async () => {
+  const vault = await fixtureVault();
+
+  // Cold search builds and persists the index; results captured as reference.
+  const cold = await searchVault(vault, "alpha");
+  const cachePath = join(vault, ".ipa", "cache", "bm25.bin");
+  assert.equal(existsSync(cachePath), true, "bm25 cache must be written after a cold search");
+
+  // Warm search loads the persisted index and must score identically.
+  const warm = await searchVault(vault, "alpha");
+  assert.deepEqual(warm.results, cold.results, "cached index must reproduce identical results");
+
+  // Editing a note invalidates the cache: new body content must be findable.
+  const alphaPath = join(vault, "00 Inbox", "Alpha.md");
+  await writeFile(alphaPath, (await readFile(alphaPath, "utf8")) + "\nzebraword unique marker\n", "utf8");
+  const after = await searchVault(vault, "zebraword", { showAll: true });
+  assert.ok(after.results.some((hit) => hit.note === "Alpha"), "stale bm25 cache must be rebuilt after a note edit");
+});
+
+test("searchVaultMany runs several queries against one prepared context", async () => {
+  const vault = await fixtureVault();
+  const many = await searchVaultMany(vault, ["Alpha", "Beta"], { showAll: true });
+  assert.equal(many.count, 2);
+  assert.equal(many.queries[0].query, "Alpha");
+  assert.equal(many.queries[1].query, "Beta");
+  assert.ok(many.queries[0].results.some((hit) => hit.note === "Alpha"));
+  assert.ok(many.queries[1].results.some((hit) => hit.note === "Beta"));
+
+  // Per-query output must match a standalone search of the same query.
+  const single = await searchVault(vault, "Alpha", { showAll: true });
+  assert.deepEqual(many.queries[0].results, single.results);
 });
 
 test("harness guard check allows paths excluded from note indexing", async () => {

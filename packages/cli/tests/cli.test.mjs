@@ -566,6 +566,21 @@ test("harness status flags stale components and harness update reinstalls them v
   assert.match(missing.stdout, /not_installed/);
 });
 
+test("search accepts several queries in one call and --join restores single-query behavior", async () => {
+  const { env } = await fixtureProfile();
+  // Multiple arguments: one call, one result block per query.
+  const multi = JSON.parse(run(env, ["--json", "search", "Alpha", "Beta", "--all"]));
+  assert.equal(multi.count, 2);
+  assert.equal(multi.queries[0].query, "Alpha");
+  assert.equal(multi.queries[1].query, "Beta");
+  const text = run(env, ["search", "Alpha", "Beta", "--all"]);
+  assert.match(text, /Search results for 'Alpha'/);
+  assert.match(text, /Search results for 'Beta'/);
+  // --join keeps the old space-joined single query semantics.
+  const joined = JSON.parse(run(env, ["--json", "search", "Alpha", "Beta", "--all", "--join"]));
+  assert.equal(joined.query, "Alpha Beta");
+});
+
 test("convention show renders config-mapped concepts in text and json", async () => {
   const { env } = await fixtureProfile();
   const text = run(env, ["convention"]);

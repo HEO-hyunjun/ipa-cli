@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import {
   appendFile,
   mkdir,
@@ -1258,7 +1258,7 @@ function jamoTrigrams(text) {
   return out;
 }
 
-function fuzzyNameScore(queryLower, name) {
+function fuzzyNameScore(queryLower, name, precomputedQueryTrigrams = null, precomputedNameTrigrams = null) {
   if (!queryLower) return 0;
   const rawName = String(name ?? "");
   const lower = rawName.toLowerCase();
@@ -1266,9 +1266,9 @@ function fuzzyNameScore(queryLower, name) {
   if (lower.includes(queryLower)) return 1;
   const noSpace = queryLower.replace(/\s+/g, "");
   if (noSpace && lower.replace(/\s+/g, "").includes(noSpace)) return 1;
-  const queryTrigrams = new Set(jamoTrigrams(queryLower));
+  const queryTrigrams = precomputedQueryTrigrams ?? new Set(jamoTrigrams(queryLower));
   if (queryTrigrams.size) {
-    const nameTrigrams = new Set(jamoTrigrams(name));
+    const nameTrigrams = precomputedNameTrigrams ?? new Set(jamoTrigrams(name));
     if (nameTrigrams.size) {
       let overlap = 0;
       for (const item of queryTrigrams) {
@@ -1281,56 +1281,92 @@ function fuzzyNameScore(queryLower, name) {
   return subsequenceScore(queryLower, name);
 }
 
+// BM25 over jamo trigrams as an inverted index (term -> postings of
+// [docIndex, tf] pairs). Building it tokenizes every note body, which
+// dominates search startup, so the built index is persisted under
+// .ipa/cache/bm25.bin and reloaded while the vault files are unchanged.
 function buildBm25Index(notes) {
-  const corpus = notes.map((note) => ({
-    note,
-    tokens: jamoTrigrams(note.body ? `${note.id}\n${note.body}` : note.id)
-  }));
   const termToIndex = new Map();
-  for (const doc of corpus) {
-    for (const token of doc.tokens) {
-      if (!termToIndex.has(token)) termToIndex.set(token, termToIndex.size);
-    }
-  }
-  const docTf = [];
-  const docLen = [];
-  for (const doc of corpus) {
+  const docTfs = [];
+  const docLen = new Uint32Array(notes.length);
+  for (let docIndex = 0; docIndex < notes.length; docIndex += 1) {
+    const note = notes[docIndex];
+    const tokens = jamoTrigrams(note.body ? `${note.id}\n${note.body}` : note.id);
     const tf = new Map();
-    for (const token of doc.tokens) {
-      const index = termToIndex.get(token);
-      tf.set(index, (tf.get(index) ?? 0) + 1);
+    for (const token of tokens) {
+      let termIndex = termToIndex.get(token);
+      if (termIndex === undefined) {
+        termIndex = termToIndex.size;
+        termToIndex.set(token, termIndex);
+      }
+      tf.set(termIndex, (tf.get(termIndex) ?? 0) + 1);
     }
-    docTf.push(tf);
-    docLen.push(doc.tokens.length);
+    docTfs.push(tf);
+    docLen[docIndex] = tokens.length;
   }
-  const docFreq = new Map();
-  for (const tf of docTf) {
-    for (const index of tf.keys()) docFreq.set(index, (docFreq.get(index) ?? 0) + 1);
+  const nTerms = termToIndex.size;
+  const df = new Uint32Array(nTerms);
+  let totalEntries = 0;
+  for (const tf of docTfs) {
+    totalEntries += tf.size;
+    for (const termIndex of tf.keys()) df[termIndex] += 1;
   }
-  const nDocs = corpus.length;
-  const avgdl = docLen.reduce((sum, value) => sum + value, 0) / Math.max(nDocs, 1);
-  const idf = new Map();
-  for (const [index, count] of docFreq.entries()) {
-    idf.set(index, Math.log(1 + (nDocs - count + 0.5) / (count + 0.5)));
+  const postingsOffsets = new Uint32Array(nTerms + 1);
+  for (let i = 0; i < nTerms; i += 1) postingsOffsets[i + 1] = postingsOffsets[i] + df[i];
+  const postings = new Uint32Array(totalEntries * 2);
+  const cursor = Uint32Array.from(postingsOffsets.subarray(0, nTerms));
+  for (let docIndex = 0; docIndex < docTfs.length; docIndex += 1) {
+    for (const [termIndex, count] of docTfs[docIndex]) {
+      const slot = cursor[termIndex] * 2;
+      postings[slot] = docIndex;
+      postings[slot + 1] = count;
+      cursor[termIndex] += 1;
+    }
   }
-  return { termToIndex, docTf, docLen, avgdl, idf, nDocs, k1: 1.5, b: 0.75 };
+  const nDocs = notes.length;
+  let totalLen = 0;
+  for (const len of docLen) totalLen += len;
+  const avgdl = totalLen / Math.max(nDocs, 1);
+  const idf = new Float64Array(nTerms);
+  for (let i = 0; i < nTerms; i += 1) {
+    idf[i] = Math.log(1 + (nDocs - df[i] + 0.5) / (df[i] + 0.5));
+  }
+  return {
+    termToIndex,
+    docIds: notes.map((note) => note.id),
+    postingsOffsets,
+    postings,
+    docLen,
+    idf,
+    avgdl,
+    nDocs,
+    k1: 1.5,
+    b: 0.75
+  };
 }
 
-function bm25Score(index, queryTokens, docIndex) {
-  const tf = index.docTf[docIndex];
-  if (!tf) return 0;
-  const dl = index.docLen[docIndex] ?? 0;
-  let score = 0;
+// One pass over the postings of each query term; returns raw scores per
+// docIndex (aligned with index.docIds).
+function bm25QueryScores(index, queryTokens) {
+  const scores = new Float64Array(index.nDocs);
+  const avgdl = Math.max(index.avgdl, 1);
+  const seen = new Set();
   for (const token of queryTokens) {
-    const tokenIndex = index.termToIndex.get(token);
-    if (tokenIndex === undefined) continue;
-    const frequency = tf.get(tokenIndex);
-    if (!frequency) continue;
-    const idf = index.idf.get(tokenIndex) ?? 0;
-    const denom = frequency + index.k1 * (1 - index.b + index.b * dl / Math.max(index.avgdl, 1));
-    score += idf * frequency * (index.k1 + 1) / Math.max(denom, 1e-9);
+    if (seen.has(token)) continue;
+    seen.add(token);
+    let repeats = 0;
+    for (const item of queryTokens) if (item === token) repeats += 1;
+    const termIndex = index.termToIndex.get(token);
+    if (termIndex === undefined) continue;
+    const idf = index.idf[termIndex];
+    for (let p = index.postingsOffsets[termIndex]; p < index.postingsOffsets[termIndex + 1]; p += 1) {
+      const docIndex = index.postings[p * 2];
+      const frequency = index.postings[p * 2 + 1];
+      const denom = frequency + index.k1 * (1 - index.b + index.b * index.docLen[docIndex] / avgdl);
+      scores[docIndex] += repeats * idf * frequency * (index.k1 + 1) / Math.max(denom, 1e-9);
+    }
   }
-  return score;
+  return scores;
 }
 
 export function scoreNote(note, query, notes, weights = {}, mapping = DEFAULT_MAPPING) {
@@ -1415,7 +1451,130 @@ export function scoreNote(note, query, notes, weights = {}, mapping = DEFAULT_MA
   return { score, reasons, channelScores };
 }
 
-function prepareSearchNotes(notes, mapping = DEFAULT_MAPPING) {
+const BM25_CACHE_VERSION = 1;
+
+function bm25CachePath(vaultPath) {
+  return join(vaultPath, ".ipa", "cache", "bm25.bin");
+}
+
+// Freshness signature: the cached index is valid only while every note file
+// is byte-identical (same path set, mtime, size) to the files the index was
+// built from. Stat calls are cheap next to re-tokenizing the vault.
+function bm25FileSignature(notes) {
+  const files = [];
+  for (const note of notes) {
+    try {
+      const stat = statSync(note.path);
+      files.push([note.relPath, Math.round(stat.mtimeMs), stat.size]);
+    } catch {
+      return null;
+    }
+  }
+  files.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+  return files;
+}
+
+function bm25SignaturesEqual(left, right) {
+  if (!left || !right || left.length !== right.length) return false;
+  for (let i = 0; i < left.length; i += 1) {
+    if (left[i][0] !== right[i][0] || left[i][1] !== right[i][1] || left[i][2] !== right[i][2]) return false;
+  }
+  return true;
+}
+
+function copyTypedSection(buffer, offset, byteLength, TypedArray) {
+  // Uint8Array#slice copies into a fresh, aligned ArrayBuffer; Buffer#slice
+  // would alias the (possibly unaligned) pool allocation.
+  const bytes = Uint8Array.prototype.slice.call(buffer, offset, offset + byteLength);
+  return new TypedArray(bytes.buffer);
+}
+
+function writeBm25Cache(vaultPath, index, files) {
+  try {
+    const header = Buffer.from(JSON.stringify({
+      version: BM25_CACHE_VERSION,
+      nDocs: index.nDocs,
+      avgdl: index.avgdl,
+      k1: index.k1,
+      b: index.b,
+      docIds: index.docIds,
+      nTerms: index.postingsOffsets.length - 1,
+      postingsLength: index.postings.length,
+      terms: [...index.termToIndex.keys()],
+      files
+    }), "utf8");
+    const headerLength = Buffer.alloc(4);
+    headerLength.writeUInt32LE(header.length, 0);
+    const payload = Buffer.concat([
+      headerLength,
+      header,
+      Buffer.from(index.postingsOffsets.buffer, index.postingsOffsets.byteOffset, index.postingsOffsets.byteLength),
+      Buffer.from(index.postings.buffer, index.postings.byteOffset, index.postings.byteLength),
+      Buffer.from(index.docLen.buffer, index.docLen.byteOffset, index.docLen.byteLength),
+      Buffer.from(index.idf.buffer, index.idf.byteOffset, index.idf.byteLength)
+    ]);
+    const path = bm25CachePath(vaultPath);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(`${path}.tmp`, payload);
+    renameSync(`${path}.tmp`, path);
+  } catch {
+    // Persisting the index is an optimization; never fail the search over it.
+  }
+}
+
+function loadBm25Cache(vaultPath, notes) {
+  const path = bm25CachePath(vaultPath);
+  if (!existsSync(path)) return null;
+  try {
+    const buffer = readFileSync(path);
+    const headerLength = buffer.readUInt32LE(0);
+    const header = JSON.parse(buffer.toString("utf8", 4, 4 + headerLength));
+    if (header.version !== BM25_CACHE_VERSION) return null;
+    if (header.nDocs !== notes.length) return null;
+    if (!bm25SignaturesEqual(header.files, bm25FileSignature(notes))) return null;
+    let offset = 4 + headerLength;
+    const postingsOffsets = copyTypedSection(buffer, offset, (header.nTerms + 1) * 4, Uint32Array);
+    offset += (header.nTerms + 1) * 4;
+    const postings = copyTypedSection(buffer, offset, header.postingsLength * 4, Uint32Array);
+    offset += header.postingsLength * 4;
+    const docLen = copyTypedSection(buffer, offset, header.nDocs * 4, Uint32Array);
+    offset += header.nDocs * 4;
+    const idf = copyTypedSection(buffer, offset, header.nTerms * 8, Float64Array);
+    const terms = Array.isArray(header.terms) ? header.terms : [];
+    if (terms.length !== header.nTerms) return null;
+    const termToIndex = new Map();
+    for (let i = 0; i < terms.length; i += 1) termToIndex.set(terms[i], i);
+    return {
+      termToIndex,
+      docIds: header.docIds,
+      postingsOffsets,
+      postings,
+      docLen,
+      idf,
+      avgdl: header.avgdl,
+      nDocs: header.nDocs,
+      k1: header.k1,
+      b: header.b
+    };
+  } catch {
+    return null;
+  }
+}
+
+function resolveBm25Index(vaultPath, notes) {
+  if (vaultPath) {
+    const cached = loadBm25Cache(vaultPath, notes);
+    if (cached) return cached;
+  }
+  const index = buildBm25Index(notes);
+  if (vaultPath) {
+    const files = bm25FileSignature(notes);
+    if (files) writeBm25Cache(vaultPath, index, files);
+  }
+  return index;
+}
+
+function prepareSearchNotes(notes, mapping = DEFAULT_MAPPING, options = {}) {
   const projectDir = mapping.project_dir ?? DEFAULT_MAPPING.project_dir;
   const noteById = new Map(notes.map((note) => [note.id, note]));
   const lookup = makeNoteLookup(notes);
@@ -1429,6 +1588,7 @@ function prepareSearchNotes(notes, mapping = DEFAULT_MAPPING) {
       names,
       searchNames,
       searchNameLowers: searchNames.map((name) => name.toLowerCase()),
+      nameTrigramSets: searchNames.map((name) => new Set(jamoTrigrams(name))),
       idKey: searchableKey(note.id),
       bodyLower: bodySearch.toLowerCase(),
       bodyTokenSet: new Set(tokenize(`${searchNames.join(" ")} ${bodySearch}`)),
@@ -1461,8 +1621,11 @@ function prepareSearchNotes(notes, mapping = DEFAULT_MAPPING) {
   }
   prepared.notes = notes;
   prepared.noteById = noteById;
-  prepared.bm25 = buildBm25Index(notes);
-  prepared.relatedCandidatesBySeed = buildRelatedCandidateIndex(notes);
+  prepared.lookup = lookup;
+  prepared.bm25 = resolveBm25Index(options.vaultPath ?? null, notes);
+  // The related channel is the only consumer of this index; skip the build
+  // when the channel is disabled for the vault.
+  prepared.relatedCandidatesBySeed = options.related === false ? new Map() : buildRelatedCandidateIndex(notes);
   return prepared;
 }
 
@@ -1472,30 +1635,33 @@ function prepareSearchQuery(query, preparedNotes) {
   const trigrams = jamoTrigrams(raw);
   const bm25Scores = new Map();
   const childBm25Scores = new Map();
-  if (trigrams.length && preparedNotes.bm25?.nDocs > 0) {
-    const rawScores = preparedNotes.map((_, index) => bm25Score(preparedNotes.bm25, trigrams, index));
-    const maxRaw = Math.max(0, ...rawScores);
+  const bm25 = preparedNotes.bm25;
+  if (trigrams.length && bm25?.nDocs > 0) {
+    const rawScores = bm25QueryScores(bm25, trigrams);
+    let maxRaw = 0;
+    for (const score of rawScores) if (score > maxRaw) maxRaw = score;
     if (maxRaw > 0) {
-      rawScores.forEach((score, index) => {
-        if (score > 0) bm25Scores.set(preparedNotes[index].note.id, score / maxRaw);
-      });
-      rawScores.forEach((score, index) => {
-        if (score <= 0) return;
-        const child = preparedNotes[index].note;
-        if (child.type === "index" || child.type === "root") return;
+      const lookup = preparedNotes.lookup ?? ((name) => findNote(preparedNotes.notes ?? [], name));
+      for (let docIndex = 0; docIndex < rawScores.length; docIndex += 1) {
+        const score = rawScores[docIndex];
+        if (score <= 0) continue;
+        const child = preparedNotes.noteById?.get(bm25.docIds[docIndex]);
+        if (!child) continue;
+        bm25Scores.set(child.id, score / maxRaw);
+        if (child.type === "index" || child.type === "root") continue;
         for (const ref of child.refs) {
-          const target = findNote(preparedNotes.notes ?? [], ref);
+          const target = lookup(ref);
           if (!target || (target.type !== "index" && target.type !== "root" && !target.id.startsWith("🔖"))) continue;
           childBm25Scores.set(target.id, Math.max(childBm25Scores.get(target.id) ?? 0, score / maxRaw));
         }
-      });
+      }
     }
   }
   return {
     raw,
     lower,
     tokens: tokenize(raw),
-    directHits: lower ? preparedNotes.filter((candidate) => candidate.idKey.includes(lower)) : [],
+    trigramSet: new Set(trigrams),
     bm25Scores,
     childBm25Scores
   };
@@ -1514,7 +1680,10 @@ function scorePreparedChannels(prepared, query) {
   channelScores.filename = bestName;
   if (bestName) reasons.filename = { matched: prepared.names.find((name) => searchableKey(name).includes(query.lower)) ?? note.id };
 
-  const fuzzy = query.lower ? Math.max(0, ...prepared.searchNames.map((name) => fuzzyNameScore(query.lower, name))) : 0;
+  const fuzzy = query.lower
+    ? Math.max(0, ...prepared.searchNames.map((name, index) =>
+        fuzzyNameScore(query.lower, name, query.trigramSet, prepared.nameTrigramSets?.[index])))
+    : 0;
   channelScores.fuzzy = fuzzy;
   if (fuzzy) reasons.fuzzy = { score: fuzzy };
 
@@ -1729,6 +1898,7 @@ function buildRelatedCandidateIndex(notes) {
     add(idKeyToNotes, key(note.id), note.id);
   }
 
+  const orderById = new Map(notes.map((note, index) => [note.id, index]));
   const bySeed = new Map();
   for (const seed of notes) {
     const scores = new Map();
@@ -1752,30 +1922,58 @@ function buildRelatedCandidateIndex(notes) {
     for (const link of seed.links) for (const id of idKeyToNotes.get(key(link)) ?? []) linkCandidates.add(id);
     for (const id of linkCandidates) bump(id, 2);
 
-    // Emit in notes order so the result matches the previous nested-loop output.
+    // Emit in notes order so the result matches the previous nested-loop
+    // output — sort the sparse candidate set instead of scanning all notes.
     const related = [];
-    for (const candidate of notes) {
-      const score = scores.get(candidate.id);
-      if (score > 0) related.push({ note: candidate.id, score });
+    for (const [id, score] of scores) {
+      if (score > 0) related.push({ note: id, score });
     }
+    related.sort((a, b) => (orderById.get(a.note) ?? 0) - (orderById.get(b.note) ?? 0));
     bySeed.set(seed.id, related);
   }
   return bySeed;
 }
 
-async function activeSearchParams(vaultPath) {
-  const { config } = await readVaultConfig(vaultPath);
+async function activeSearchParams(vaultPath, providedConfig = null) {
+  const config = providedConfig ?? (await readVaultConfig(vaultPath)).config;
   const file = config.weights?.file;
   if (!file) return {};
   const path = tuneResultPath(vaultPath, file);
   if (!existsSync(path)) return {};
+  // Tune result files carry full trial histories (tens of MB); parsing one on
+  // every search just to read three params dominates startup. Cache the
+  // extracted params keyed by the source file identity.
+  const stat = statSync(path);
+  const cachePath = join(vaultPath, ".ipa", "cache", "active-params.json");
+  try {
+    if (existsSync(cachePath)) {
+      const cached = JSON.parse(readFileSync(cachePath, "utf8"));
+      if (cached.source === String(file) && cached.mtime_ms === Math.round(stat.mtimeMs) && cached.size === stat.size) {
+        return cached.params ?? {};
+      }
+    }
+  } catch {
+    // Unreadable sidecar: fall through to the full parse below.
+  }
   const payload = JSON.parse(await readFile(path, "utf8"));
   const params = payload.best?.params ?? payload.params ?? payload;
-  return {
+  const extracted = {
     threshold: params.threshold,
     cap: params.cap ?? params.max_results,
     weights: params.weights
   };
+  try {
+    mkdirSync(dirname(cachePath), { recursive: true });
+    writeFileSync(cachePath, JSON.stringify({
+      source: String(file),
+      mtime_ms: Math.round(stat.mtimeMs),
+      size: stat.size,
+      params: extracted
+    }, null, 2) + "\n", "utf8");
+  } catch {
+    // Best-effort cache; never fail the search over it.
+  }
+  return extracted;
 }
 
 function tuneResultPath(vaultPath, filename) {
@@ -1786,9 +1984,25 @@ function tuneResultPath(vaultPath, filename) {
 }
 
 export async function searchVault(vaultPath, query, options = {}) {
-  const result = await searchWithContext(await prepareSearchContext(vaultPath), query, options);
+  // options.notes lets callers that already loaded the vault (e.g.
+  // buildContext) skip a second full disk load and parse.
+  const context = await prepareSearchContext(vaultPath, options.notes ?? null);
+  const result = await searchWithContext(context, query, options);
   await maybeRecordSearchEvent(vaultPath, result, options);
   return result;
+}
+
+// Several queries against one prepared context: the vault is loaded and the
+// indexes are prepared once, then each query pays only its own scoring pass.
+export async function searchVaultMany(vaultPath, queries, options = {}) {
+  const context = await prepareSearchContext(vaultPath, options.notes ?? null);
+  const results = [];
+  for (const query of queries) {
+    const result = await searchWithContext(context, query, options);
+    await maybeRecordSearchEvent(vaultPath, result, options);
+    results.push(result);
+  }
+  return { status: "ok", count: results.length, queries: results };
 }
 
 function envFlag(name) {
@@ -1954,7 +2168,7 @@ async function maybeRecordSearchEvent(vaultPath, result, options = {}) {
 export async function prepareSearchContext(vaultPath, notes = null) {
   const { config, mapping } = await readVaultConfig(vaultPath);
   if (!notes) notes = await loadNotes(vaultPath, mapping);
-  const active = await activeSearchParams(vaultPath);
+  const active = await activeSearchParams(vaultPath, config);
   const searchPlugins = await loadPluginModules(vaultPath, "search");
   const pluginChannels = [];
   const plugins = [];
@@ -1964,7 +2178,11 @@ export async function prepareSearchContext(vaultPath, notes = null) {
     else plugins.push(plugin);
   }
   const channels = resolveSearchChannels(config, pluginChannels);
-  return { vaultPath, config, mapping, notes, active, plugins, channels, preparedNotes: prepareSearchNotes(notes, mapping), queryScoreCache: new Map() };
+  const preparedNotes = prepareSearchNotes(notes, mapping, {
+    vaultPath,
+    related: channels.some((channel) => channel.name === "related")
+  });
+  return { vaultPath, config, mapping, notes, active, plugins, channels, preparedNotes, queryScoreCache: new Map() };
 }
 
 export async function searchWithContext(context, query, options = {}) {
@@ -1986,7 +2204,7 @@ export async function searchWithContext(context, query, options = {}) {
   if (channels.some((channel) => channel.name === "project")) {
     applyProjectScores(rowsByNote);
   }
-  const notesById = new Map((context.notes ?? []).map((note) => [note.id, note]));
+  const notesById = context.preparedNotes?.noteById ?? new Map((context.notes ?? []).map((note) => [note.id, note]));
   const updatedKey = context.mapping?.updated_at ?? DEFAULT_MAPPING.updated_at;
   const hits = [...rowsByNote.values()]
     .map((row) => ({
@@ -2049,9 +2267,10 @@ async function baseSearchRows(context, query) {
       pluginReasons: {}
     });
   }
-  await applyPluginSearchChannels(rowsByNote, channels, { vaultPath, mapping, notes, query, searchQuery });
+  await applyPluginSearchChannels(rowsByNote, channels, { vaultPath, mapping, notes, query, searchQuery, lookup: preparedNotes.lookup ?? null });
+  const resolveHitNote = preparedNotes.lookup ?? ((name) => findNote(notes, name));
   for (const hit of await runSearchPlugins(vaultPath, query, notes, mapping, plugins)) {
-    const note = findNote(notes, hit.note);
+    const note = resolveHitNote(hit.note);
     if (!note) continue;
     const current = rowsByNote.get(note.id) ?? {
       note: note.id,
@@ -2133,7 +2352,7 @@ async function applyPluginSearchChannels(rowsByNote, channels, context) {
       vaultPath: context.vaultPath
     });
     for (const hit of normalizeSearchChannelOutput(output, channel.path)) {
-      const note = findNote(context.notes, hit.note);
+      const note = (context.lookup ?? ((name) => findNote(context.notes, name)))(hit.note);
       if (!note) continue;
       const row = rowsByNote.get(note.id);
       if (!row) continue;
@@ -3725,7 +3944,7 @@ export async function buildContext(vaultPath, query, options = {}) {
   const preset = contextPreset(options);
   const search = options.byNote
     ? { results: [{ note: findNote(notes, query)?.id, score: 1 }].filter((item) => item.note) }
-    : await searchVault(vaultPath, query, { maxResults: options.maxResults ?? preset.maxNotes, threshold: 0 });
+    : await searchVault(vaultPath, query, { maxResults: options.maxResults ?? preset.maxNotes, threshold: 0, notes });
   const resultNotes = uniqueNotes(search.results.map((hit) => findNote(notes, hit.note)).filter(Boolean));
   const selected = resultNotes.slice(0, preset.maxNotes);
   const contextNotes = selected.map((note) =>

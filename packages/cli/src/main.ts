@@ -50,6 +50,7 @@ import {
   resolveSettings,
   reviewVault,
   searchVault,
+  searchVaultMany,
   selfUpdate,
   suggestLinks,
   setDefaultProfile,
@@ -397,18 +398,23 @@ const COMMAND_HELP = {
     ]
   }),
   search: formatDetailedHelp({
-    usage: "ipa [OPTIONS] search QUERY [--max N] [--threshold N] [--all] [--json]",
+    usage: "ipa [OPTIONS] search QUERY... [--max N] [--threshold N] [--all] [--join] [--json]",
     summary: "Search notes with active weights, tune result, and vault-local search plugins.",
     options: [
-      ["--max N", "Maximum result count"],
+      ["--max N", "Maximum result count (per query)"],
       ["--threshold N", "Minimum score threshold"],
       ["--all", "Show all scored notes by forcing threshold 0"],
+      ["--join", "Treat all arguments as one space-joined query"],
       ["--json", "Print structured output"]
     ],
     examples: [
       ["ipa search \"ipa cli\"", "Search the active vault"],
+      ["ipa search \"ipa cli\" \"하네스\"", "Run several queries in one call (vault loads once)"],
       ["ipa search \"graph\" --max 20", "Return more results"],
       ["ipa search \"Alpha\" --json", "Use machine-readable output"]
+    ],
+    notes: [
+      "Multiple arguments run as separate queries against one loaded vault. Quote multi-word queries, or pass --join to search all arguments as one query."
     ]
   }),
   traversal: formatDetailedHelp({
@@ -660,6 +666,7 @@ function render(payload) {
   if (Array.isArray(payload)) return payload.map(render).join("\n");
   if (!payload || typeof payload !== "object") return String(payload ?? "");
   if (payload.results && Object.hasOwn(payload, "query")) return renderSearchResults(payload);
+  if (Array.isArray(payload.queries) && payload.queries.every((item) => item && Object.hasOwn(item, "query") && item.results)) return payload.queries.map(renderSearchResults).join("\n\n");
   if (payload.pack && Object.hasOwn(payload, "misses")) return renderTuneEval(payload);
   if (payload.optimizer && payload.best) return renderTuneRun(payload);
   if (payload.thresholds && payload.target_scores) return renderTuneAnalyze(payload);
@@ -1391,17 +1398,25 @@ function buildProgram() {
     });
 
   setHelp(program.command("search"), "search")
-    .argument("[query...]", "Search query")
+    .argument("[query...]", "Search query; several quoted queries run in one call")
     .option("--max <number>", "Maximum result count")
     .option("--threshold <number>", "Minimum score threshold")
     .option("--all", "Show all scored notes by forcing threshold 0")
+    .option("--join", "Treat all arguments as one space-joined query")
     .action(async (queryParts, options) => {
-      await withVault(globalOptions(program), async (vault) => print(await searchVault(vault, queryParts.join(" "), {
+      const searchOptions = {
         threshold: optionNumber(options.threshold),
         maxResults: optionNumber(options.max),
         showAll: Boolean(options.all),
         logCwd: process.cwd()
-      }), jsonOutput(program)));
+      };
+      await withVault(globalOptions(program), async (vault) => {
+        if (queryParts.length > 1 && !options.join) {
+          print(await searchVaultMany(vault, queryParts, searchOptions), jsonOutput(program));
+          return;
+        }
+        print(await searchVault(vault, queryParts.join(" "), searchOptions), jsonOutput(program));
+      });
     });
 
   setHelp(program.command("view"), "view")
