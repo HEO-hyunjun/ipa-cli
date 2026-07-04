@@ -1,0 +1,5 @@
+{"type":"system","subtype":"init","session_id":"sess-fixture-1"}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ipa search \"커피\" \"드립\""}},{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"ls -la"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","is_error":false},{"type":"tool_result","tool_use_id":"t2","is_error":true}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t3","name":"Bash","input":{"command":"cd /x && ipa view \"Alpha\" --full"}},{"type":"text","text":"정리했습니다."}]}}
+{"type":"result","subtype":"success","session_id":"sess-fixture-1","total_cost_usd":0.042,"num_turns":3,"is_error":false,"result":"정리했습니다."}
