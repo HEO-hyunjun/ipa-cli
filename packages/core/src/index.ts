@@ -6536,13 +6536,7 @@ ipa digest                     # current shape: counts, largest indexes, orphans
 
 ## Core Design Intent
 
-Explain the why, not just the definition:
-
-- Folders are lifecycle states, not categories: \`${mapping.inbox_dir}\` (captured), \`${mapping.project_dir}\` (in progress), \`${mapping.archive_dir}\` (done). Classification lives in links, so a note never fights over one folder.
-- Content and structure are separate: \`${mapping.note_type}: note\` holds content; index/root notes are pure navigation and hold none.
-- \`${mapping.refs}\` is vertical (where a note belongs — hierarchy); \`${mapping.tags}\` is horizontal (what perspective cuts across indexes). They are orthogonal, never interchangeable.
-- Only the project folder is actively managed; the archive may grow without cleanup cost.
-- IPA deliberately covers only "record and retrieve". It does not force thinking (Zettelkasten) or drive execution (PARA) — requests beyond that scope are out of IPA's domain, and saying so is a valid answer.
+The source of truth for IPA philosophy is the Design Intent section of \`ipa convention\` — read it before answering, and explain the why, not just the definition. The load-bearing ideas: folders express only lifecycle state while classification lives in links (\`${mapping.refs}\` vertical, \`${mapping.tags}\` horizontal — orthogonal, never interchangeable); index/root notes are pure navigation with no content; only the project folder is actively managed; and IPA deliberately covers only "record and retrieve" — requests to shape thinking or drive execution are outside its domain, and saying so is a valid answer.
 
 ## Mode 1 — Concept Q&A ("what is an index", "refs vs tags")
 
@@ -8444,6 +8438,28 @@ export async function conventionShow(vaultPath) {
         "field (wikilinks). Index notes aggregate children through those backlinks;",
         "they do not maintain child lists by hand. New material enters through the",
         "inbox, gains refs/tags during triage, and then moves to the archive."
+      ].join("\n")
+    },
+    {
+      title: "Design Intent",
+      body: [
+        "IPA (Inbox-Project-Archive) exists to solve one recurring failure of note",
+        'systems: "where did I put that? I know I filed it." Folder-based',
+        "classification (PARA) hits a fundamental limit — one note can live in only",
+        "one folder — so classification itself becomes the time sink and retrieval",
+        "degenerates into search anyway. IPA's answer:",
+        "",
+        `- Folders express only lifecycle state — \`${mapping.inbox_dir}\` (capturing), \`${mapping.project_dir}\` (working), \`${mapping.archive_dir}\` (done). They never classify.`,
+        `- Classification lives in links: \`${mapping.refs}\` answers "where does this belong" (vertical, one or many parents), \`${mapping.tags}\` answers "what perspective cuts across it" (horizontal). A note can belong to several contexts at once, so "which folder?" stops being a question.`,
+        "- Only the project folder is actively managed; it holds index/root notes only. The archive expands freely without subfolders — thousands of notes are fine because indexes and tags retrieve them.",
+        "- Notes flow one way: inbox → (triage) → archive. Reactivating a dormant topic means moving just its root/index back to the project folder; the archived notes follow through their existing links.",
+        "- An index is a conceptual folder: curated links plus automatic backlinks, no content of its own. Indexes may reference other indexes as context, tiny one-note indexes are fine (unused ones simply retire to the archive), and link order is deliberate curation.",
+        "",
+        'IPA deliberately covers only "record and retrieve". It does not prescribe',
+        "how to think (Zettelkasten) or how to execute (PARA): defining content",
+        "style reintroduces classification ambiguity, and staying unopinionated is",
+        "what keeps the method universal. Requests beyond that scope are outside",
+        "IPA's domain, and saying so is a valid answer."
       ].join("\n")
     },
     {

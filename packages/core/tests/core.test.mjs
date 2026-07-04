@@ -1641,8 +1641,7 @@ test("harness prompt surfaces render field and folder names from the config mapp
 
   // Then: the consult skill teaches concepts with the mapped field names.
   const consultSkill = await readFile(join(vault, ".claude", "skills", "ipa-consult", "SKILL.md"), "utf8");
-  assert.match(consultSkill, /`link` is vertical/);
-  assert.match(consultSkill, /`keywords` is horizontal/);
+  assert.match(consultSkill, /`link` vertical, `keywords` horizontal/);
 
   // Then: the vault-local block carries the mapped folder names.
   const localPrompt = await readFile(join(vault, "CLAUDE.md"), "utf8");
@@ -1679,6 +1678,11 @@ test("convention show renders concepts through the active config mapping and vau
   assert.match(result.markdown, /--field link --add/);
   assert.match(result.markdown, /`10 Intake` — every new note is created here/);
   assert.doesNotMatch(result.markdown, /`ref` — wikilinks/);
+
+  // Then: the design-intent SoT section renders with the mapped field names.
+  assert.match(result.markdown, /## Design Intent/);
+  assert.match(result.markdown, /`link` answers "where does this belong"/);
+  assert.match(result.markdown, /only "record and retrieve"/);
 
   // Then: vault operating rules from fragments appear as a section.
   assert.match(result.markdown, /## Vault Operating Rules/);
