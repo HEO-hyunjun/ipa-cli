@@ -8,7 +8,7 @@ import { createSandbox, snapshot, diffSnapshots } from "./lib/sandbox.mjs";
 import { runClaudeTurn, installHarness } from "./lib/runner.mjs";
 import { pickReply } from "./lib/responder.mjs";
 import { evaluateExpect } from "./lib/judge.mjs";
-import { loadBaseline, compareToBaseline, formatBaseline } from "./lib/baseline.mjs";
+import { loadBaseline, compareToBaseline, formatBaseline, readBaselineRows, mergeBaseline } from "./lib/baseline.mjs";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const IPA_BIN = join(REPO, "packages", "cli", "dist", "main.js");
@@ -182,8 +182,9 @@ async function main() {
 
   for (const r of report.filter((x) => x.kind !== "ok")) console.log(`baseline ${r.kind}: ${r.key} ${r.detail}`);
   if (args.updateBaseline && !args.dryRun) {
-    writeFileSync(baselineFile, formatBaseline(rows));
-    console.log(`baseline updated: ${rows.length} entries`);
+    const merged = mergeBaseline(readBaselineRows(baselineFile), rows);
+    writeFileSync(baselineFile, formatBaseline(merged));
+    console.log(`baseline updated: ${rows.length} upserted, ${merged.length} total entries`);
   }
   console.log(`\n${runSummary.passed}/${rows.length} passed, total $${runSummary.totalCostUsd} → ${join("bench/results/runs", ts)}`);
 
