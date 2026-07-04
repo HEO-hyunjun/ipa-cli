@@ -30,8 +30,7 @@ export default [
     ],
     budget: { maxCostUsd: 2.5, maxIpaCalls: 25 }, goldenPath: 8 },
 
-  // TODO(B1): ipa config init 도입 후 holdout 해제
-  { ...base, id: "f20-empty-coldstart", persona: "empty", harness: false, holdout: true,
+  { ...base, id: "f20-empty-coldstart", persona: "empty", harness: false, holdout: false,
     prompts: [
       "새 볼트를 시작하려고 해. IPA 구조로 초기 세팅하고 첫 노트로 '볼트 운영 원칙'을 만들어줘.",
       "빈 폴더인데 IPA 방식 볼트로 부트스트랩하고 운영 원칙 노트 하나 작성해줘.",
