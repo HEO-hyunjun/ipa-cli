@@ -908,24 +908,28 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   assert.match(skill, /ipa <command> --help/);
   assert.match(skill, /within ~3 ipa calls/);
   assert.match(skill, /ipa digest "Index Note"/);
-  assert.match(skill, /Never edit `date_created`\/`date_modified` by hand/);
+  assert.match(skill, /Never edit the time fields \(`date_created`\/`date_modified`\) by hand/);
+  assert.match(skill, /ipa convention/);
   assert.doesNotMatch(skill, /current prompt context/);
   assert.doesNotMatch(skill, /IPA_SEARCH_LOG=1 ipa search "keyword"/);
   assert.doesNotMatch(skill, /Use `search` only when/);
   assert.doesNotMatch(skill, /ipa --profile ipa-test search/);
   assert.match(skill, /formatter plan --note "Note A" "Note B"/);
   assert.match(skill, /formatter apply --note "Note A" "Note B"/);
-  assert.match(skill, /Core-Backed Scripted Edits/);
+  assert.match(skill, /## Scripted Edits/);
   assert.match(skill, /ipa note replace "Note Title"/);
   assert.match(skill, /ipa note set "Note Title" --field ref --add "Index Note" --apply/);
+  // The global prompt block is pointer-level: it names the entry commands and
+  // points at the skill/convention/help surfaces instead of duplicating them.
   const globalPrompt = await readFile(join(home, ".codex", "AGENTS.md"), "utf8");
   assert.match(globalPrompt, /Evidence-Based Work/);
-  assert.match(globalPrompt, /IPA: user knowledge base/);
-  assert.match(globalPrompt, /Workspace: current local reality/);
-  assert.match(globalPrompt, /Web: external reality/);
-  assert.match(globalPrompt, /Do not answer from memory/);
-  assert.match(globalPrompt, /IPA Command Selection/);
-  assert.match(globalPrompt, /ipa link suggest "Note Title"/);
+  assert.match(globalPrompt, /answer from vault evidence/);
+  assert.match(globalPrompt, /ipa search "keyword"/);
+  assert.match(globalPrompt, /ipa <command> --help/);
+  assert.match(globalPrompt, /ipa convention/);
+  assert.match(globalPrompt, /skills\/ipa\/SKILL\.md/);
+  assert.doesNotMatch(globalPrompt, /IPA Command Selection/, "command selection must live in the skill only");
+  assert.doesNotMatch(globalPrompt, /ipa link suggest/, "global block must not duplicate the command catalog");
   assert.match(await readFile(join(home, ".codex", "hooks", "ipa-inbox-guard.mjs"), "utf8"), /shared IPA inbox creation guard/);
   const markdownNudge = await readFile(join(home, ".codex", "hooks", "ipa-md-write-nudge.mjs"), "utf8");
   assert.match(markdownNudge, /formatter apply --note/);
@@ -945,18 +949,18 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   assert.match(promptHookSource, /link suggest "Note Title"/);
   assert.match(promptHookSource, /\$\{prefix\} <command> --help/);
   assert.doesNotMatch(promptHookSource, /Required workflow/);
+  // The vault-local block carries vault facts only; generic workflow stays in
+  // the global skill and concepts are queryable via ipa convention.
   const agentsPrompt = await readFile(join(vault, "AGENTS.md"), "utf8");
   assert.match(agentsPrompt, /IPA CLI Harness/);
-  assert.match(agentsPrompt, /Vault Operation Workflow/);
-  assert.match(agentsPrompt, /IPA Command Selection/);
-  assert.match(agentsPrompt, /ipa link suggest "Note Title"/);
+  assert.match(agentsPrompt, /inbox `00 Inbox`/);
+  assert.match(agentsPrompt, /ipa convention/);
   assert.match(agentsPrompt, /ipa <command> --help/);
-  assert.match(agentsPrompt, /Convention And JS Rule Workflow/);
-  assert.match(agentsPrompt, /Vault-Local Helper Skills/);
   assert.match(agentsPrompt, /\.agents\/skills/);
-  assert.match(agentsPrompt, /plugin dry-run search/);
-  assert.match(agentsPrompt, /ipa config show/);
-  assert.match(agentsPrompt, /ipa note replace "Note Title"/);
+  assert.match(agentsPrompt, /ipa plugin validate/);
+  assert.match(agentsPrompt, /formatter apply --note/);
+  assert.doesNotMatch(agentsPrompt, /IPA Command Selection/, "vault block must not duplicate the skill's command selection");
+  assert.doesNotMatch(agentsPrompt, /ipa link suggest/, "vault block must not duplicate the command catalog");
   const ruleSkill = await readFile(join(vault, ".agents", "skills", "ipa-rule", "SKILL.md"), "utf8");
   assert.match(ruleSkill, /name: ipa-rule/);
   assert.match(ruleSkill, /Use this skill whenever the user mentions IPA rules/);
@@ -1295,7 +1299,7 @@ test("harness install opencode creates OpenCode-native managed artifacts and uni
   // Then: the global OpenCode AGENTS.md prompt has evidence-based guidance.
   const globalPrompt = await readFile(join(opencodeHome, "AGENTS.md"), "utf8");
   assert.match(globalPrompt, /Evidence-Based Work/);
-  assert.match(globalPrompt, /IPA: user knowledge base/);
+  assert.match(globalPrompt, /answer from vault evidence/);
 
   // Then: the OpenCode plugin file is valid JavaScript with the harness marker.
   const pluginSource = await readFile(join(opencodeHome, "plugins", "ipa-harness.js"), "utf8");
@@ -1574,6 +1578,36 @@ test("vault fragments are inlined into managed prompt surfaces and accepted by d
   await writeFile(join(fragmentsDir, "ipa-rules.md"), "오타 프래그먼트\n", "utf8");
   const unknown = await harnessDoctor(vault, options);
   assert.ok((unknown.issues ?? []).some((issue) => issue.code === "harness.fragment_unknown"), "unknown fragment names must warn");
+
+  await harnessUninstall(vault, "claude", options);
+});
+
+test("harness prompt surfaces render field and folder names from the config mapping", async () => {
+  // Given: a vault that remaps the refs field, time fields, and inbox folder.
+  const vault = await fixtureVault();
+  const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
+  const options = { homeDir: home, profile: "ipa-test" };
+  const configPath = join(vault, ".ipa", "config.yaml");
+  const config = await readFile(configPath, "utf8");
+  await writeFile(
+    configPath,
+    `${config.trimEnd()}\nmapping:\n  fields:\n    refs: link\n    created_at: created\n    updated_at: modified\n  folders:\n    inbox: "10 Intake"\n`,
+    "utf8"
+  );
+
+  // When: install renders the prompt surfaces.
+  await harnessInstall(vault, "claude", options);
+
+  // Then: the skill teaches the vault's real field names, not IPA defaults.
+  const skill = await readFile(join(home, ".claude", "skills", "ipa", "SKILL.md"), "utf8");
+  assert.match(skill, /--field link --add "Index Note" --apply/);
+  assert.match(skill, /`created`\/`modified`/);
+  assert.doesNotMatch(skill, /--field ref --add/);
+  assert.doesNotMatch(skill, /date_created/);
+
+  // Then: the vault-local block carries the mapped folder names.
+  const localPrompt = await readFile(join(vault, "CLAUDE.md"), "utf8");
+  assert.match(localPrompt, /inbox `10 Intake`/);
 
   await harnessUninstall(vault, "claude", options);
 });

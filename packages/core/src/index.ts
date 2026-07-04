@@ -5940,70 +5940,34 @@ function harnessTargetSpec(target = "codex", options = {}) {
   };
 }
 
-function ipaCommandSelection(prefix = "ipa") {
+function ipaCommandSelection(prefix = "ipa", mapping = DEFAULT_MAPPING) {
   return `## IPA Command Selection
 
-- Exact note title known: \`${prefix} view "Note Title"\` (overview first), then \`--section\`/\`--full\` for the parts you actually need. Several chosen notes: \`${prefix} view "A" "B" --full\` in one call.
-- Summary of an index/root and its children: \`${prefix} digest "Index Note"\` (children + snippets + dates in one call), then \`view --full\` on at most the 2-3 most relevant children.
-- Broad prior context or user-specific background: \`${prefix} context "keyword" --size medium --format markdown\`; widen with \`${prefix} search "other angle"\` only when context missed something. Search results already include snippets and modified dates — judge relevance from them before opening notes.
-- Related notes or wikilink candidates: \`${prefix} link suggest "Note Title"\`. Ref/root/sibling graph shape: \`${prefix} traversal --up|--down|--siblings "Note Title"\`.
-- New note: \`${prefix} inbox add ...\`. Body text edit: \`${prefix} note replace ...\`. Frontmatter field edit: \`${prefix} note set "Note" --field ref --add "Index Note" --apply\`.
-- Vault-wide sweeps (\`validator\`/\`review\`/\`formatter plan\` without \`--note\`) are maintenance ops whose output scales with the vault — during note work always scope with \`--note\`.
+- Exact note title known: \`${prefix} view "Note Title"\` (overview first), \`--full\` only for chosen notes. Several notes: \`${prefix} view "A" "B" --full\` in one call.
+- Index/root summary: \`${prefix} digest "Index Note"\` (children + snippets + dates), then \`view --full\` on at most the 2-3 most relevant children — never open every child.
+- Broad prior context or user-specific background: \`${prefix} context "keyword" --size medium --format markdown\`; widen with \`${prefix} search "other angle"\` only when context missed something. Results already carry snippets and dates — judge relevance from them before opening notes.
+- Related notes: \`${prefix} link suggest "Note Title"\`. Graph shape: \`${prefix} traversal --up|--down|--siblings "Note Title"\`.
+- New note: \`${prefix} inbox add ...\`. Body edit: \`${prefix} note replace ...\`. Frontmatter edit: \`${prefix} note set "Note" --field ${mapping.refs} --add "Index Note" --apply\`.
+- During note work always scope \`validator\`/\`formatter plan\` with \`--note\`; without it they are vault-wide maintenance sweeps.
 - Unsure command or syntax: \`${prefix} help\` or \`${prefix} <command> --help\`.
 `;
 }
 
+// The global prompt block is loaded into every session, vault-related or not,
+// so it stays pointer-level: when to reach for ipa, where the detail lives
+// (skill, --help, ipa convention), and the two guard rails that hooks enforce.
 function globalPromptContent(spec) {
   const tool = spec.name === "claude" ? "Claude Code" : spec.name === "opencode" ? "OpenCode" : "Codex";
-  return `## Evidence-Based Work
+  const skillPath = spec.name === "opencode" ? "~/.config/opencode/skills/ipa/SKILL.md" : `~/.${spec.name}/skills/ipa/SKILL.md`;
+  return `## IPA Vault — Evidence-Based Work
 
-You are an evidence-based AI. Before making claims, choose the right evidence source.
+This ${tool} environment has the IPA CLI installed for the user's IPA note vault (prior work, decisions, project history, user-specific context).
 
-Evidence sources:
-
-- IPA: user knowledge base for prior work, decisions, project history, and user-specific context.
-- Workspace: current local reality for files, code, tests, logs, config, and actual current state.
-- Web: external reality for official docs, current facts, standards, APIs, and third-party information.
-
-Rules:
-
-- If a request touches IPA, vault notes, project history, prior work, or user-specific context, use IPA before answering.
-- If a claim depends on current implementation or behavior, inspect the workspace and/or run the relevant command.
-- If a claim depends on external or time-sensitive facts, verify with web or official docs.
-- Do not answer from memory when one of these sources is needed. If evidence is missing, say what was checked and what remains uncertain.
-
-## IPA CLI — Use it, do not bypass it
-
-This ${tool} environment has the IPA CLI harness installed. Whenever the user's request touches IPA, the harness, a vault, a vault note, inbox capture, note search, validation, formatting, or plugins, you MUST drive the work through the \`ipa\` CLI rather than reading vault files directly. This applies on the very first turn — do not wait for the user to ask again.
-
-Core moves:
-
-\`\`\`bash
-ipa view "Note Title"                                           # overview; add --full only for chosen notes
-ipa view "Note A" "Note B" --full                               # read several chosen notes in one call
-ipa digest "Index Note"                                        # index summary: children + snippets in one call
-ipa context "<short keyword>" --size medium --format markdown   # bootstrap for broad/history questions
-ipa search "<keyword>"                                          # discovery; results include snippets + dates
-ipa link suggest "Note Title"                                  # find related notes/link candidates
-ipa validator --note "Edited Note"                              # note-scoped issues after editing
-ipa formatter plan --note "Edited Note"
-ipa formatter apply --note "Edited Note"
-ipa inbox add ./draft.md --title "Title"                        # new notes go through inbox
-ipa note replace "Note Title" --old-file .tmp/old --new-file .tmp/new --apply
-ipa note set "Note Title" --field ref --add "Index Note" --apply  # frontmatter without exact matching
-\`\`\`
-
-${ipaCommandSelection("ipa")}
-Rules:
-
-- Route by task, not by checklist: exact title known → \`view\` directly; single-note edit → \`view\` → edit → formatter. Only broad/history/discovery questions need the \`context\` bootstrap.
-- Call budget: simple lookups should finish within ~3 ipa calls, broad questions within ~8. At the budget, answer from the evidence you have and say what was not checked.
-- Never open every child of an index with \`view --full\`. Run \`digest\` (or judge from search snippets), then read at most the 2-3 most relevant notes in full.
-- Pick short keywords or exact note titles — never paste raw file paths or the full user prompt.
-- Never edit time fields (\`date_created\`/\`date_modified\`) yourself: CLI writes and \`formatter apply\` keep them in sync automatically. A stale-looking date is not a task to fix.
-- The harness Stop hook blocks final responses while edited vault notes still have formatter patches; run \`ipa formatter apply --note ...\` before finishing.
-- For scripted edits to existing notes prefer \`ipa note replace\` / \`ipa note set\` over hard-coded vault folder scans.
-- See the IPA skill at \`${spec.name === "opencode" ? "~/.config/opencode/skills/ipa/SKILL.md" : `~/.${spec.name}/skills/ipa/SKILL.md`}\` and the vault-local \`${spec.localPrompt}\` for the full workflow.`;
+- When a request touches the vault, vault notes, or the user's prior work/decisions, answer from vault evidence: drive the work through \`ipa\` commands from the first turn instead of answering from memory or reading vault files directly.
+- Entry points: \`ipa search "keyword"\` (discovery), \`ipa view "Note Title"\` (read), \`ipa context "keyword" --size medium --format markdown\` (broad/history bootstrap). Full workflow: the \`ipa\` skill at \`${skillPath}\`; exact syntax: \`ipa <command> --help\`.
+- IPA concepts and this vault's operating rules: \`ipa convention\`.
+- Create new vault notes only through \`ipa inbox add\` — a guard hook blocks new markdown outside the inbox.
+- After editing vault markdown, finish the note-scoped loop: \`ipa validator --note ...\`, \`ipa formatter plan --note ...\`, \`ipa formatter apply --note ...\`. A Stop gate blocks final responses while formatter patches remain.`;
 }
 
 function profileRegistryDisplay() {
@@ -6318,18 +6282,16 @@ async function removeManagedBlock(path) {
   return true;
 }
 
-function harnessSkillContent(vaultPath, spec, options = {}) {
+function harnessSkillContent(vaultPath, spec, mapping = DEFAULT_MAPPING, options = {}) {
   const prefix = commandPrefix(vaultPath, options);
   return `---
 name: ipa
-description: Use the IPA CLI to search, view, validate, format, and safely write IPA vault notes.
+description: Search, read, validate, format, and safely write IPA vault notes with the ipa CLI. Use when a task mentions IPA, the vault, a vault note, inbox capture, note search, note validation, or note formatting.
 ---
 
 <!-- ${HARNESS_MARKER} -->
 
 # IPA CLI Skill
-
-Use this skill when a task mentions IPA, a vault note, inbox capture, note search, note validation, or note formatting.
 
 ## Active Vault
 
@@ -6337,10 +6299,9 @@ Use this skill when a task mentions IPA, a vault note, inbox capture, note searc
 - Vault: ${vaultPath}
 - Profile registry: ${profileRegistryDisplay()}
 - Vault config: .ipa/config.yaml
+- IPA concepts + vault operating rules: \`${prefix} convention\`
 
-## Vault Operating Rules
-
-The vault owner may keep their own operating rules (note lifecycle, consolidation policy, writing style) in the user-maintained sections of the vault's \`CLAUDE.md\` / \`AGENTS.md\` — the text outside the \`IPA_HARNESS_MANAGED\` block. Sessions running outside the vault directory do not load that file automatically: before writing or reorganizing vault notes from such a session, read \`${vaultPath}/CLAUDE.md\` directly (Read tool, not \`${prefix} view\`) and follow any rules found there.
+Sessions running outside the vault directory do not load the vault's own \`${spec.localPrompt}\`; before writing or reorganizing notes from such a session, run \`${prefix} convention\` and read \`${vaultPath}/${spec.localPrompt}\` for user-maintained rules outside the managed block.
 
 ## Read First
 
@@ -6351,32 +6312,18 @@ ${prefix} context "keyword" --size medium --format markdown
 ${prefix} search "keyword"
 \`\`\`
 
-${ipaCommandSelection(prefix)}
-Keep exploration proportional to the question: simple lookups within ~3 ipa calls, broad questions within ~8. Search results and \`digest\` items carry snippets and modified dates — select candidates from them instead of opening notes one by one, and reserve \`view --full\` for the final 2-3 notes that actually matter. When you reach the budget, answer from the evidence gathered and state what was not checked.
-
-## Vault Convention And Plugins
-
-Use the vault-local plugin workspace for convention and search behavior:
-
-\`\`\`bash
-${prefix} plugin init
-${prefix} list-rules
-${prefix} plugin validate .ipa/plugins/rules/_example-title-length.js
-${prefix} plugin dry-run rules .ipa/plugins/rules/_example-title-length.js --note "Note Title"
-${prefix} plugin dry-run search .ipa/plugins/search/_example-heading-search.js --query "keyword"
-\`\`\`
-
-When a vault convention needs automation, prefer a vault-local JS rule in \`.ipa/plugins/rules/*.js\` with \`// @ts-check\` and \`import("../types/ipa-plugin").Rule\`. Put vault-specific search boosts in \`.ipa/plugins/search/*.js\`, then verify with \`plugin validate\`, \`plugin dry-run\`, \`list-rules\`, and \`validator\` before relying on it.
+${ipaCommandSelection(prefix, mapping)}
+Keep exploration proportional to the question: simple lookups within ~3 ipa calls, broad questions within ~8. At the budget, answer from the evidence gathered and state what was not checked. Pick short keywords or exact titles — never paste file paths or the full user prompt as a query.
 
 ## Safe Writes
 
-New Markdown notes belong in the configured inbox. Prefer:
+New Markdown notes belong in the configured inbox:
 
 \`\`\`bash
 ${prefix} inbox add ./draft.md --title "Title" --ref "Index Note" --tag "topic"
 \`\`\`
 
-After editing vault Markdown, run note-scoped validation and formatting checks — vault-wide \`validator\` output grows with unrelated issues, so scope it to what you touched:
+After editing vault Markdown, finish the note-scoped loop (vault-wide runs are maintenance sweeps — always scope with \`--note\`):
 
 \`\`\`bash
 ${prefix} validator --note "Edited Note"
@@ -6384,104 +6331,53 @@ ${prefix} formatter plan --note "Edited Note"
 ${prefix} formatter apply --note "Edited Note"
 \`\`\`
 
-For multiple edited notes, pass the note titles after one \`--note\`, for example:
-\`${prefix} formatter plan --note "Note A" "Note B"\` then
-\`${prefix} formatter apply --note "Note A" "Note B"\`.
+Multiple edited notes take one \`--note\` followed by all titles: \`${prefix} formatter plan --note "Note A" "Note B"\`, then the matching \`${prefix} formatter apply --note "Note A" "Note B"\`. The harness Stop hook blocks final responses while edited notes still have formatter patches — do not stop at plan-only.
 
-Harness sessions track edited vault notes and the Stop hook blocks final responses if \`${prefix} formatter plan --note ...\` still reports patches. Run the matching \`${prefix} formatter apply --note ...\` before finishing.
+Never edit the time fields (\`${mapping.created_at}\`/\`${mapping.updated_at}\`) by hand: core-backed writes and \`formatter apply\` keep them in sync. A stale-looking date is not a task to fix.
 
-## Core-Backed Scripted Edits
+## Scripted Edits
 
-For exact body replacements in an existing note, prefer the core-backed CLI instead of scanning vault folders with Node \`fs\`:
+Prefer core-backed commands over scanning vault folders with \`fs\`:
 
 \`\`\`bash
-${prefix} note replace "Note Title" --old-file .tmp/old-block.txt --new-file .tmp/new-block.txt
 ${prefix} note replace "Note Title" --old-file .tmp/old-block.txt --new-file .tmp/new-block.txt --apply
+${prefix} note set "Note Title" --field ${mapping.refs} --add "Index Note" --apply
+${prefix} note set "Note Title" --field ${mapping.note_type} --value index --apply
 \`\`\`
 
-After a successful \`--apply\`, temp files under \`.tmp/\` are removed automatically — no extra \`rm\` call is needed (pass \`--keep-files\` to keep them).
+\`note replace --apply\` removes its \`.tmp/\` input files automatically (\`--keep-files\` to keep them). Inside the \`ipa-cli\` workspace, one-off scripts may import core helpers (\`replaceInNote\`, \`rewriteNote\` from \`./packages/core/dist/index.js\`) — never hard-code vault folder paths.
 
-For frontmatter fields, skip exact matching entirely:
+## Vault Convention And Plugins
+
+Vault-specific conventions are code, not prose: implement checks as \`.ipa/plugins/rules/*.js\` (\`// @ts-check\`, \`import("../types/ipa-plugin").Rule\`) and search boosts as \`.ipa/plugins/search/*.js\`. Scaffold with \`${prefix} plugin init\`, then verify:
 
 \`\`\`bash
-${prefix} note set "Note Title" --field ref --add "Index Note" --apply
-${prefix} note set "Note Title" --field type --value index --apply
+${prefix} list-rules
+${prefix} plugin validate .ipa/plugins/rules/<rule>.js
+${prefix} plugin dry-run rules .ipa/plugins/rules/<rule>.js --note "Note Title"
+${prefix} plugin dry-run search .ipa/plugins/search/<plugin>.js --query "keyword"
 \`\`\`
-
-Core-backed writes keep the mapped \`date_modified\` field in sync automatically. Never edit \`date_created\`/\`date_modified\` by hand — if a date looks stale after an external edit, \`formatter apply --note ...\` fixes it.
-
-For more complex one-off scripts inside the \`ipa-cli\` workspace, import core helpers and let IPA resolve the note:
-
-\`\`\`js
-import { replaceInNote, rewriteNote } from "./packages/core/dist/index.js";
-
-await replaceInNote(vaultPath, "Note Title", oldBlock, newBlock);
-\`\`\`
-
-Do not hard-code vault folders such as \`/Users/.../02 Archive\`, scan directories manually, or bypass IPA note lookup when a core helper can resolve the note by title.
 `;
 }
 
+// The vault-local block carries only vault-specific facts. Generic IPA
+// workflow lives in the global skill; concepts and operating rules are
+// queryable via `ipa convention` — do not duplicate them here.
 function localPromptContent(vaultPath, spec, mapping, options = {}) {
   const prefix = commandPrefix(vaultPath, options, true);
   const skillRoot = vaultLocalSkillRootRel(spec);
   return `## IPA CLI Harness
 
-This vault has an IPA CLI harness installed for ${spec.name}.
+This vault has an IPA CLI harness installed for ${spec.name}. Vault work goes through the \`${prefix}\` CLI — full workflow in the global \`ipa\` skill, IPA concepts and this vault's operating rules via \`${prefix} convention\`, exact syntax via \`${prefix} <command> --help\`.
 
-- Profile registry: ${profileRegistryDisplay()}
-- Vault config: .ipa/config.yaml
-- Inbox folder: ${mapping.inbox_dir}
-- Project folder: ${mapping.project_dir}
-- Archive folder: ${mapping.archive_dir}
+- Folders: inbox \`${mapping.inbox_dir}\`, project \`${mapping.project_dir}\`, archive \`${mapping.archive_dir}\`
+- Vault config: .ipa/config.yaml; profile registry: ${profileRegistryDisplay()}
+- New Markdown notes only under the inbox or via \`${prefix} inbox add <file>\`; existing notes may be edited in place.
+- After editing vault Markdown: \`${prefix} validator --note ...\` → \`${prefix} formatter plan --note ...\` → \`${prefix} formatter apply --note ...\` (multiple notes: one \`--note\` followed by all titles). The Stop gate blocks final responses while patches remain — do not stop at plan-only.
+- Vault-specific conventions are enforced by \`.ipa/plugins/rules/*.js\`, retrieval boosts by \`.ipa/plugins/search/*.js\`; verify with \`${prefix} plugin validate\` and \`${prefix} plugin dry-run\`.
+- In harness sessions plain \`${prefix} search "keyword"\` calls are logged as tune evidence automatically.
 
-Use the IPA CLI for vault-aware operations:
-
-\`\`\`bash
-${prefix} context "keyword" --size medium --format markdown
-${prefix} search "keyword"
-${prefix} view "Note Title" --full
-${prefix} link suggest "Note Title"
-${prefix} validator --note "Edited Note"
-${prefix} formatter plan --note "Edited Note"
-${prefix} formatter apply --note "Edited Note"
-${prefix} plugin init
-${prefix} list-rules
-${prefix} plugin validate .ipa/plugins/rules/_example-title-length.js
-${prefix} plugin dry-run rules .ipa/plugins/rules/_example-title-length.js --note "Edited Note"
-\`\`\`
-
-${ipaCommandSelection(prefix)}
-The harness records the current prompt context so plain \`${prefix} search "keyword"\` calls are logged as tune evidence even when the runtime does not propagate env-file exports. Start IPA/vault work with \`${prefix} context "keyword" --size medium --format markdown\`. Treat that context as a bootstrap, not final authority: if it returns only one note, mostly structural metadata, or an ambiguous result, run \`${prefix} search "keyword"\` with one or more focused keywords before deciding what the vault says. Use \`view --full\` only after choosing the likely source notes.
-
-## Vault Operation Workflow
-
-- Resolve the active vault/profile with \`${prefix} config show\` when behavior depends on the profile.
-- Use \`${prefix} context\` as a bootstrap, \`${prefix} search\` for logged discovery, \`${prefix} view --full\` for selected sources, \`${prefix} link suggest\` for one-note related/link candidates, and \`${prefix} traversal\` for ref/root/sibling structure.
-- Create new Markdown notes under the configured inbox, or import drafts with \`${prefix} inbox add <file>\`. Existing Markdown notes may be edited in place.
-- After editing vault Markdown, run lint/validation, inspect the note-scoped formatter plan, then run the matching formatter apply when the plan contains only expected changes. Do not stop at plan-only formatting.
-
-## Convention And JS Rule Workflow
-
-- Treat \`.ipa/config.yaml\` as the vault-local policy layer for mapping, excludes, rule enablement, formatter policy, and search/tune pointers.
-- Run \`${prefix} plugin init\` before authoring rules/search plugins. Harness install/init creates the same scaffold when missing.
-- Implement vault-specific convention checks as \`.ipa/plugins/rules/*.js\` using \`// @ts-check\` and \`import("../types/ipa-plugin").Rule\`; add \`fix\`/\`fixNote\` only when the formatter can safely rewrite the note.
-- Implement vault-specific retrieval boosts as \`.ipa/plugins/search/*.js\` using \`import("../types/ipa-plugin").SearchPlugin\`.
-- Verify plugin work with \`${prefix} plugin validate\`, \`${prefix} plugin dry-run rules ... --note "Note Title"\` or \`${prefix} plugin dry-run search ... --query "keyword"\`, \`${prefix} list-rules\`, \`${prefix} validator\`, and \`${prefix} formatter plan/apply --note ...\`.
-
-Formatter commands accept multiple notes as \`${prefix} formatter plan --note "Note A" "Note B"\` and \`${prefix} formatter apply --note "Note A" "Note B"\`.
-
-The harness records edited vault notes and blocks final responses until the note-scoped formatter plan has no remaining patches. Do not bypass this by ending after a plan-only check.
-
-For scripted edits to existing notes, including frontmatter line fixes, prefer \`${prefix} note replace "Note Title" --old-file .tmp/old-block.txt --new-file .tmp/new-block.txt --apply\` or core helpers such as \`replaceInNote\`/\`rewriteNote\` from \`./packages/core/dist/index.js\` inside the \`ipa-cli\` workspace. Do not hard-code archive/inbox paths or scan vault folders manually.
-
-## Vault-Local Helper Skills
-
-The harness installs focused helper skills under \`${skillRoot}/\`:
-
-- \`ipa-rule\` — customize IPA vault conventions with \`.ipa/plugins/rules/*.js\`.
-- \`ipa-config\` — manage \`.ipa/config.yaml\`, project-local selectors, and global IPA profiles.
-- \`ipa-tune\` — guide search log review, labelled testset creation, tune result analysis, and safe activation.
+Helper skills under \`${skillRoot}/\`: \`ipa-rule\` (vault convention rules), \`ipa-config\` (config/profile management), \`ipa-tune\` (search tuning workflow).
 `;
 }
 
@@ -6828,13 +6724,10 @@ pending.updated_at = new Date().toISOString();
 writePending(pending);
 const noteArg = JSON.stringify(noteTitle);
 const message = [
-  \`[IPA CLI] Vault Markdown changed: \${note}\`,
-  "Before finishing, validate and complete note-scoped formatting. Run plan first, then apply if the planned changes are expected:",
+  \`[IPA CLI] Vault Markdown changed: \${note}. Before finishing run:\`,
   \`  \${prefix} validator --note \${noteArg}\`,
-  \`  \${prefix} formatter plan --note \${noteArg}\`,
-  \`  \${prefix} formatter apply --note \${noteArg}\`,
-  "Do not stop at formatter plan unless the plan shows unexpected changes that need user review.",
-  "For multiple edited notes, use one --note followed by the note titles."
+  \`  \${prefix} formatter plan --note \${noteArg} && \${prefix} formatter apply --note \${noteArg}\`,
+  "Do not stop at formatter plan unless it shows unexpected changes. Multiple notes: one --note followed by all titles."
 ].join("\\n");
 
 process.stdout.write(JSON.stringify({
@@ -7416,7 +7309,7 @@ function harnessExpectedArtifacts(vaultPath, spec, mapping, selected, options = 
   const artifacts = [];
   const isOpencode = spec.name === "opencode";
   if (componentSelected(selected, "skill")) {
-    artifacts.push({ component: "skill", scope: "global", kind: "file", path: spec.skillFile, content: withVaultFragment(vaultPath, "skill", harnessSkillContent(vaultPath, spec, options)) });
+    artifacts.push({ component: "skill", scope: "global", kind: "file", path: spec.skillFile, content: withVaultFragment(vaultPath, "skill", harnessSkillContent(vaultPath, spec, mapping, options)) });
   }
   if (!isOpencode) {
     for (const [component, script] of Object.entries(HARNESS_HOOK_COMPONENT_TO_SCRIPT)) {
