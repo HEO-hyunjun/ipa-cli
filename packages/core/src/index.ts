@@ -2182,7 +2182,9 @@ export async function prepareSearchContext(vaultPath, notes = null) {
     vaultPath,
     related: channels.some((channel) => channel.name === "related")
   });
-  return { vaultPath, config, mapping, notes, active, plugins, channels, preparedNotes, queryScoreCache: new Map() };
+  // A module may export postRank alongside search/channel exports.
+  const postRankPlugins = searchPlugins.filter((plugin) => typeof plugin.module?.postRank === "function");
+  return { vaultPath, config, mapping, notes, active, plugins, channels, preparedNotes, postRankPlugins, queryScoreCache: new Map() };
 }
 
 export async function searchWithContext(context, query, options = {}) {
@@ -2204,9 +2206,24 @@ export async function searchWithContext(context, query, options = {}) {
   if (channels.some((channel) => channel.name === "project")) {
     applyProjectScores(rowsByNote);
   }
+  // Plugin channels may declare phase "related"/"project" to run after the
+  // builtin passes of the same phase, mirroring BUILTIN_CHANNEL_PHASES.
+  for (const phase of ["related", "project"]) {
+    if (!channels.some((channel) => channel.source === "plugin" && channel.phase === phase)) continue;
+    await applyPluginSearchChannels(rowsByNote, channels, {
+      vaultPath: context.vaultPath,
+      mapping: context.mapping,
+      notes: context.notes,
+      query,
+      searchQuery: null,
+      config: context.config ?? {},
+      lookup: context.preparedNotes?.lookup ?? null,
+      prepared: context.preparedNotes ?? null
+    }, phase);
+  }
   const notesById = context.preparedNotes?.noteById ?? new Map((context.notes ?? []).map((note) => [note.id, note]));
   const updatedKey = context.mapping?.updated_at ?? DEFAULT_MAPPING.updated_at;
-  const hits = [...rowsByNote.values()]
+  let hits = [...rowsByNote.values()]
     .map((row) => ({
       note: row.note,
       path: row.path,
@@ -2216,7 +2233,25 @@ export async function searchWithContext(context, query, options = {}) {
       reasons: { ...row.reasons, ...row.pluginReasons }
     }))
     .filter((hit) => options.showAll || hit.score >= threshold)
-    .sort((a, b) => b.score - a.score || a.note.localeCompare(b.note))
+    .sort((a, b) => b.score - a.score || a.note.localeCompare(b.note));
+  // Post-rank hook: plugins exporting postRank(hits, ctx) may re-order, drop,
+  // or annotate the weighted hits before the cap is applied. The returned
+  // array order is trusted as-is.
+  for (const plugin of context.postRankPlugins ?? []) {
+    const output = await plugin.module.postRank(hits, {
+      query,
+      notes: context.notes,
+      mapping: context.mapping,
+      vaultPath: context.vaultPath,
+      config: context.config ?? {},
+      lookup: context.preparedNotes?.lookup ?? null,
+      threshold,
+      cap,
+      weights
+    });
+    if (Array.isArray(output)) hits = output;
+  }
+  hits = hits
     .slice(0, cap)
     .map((hit) => {
       const source = notesById.get(hit.note);
@@ -2267,9 +2302,19 @@ async function baseSearchRows(context, query) {
       pluginReasons: {}
     });
   }
-  await applyPluginSearchChannels(rowsByNote, channels, { vaultPath, mapping, notes, query, searchQuery, lookup: preparedNotes.lookup ?? null });
+  const pluginContext = {
+    vaultPath,
+    mapping,
+    notes,
+    query,
+    searchQuery,
+    config: context.config ?? {},
+    lookup: preparedNotes.lookup ?? null,
+    prepared: preparedNotes
+  };
+  await applyPluginSearchChannels(rowsByNote, channels, pluginContext);
   const resolveHitNote = preparedNotes.lookup ?? ((name) => findNote(notes, name));
-  for (const hit of await runSearchPlugins(vaultPath, query, notes, mapping, plugins)) {
+  for (const hit of await runSearchPlugins(vaultPath, query, notes, mapping, plugins, pluginContext)) {
     const note = resolveHitNote(hit.note);
     if (!note) continue;
     const current = rowsByNote.get(note.id) ?? {
@@ -2342,14 +2387,17 @@ function applyProjectScores(rowsByNote) {
   }
 }
 
-async function applyPluginSearchChannels(rowsByNote, channels, context) {
-  for (const channel of channels.filter((item) => item.source === "plugin" && item.phase === "base")) {
+async function applyPluginSearchChannels(rowsByNote, channels, context, phase = "base") {
+  for (const channel of channels.filter((item) => item.source === "plugin" && item.phase === phase)) {
     const output = await channel.search({
       query: context.query,
       preparedQuery: context.searchQuery,
       notes: context.notes,
       mapping: context.mapping,
-      vaultPath: context.vaultPath
+      vaultPath: context.vaultPath,
+      config: context.config ?? {},
+      lookup: context.lookup ?? null,
+      prepared: context.prepared ?? null
     });
     for (const hit of normalizeSearchChannelOutput(output, channel.path)) {
       const note = (context.lookup ?? ((name) => findNote(context.notes, name)))(hit.note);
@@ -2362,11 +2410,20 @@ async function applyPluginSearchChannels(rowsByNote, channels, context) {
   }
 }
 
-async function runSearchPlugins(vaultPath, query, notes, mapping, plugins = null) {
+async function runSearchPlugins(vaultPath, query, notes, mapping, plugins = null, extras = {}) {
   const modules = plugins ?? await loadPluginModules(vaultPath, "search");
   const hits = [];
   for (const plugin of modules) {
-    const output = await plugin.module.search(query, notes, { notes, mapping, vaultPath });
+    if (typeof plugin.module?.search !== "function") continue;
+    const output = await plugin.module.search(query, notes, {
+      query,
+      notes,
+      mapping,
+      vaultPath,
+      config: extras.config ?? {},
+      lookup: extras.lookup ?? null,
+      prepared: extras.prepared ?? null
+    });
     hits.push(...normalizeSearchPluginOutput(output, plugin.path));
   }
   return hits;
@@ -2404,12 +2461,15 @@ function normalizeSearchChannelPlugin(plugin) {
   const name = String(rawName ?? "").trim();
   if (!name) return null;
   const defaultWeight = Number(descriptor?.defaultWeight ?? descriptor?.default_weight ?? mod.defaultWeight ?? mod.default_weight ?? 0.1);
+  const rawPhase = String(descriptor?.phase ?? mod.phase ?? "base").trim();
   return {
     name,
     defaultWeight: Number.isFinite(defaultWeight) ? defaultWeight : 0.1,
     description: descriptor?.description ?? mod.description ?? `Search channel plugin ${basename(plugin.path)}`,
     source: "plugin",
-    phase: "base",
+    // Plugin channels may target the later scoring passes like the builtin
+    // related/project channels do; anything unrecognized runs as base.
+    phase: rawPhase === "related" || rawPhase === "project" ? rawPhase : "base",
     path: plugin.path,
     search
   };
@@ -4886,6 +4946,7 @@ export interface Mapping {
   inbox_dir: string;
   project_dir: string;
   archive_dir: string;
+  date_format: string;
   exclude: string[];
 }
 
@@ -4945,15 +5006,67 @@ export interface SearchHit {
   reason?: Record<string, unknown>;
 }
 
+// Per-note precomputation shared with the builtin channels: lowercased body,
+// token set, keyword text, and normalized names. Score against these instead
+// of re-normalizing note.body per query.
+export interface PreparedNote {
+  note: Note;
+  names: string[];
+  searchNames: string[];
+  searchNameLowers: string[];
+  idKey: string;
+  bodyLower: string;
+  bodyTokenSet: Set<string>;
+  keywordText: string;
+  isProject: boolean;
+  hasProjectContext: boolean;
+}
+
 export interface SearchContext {
   query: string;
   notes: Note[];
   mapping: Mapping;
   vaultPath: string;
+  /** Vault config (.ipa/config.yaml). Put plugin-specific settings under your own key. */
+  config?: Record<string, unknown>;
+  /** O(1) note resolution by id/alias with the same fuzzy fallback the core uses. */
+  lookup?: ((name: string) => Note | null) | null;
+  /** PreparedNote array aligned with notes; also exposes noteById (Map). */
+  prepared?: PreparedNote[] | null;
+  /** Channel plugins only: normalized query with tokens and bm25 scores. */
+  preparedQuery?: unknown;
 }
 
-export type SearchPlugin = (query: string, notes: Note[], ctx: SearchContext) => SearchHit[] | Promise<SearchHit[]>;
-export type SearchChannel = (ctx: SearchContext) => SearchHit[] | Record<string, number> | Map<string, number> | Promise<SearchHit[] | Record<string, number> | Map<string, number>>;
+// A search plugin module may export any of:
+// - search(query, notes, ctx): legacy scorer. Scores are ADDED to the final
+//   weighted score (not affected by channel weights or tuning).
+// - channel = { name, defaultWeight, description, phase?, search(ctx) }:
+//   weighted channel. Scores are max-merged into the named channel and go
+//   through the weights/tune system. phase: "base" (default) | "related" |
+//   "project" runs the channel in the matching scoring pass.
+// - postRank(hits, ctx): runs after weighting/threshold, before the result
+//   cap. Return the (re-ordered/filtered) hits array to replace the ranking.
+export type SearchPlugin = (query: string, notes: Note[], ctx: SearchContext) => SearchHit[] | Record<string, number> | Promise<SearchHit[] | Record<string, number>>;
+export type SearchChannel = (ctx: SearchContext) => SearchHit[] | Record<string, number> | Map<string, number> | { scores: Record<string, number>; reasons?: Record<string, unknown> } | Promise<SearchHit[] | Record<string, number> | Map<string, number> | { scores: Record<string, number>; reasons?: Record<string, unknown> }>;
+
+export interface SearchChannelDescriptor {
+  name: string;
+  defaultWeight?: number;
+  description?: string;
+  phase?: "base" | "related" | "project";
+  search: SearchChannel;
+}
+
+export interface RankedHit {
+  note: string;
+  path: string;
+  type: string;
+  refs: string[];
+  score: number;
+  reasons: Record<string, unknown>;
+}
+
+export type PostRank = (hits: RankedHit[], ctx: SearchContext & { threshold: number; cap: number; weights: Record<string, number> }) => RankedHit[] | void | Promise<RankedHit[] | void>;
 `;
 
 const PLUGIN_RULE_EXAMPLE = `// @ts-check
@@ -5185,10 +5298,22 @@ export async function pluginDryRun(vaultPath, kind, pluginRelPath, options = {})
   const notes = await loadNotes(vaultPath, mapping);
   const mod = await importVaultModule(resolve(vaultPath, pluginRelPath));
   if (kind === "search") {
+    // Dry-run must hand plugins the same context shape as a live search so a
+    // plugin that reads ctx behaves identically in both paths.
+    const preparedNotes = prepareSearchNotes(notes, mapping, { vaultPath, related: false });
+    const pluginContext = {
+      query: options.query ?? "",
+      notes,
+      mapping,
+      vaultPath,
+      config,
+      lookup: preparedNotes.lookup,
+      prepared: preparedNotes
+    };
     const channel = normalizeSearchChannelPlugin({ path: pluginRelPath, module: mod });
     const results = channel
-      ? normalizeSearchChannelOutput(await channel.search({ query: options.query ?? "", notes, mapping, vaultPath }), pluginRelPath)
-      : await mod.search(options.query ?? "", notes);
+      ? normalizeSearchChannelOutput(await channel.search({ ...pluginContext, preparedQuery: prepareSearchQuery(options.query ?? "", preparedNotes) }), pluginRelPath)
+      : normalizeSearchPluginOutput(await mod.search(options.query ?? "", notes, pluginContext), pluginRelPath);
     return { kind, plugin: pluginRelPath, query: options.query, results };
   }
   const note = findNote(notes, options.note);

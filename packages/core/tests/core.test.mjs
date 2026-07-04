@@ -2449,6 +2449,66 @@ test("harness status/doctor flag outdated components and harness update reinstal
   assert.equal(missing.reason, "not_installed");
 });
 
+test("search plugins receive prepared data, config, lookup, phase targeting, and postRank", async () => {
+  const vault = await fixtureVault();
+  await mkdir(join(vault, ".ipa", "plugins", "search"), { recursive: true });
+
+  // Channel plugin scoring against ctx.prepared (no body re-normalization),
+  // reading its own key from ctx.config and resolving via ctx.lookup.
+  await writeFile(
+    join(vault, ".ipa", "plugins", "search", "prepared-channel.js"),
+    `export const channel = {
+      name: "prepared_channel",
+      defaultWeight: 1,
+      search(ctx) {
+        if (ctx.query !== "prepared-probe") return {};
+        if (!Array.isArray(ctx.prepared) || !ctx.prepared[0]?.bodyTokenSet) throw new Error("prepared missing");
+        if (!ctx.config || typeof ctx.config !== "object") throw new Error("config missing");
+        const target = ctx.lookup ? ctx.lookup("Alpha") : null;
+        if (!target) throw new Error("lookup missing");
+        return { [target.id]: 0.9 };
+      }
+    };\n`,
+    "utf8"
+  );
+  // postRank plugin: force Beta to the top for one query.
+  await writeFile(
+    join(vault, ".ipa", "plugins", "search", "boost-beta.js"),
+    `export async function postRank(hits, ctx) {
+      if (ctx.query !== "prepared-probe") return;
+      return [...hits].sort((a, b) => (a.note === "Beta" ? -1 : b.note === "Beta" ? 1 : 0));
+    }\n`,
+    "utf8"
+  );
+
+  const result = await searchVault(vault, "prepared-probe", { showAll: true });
+  const alpha = result.results.find((hit) => hit.note === "Alpha");
+  assert.ok(alpha, "channel plugin hit must surface");
+  assert.ok(alpha.reasons.prepared_channel, "channel reason must be recorded");
+  assert.equal(result.results[0].note, "Beta", "postRank must own the final order");
+
+  // Phase declaration: unrecognized phases fall back to base, related/project accepted.
+  await writeFile(
+    join(vault, ".ipa", "plugins", "search", "related-phase.js"),
+    `export const channel = {
+      name: "related_extra",
+      defaultWeight: 1,
+      phase: "related",
+      search(ctx) {
+        return ctx.query === "phase-probe" ? { Beta: 0.8 } : {};
+      }
+    };\n`,
+    "utf8"
+  );
+  const phased = await searchVault(vault, "phase-probe", { showAll: true });
+  const beta = phased.results.find((hit) => hit.note === "Beta");
+  assert.ok(beta?.reasons?.related_extra, "related-phase plugin channel must score in the related pass");
+
+  // Dry-run hands the same context shape as live search.
+  const dry = await pluginDryRun(vault, "search", ".ipa/plugins/search/prepared-channel.js", { query: "prepared-probe" });
+  assert.ok(dry.results.some((hit) => hit.note === "Alpha"));
+});
+
 test("bm25 cache persists across searches and invalidates when a note changes", async () => {
   const vault = await fixtureVault();
 
