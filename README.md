@@ -677,6 +677,13 @@ pnpm run test:cli
 pnpm run smoke
 ```
 
+Behavioral benchmark (LLM sessions, on-demand — see [bench/README.md](bench/README.md)):
+
+```sh
+npm run bench -- --smoke   # 6 scenarios × sonnet
+npm run bench -- --full    # full catalog, run before adopting harness/prompt changes
+```
+
 ## License
 
 Internal — see project owner.

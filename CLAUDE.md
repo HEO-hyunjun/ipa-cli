@@ -99,3 +99,16 @@ split is the core design rule of the codebase.
 harness targets. The generated `.ipa/plugins/types/ipa-plugin.d.ts` is the
 authoritative plugin contract. `ipa convention` renders IPA concepts plus the
 active vault's operating rules.
+
+## Bench Gate (행동 벤치마크)
+
+하네스 템플릿(`packages/*/src`의 harness/skill/prompt 표면), 전역/볼트 프롬프트 문구,
+CLI 명령 표면(플래그·출력 형식)에 영향을 주는 변경은:
+
+1. 변경 후 `npm run bench -- --smoke` 통과를 확인한다.
+2. 변경 채택(머지/커밋 확정) 직전 `npm run bench -- --full`을 실행한다.
+3. full 통과 시 `npm run bench -- --full --update-baseline`으로 베이스라인을 갱신하고
+   `bench/results/baseline.jsonl`·`history.jsonl`을 변경과 함께 커밋한다.
+4. 실패나 baseline `regressed`/`cost_up`이 있으면 원인 분석 결과를 커밋 메시지에 남긴다.
+
+순수 내부 리팩토링(프롬프트 표면·CLI 표면 불변)은 Tier 1/2(`npm test`)로 충분하다.
