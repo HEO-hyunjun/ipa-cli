@@ -22,3 +22,6 @@ packages/test-vaults/fixtures/**/*.pkl
 .claude/
 
 .omo/*
+
+# Bench run artifacts (baseline.jsonl and history.jsonl are committed)
+bench/results/runs/

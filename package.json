@@ -17,7 +17,8 @@
     "test": "node scripts/build.mjs && node --test packages/core/tests/*.test.mjs packages/cli/tests/*.test.mjs bench/tests/*.test.mjs",
     "test:contracts": "node scripts/build.mjs && node --test packages/core/tests/contracts.test.mjs",
     "test:cli": "node scripts/build.mjs && node --test packages/cli/tests/cli.test.mjs",
-    "smoke": "node scripts/build.mjs && node scripts/smoke.mjs"
+    "smoke": "node scripts/build.mjs && node scripts/smoke.mjs",
+    "bench": "node scripts/build.mjs && node bench/run.mjs"
   },
   "devDependencies": {
     "esbuild": "^0.25.0"
