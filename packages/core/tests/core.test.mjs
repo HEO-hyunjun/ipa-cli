@@ -41,6 +41,7 @@ import {
   scoreNote,
   setNoteField,
   suggestLinks,
+  prepareSearchContext,
   traversal,
   harnessDoctor,
   harnessGuardCheck,
@@ -2728,6 +2729,58 @@ test("bm25 cache persists across searches and invalidates when a note changes", 
   await writeFile(alphaPath, (await readFile(alphaPath, "utf8")) + "\nzebraword unique marker\n", "utf8");
   const after = await searchVault(vault, "zebraword", { showAll: true });
   assert.ok(after.results.some((hit) => hit.note === "Alpha"), "stale bm25 cache must be rebuilt after a note edit");
+});
+
+test("read paths accept injected caches without reloading the vault", async () => {
+  const vault = await fixtureVault();
+  const { mapping } = await readVaultConfig(vault);
+  const notes = await loadNotes(vault, mapping);
+
+  // traversal resolves against the injected list — an empty list proves the
+  // injection is used instead of an internal reload.
+  await assert.rejects(() => traversal(vault, "up", "Alpha", { notes: [] }), /note not found/);
+  const up = await traversal(vault, "up", "Alpha", { notes });
+  assert.equal(up.note, "Alpha");
+
+  // suggestLinks with a host-cached context matches the self-built path.
+  const context = await prepareSearchContext(vault, notes);
+  const injected = await suggestLinks(vault, "Alpha", { context });
+  const fresh = await suggestLinks(vault, "Alpha");
+  assert.deepEqual(injected, fresh);
+
+  // viewNote resolves the target through injected notes.
+  const view = await viewNote(vault, "Alpha", { notes });
+  assert.ok(String(view).includes("Alpha"));
+});
+
+test("bm25 incremental rebuild matches a full rebuild after edit, add, and delete", async () => {
+  const vault = await fixtureVault();
+  const cachePath = join(vault, ".ipa", "cache", "bm25.bin");
+
+  // Given: a warm persisted index for the original vault shape.
+  await searchVault(vault, "Alpha", { threshold: 0, maxResults: 5 });
+  assert.equal(existsSync(cachePath), true);
+
+  // When: one note is edited, one added, one deleted.
+  const alphaPath = join(vault, "00 Inbox", "Alpha.md");
+  await writeFile(alphaPath, `${await readFile(alphaPath, "utf8")}\nzebraword incremental line\n`, "utf8");
+  await writeFile(
+    join(vault, "00 Inbox", "Gamma Fresh.md"),
+    "---\ndate_created: 2026/07/04 (Sat) 10:00:00\ndate_modified: 2026/07/04 (Sat) 10:00:00\nref: []\ntags: []\ntype: note\n---\n감마 신규 노트 gamma fresh token\n",
+    "utf8"
+  );
+  await rm(join(vault, "00 Inbox", "Beta.md"), { force: true });
+
+  // Then: the incremental path (stale cache present) and a cold full rebuild
+  // produce identical rankings and scores for every query.
+  const queries = ["Alpha", "gamma", "zebraword", "감마 신규", "Beta"];
+  const incremental = await searchVaultMany(vault, queries, { threshold: 0, maxResults: 10 });
+  await rm(cachePath, { force: true });
+  const full = await searchVaultMany(vault, queries, { threshold: 0, maxResults: 10 });
+  assert.deepEqual(
+    incremental.queries.map((item) => item.results),
+    full.queries.map((item) => item.results)
+  );
 });
 
 test("searchVaultMany runs several queries against one prepared context", async () => {

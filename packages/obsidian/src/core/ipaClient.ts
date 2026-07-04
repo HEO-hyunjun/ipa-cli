@@ -75,20 +75,27 @@ export class IpaClient {
     }
   }
 
-  view(note: string, options: Record<string, unknown> = {}): Promise<any> {
-    return core.viewNote(this.vault, note, options);
+  // Read paths reuse the in-memory caches so a per-click view/traversal never
+  // re-parses the whole vault (the target note body is still read fresh).
+  async view(note: string, options: Record<string, unknown> = {}): Promise<any> {
+    return core.viewNote(this.vault, note, { ...options, notes: await this.loadNotesCached() });
   }
 
-  traversal(mode: string, note: string): Promise<any> {
-    return core.traversal(this.vault, mode, note);
+  async traversal(mode: string, note: string): Promise<any> {
+    return core.traversal(this.vault, mode, note, { notes: await this.loadNotesCached() });
   }
 
   async traversalAll(note: string): Promise<any> {
     return core.traversalAll(this.vault, note, await this.loadNotesCached());
   }
 
-  suggestLinks(note: string): Promise<any> {
-    return core.suggestLinks(this.vault, note);
+  // Link suggestions score against the search context; reusing the cached one
+  // avoids rebuilding the whole context (the dominant cost) per suggestion.
+  async suggestLinks(note: string): Promise<any> {
+    if (!this.searchContext) {
+      this.searchContext = await core.prepareSearchContext(this.vault, await this.loadFullNotesCached());
+    }
+    return core.suggestLinks(this.vault, note, { context: this.searchContext });
   }
 
   // Validation / format. Both reuse the cached full-note load, so a Validate that

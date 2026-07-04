@@ -1286,25 +1286,21 @@ function fuzzyNameScore(queryLower, name, precomputedQueryTrigrams = null, preco
 // [docIndex, tf] pairs). Building it tokenizes every note body, which
 // dominates search startup, so the built index is persisted under
 // .ipa/cache/bm25.bin and reloaded while the vault files are unchanged.
-function buildBm25Index(notes) {
-  const termToIndex = new Map();
-  const docTfs = [];
-  const docLen = new Uint32Array(notes.length);
-  for (let docIndex = 0; docIndex < notes.length; docIndex += 1) {
-    const note = notes[docIndex];
-    const tokens = jamoTrigrams(note.body ? `${note.id}\n${note.body}` : note.id);
-    const tf = new Map();
-    for (const token of tokens) {
-      let termIndex = termToIndex.get(token);
-      if (termIndex === undefined) {
-        termIndex = termToIndex.size;
-        termToIndex.set(token, termIndex);
-      }
-      tf.set(termIndex, (tf.get(termIndex) ?? 0) + 1);
+function bm25TokenizeNote(note, termToIndex) {
+  const tokens = jamoTrigrams(note.body ? `${note.id}\n${note.body}` : note.id);
+  const tf = new Map();
+  for (const token of tokens) {
+    let termIndex = termToIndex.get(token);
+    if (termIndex === undefined) {
+      termIndex = termToIndex.size;
+      termToIndex.set(token, termIndex);
     }
-    docTfs.push(tf);
-    docLen[docIndex] = tokens.length;
+    tf.set(termIndex, (tf.get(termIndex) ?? 0) + 1);
   }
+  return { tf, length: tokens.length };
+}
+
+function assembleBm25(notes, docTfs, docLen, termToIndex) {
   const nTerms = termToIndex.size;
   const df = new Uint32Array(nTerms);
   let totalEntries = 0;
@@ -1335,6 +1331,7 @@ function buildBm25Index(notes) {
   return {
     termToIndex,
     docIds: notes.map((note) => note.id),
+    docPaths: notes.map((note) => note.relPath),
     postingsOffsets,
     postings,
     docLen,
@@ -1344,6 +1341,68 @@ function buildBm25Index(notes) {
     k1: 1.5,
     b: 0.75
   };
+}
+
+function buildBm25Index(notes) {
+  const termToIndex = new Map();
+  const docTfs = [];
+  const docLen = new Uint32Array(notes.length);
+  for (let docIndex = 0; docIndex < notes.length; docIndex += 1) {
+    const { tf, length } = bm25TokenizeNote(notes[docIndex], termToIndex);
+    docTfs.push(tf);
+    docLen[docIndex] = length;
+  }
+  return assembleBm25(notes, docTfs, docLen, termToIndex);
+}
+
+// Rebuild the index after a partial vault change without re-tokenizing
+// unchanged notes: their term frequencies are recovered from the previous
+// index's postings (term indices stay stable because the old term table is
+// extended, never reordered). Only changed/new notes run the tokenizer, which
+// dominates full-build cost. Produces scores identical to a full rebuild.
+function rebuildBm25Incremental(cached, notes, statsByPath) {
+  const oldIndex = cached.index;
+  const oldDocByPath = new Map();
+  for (let i = 0; i < cached.docPaths.length; i += 1) oldDocByPath.set(cached.docPaths[i], i);
+  const oldSigByPath = new Map(cached.files.map(([path, mtime, size]) => [path, `${mtime}:${size}`]));
+  const reusedNewByOld = new Map();
+  for (let newIndex = 0; newIndex < notes.length; newIndex += 1) {
+    const note = notes[newIndex];
+    const stat = statsByPath.get(note.relPath);
+    const oldDoc = oldDocByPath.get(note.relPath);
+    if (oldDoc !== undefined && stat && oldSigByPath.get(note.relPath) === `${stat[0]}:${stat[1]}`) {
+      reusedNewByOld.set(oldDoc, newIndex);
+    }
+  }
+  const termToIndex = new Map(oldIndex.termToIndex);
+  const docTfs = notes.map(() => null);
+  const docLen = new Uint32Array(notes.length);
+  // Recover reused docs' term frequencies in one pass over the old postings.
+  const nOldTerms = oldIndex.postingsOffsets.length - 1;
+  for (let term = 0; term < nOldTerms; term += 1) {
+    for (let p = oldIndex.postingsOffsets[term]; p < oldIndex.postingsOffsets[term + 1]; p += 1) {
+      const oldDoc = oldIndex.postings[p * 2];
+      const newIndex = reusedNewByOld.get(oldDoc);
+      if (newIndex === undefined) continue;
+      let tf = docTfs[newIndex];
+      if (!tf) {
+        tf = new Map();
+        docTfs[newIndex] = tf;
+      }
+      tf.set(term, oldIndex.postings[p * 2 + 1]);
+    }
+  }
+  for (const [oldDoc, newIndex] of reusedNewByOld) {
+    docLen[newIndex] = oldIndex.docLen[oldDoc];
+    if (!docTfs[newIndex]) docTfs[newIndex] = new Map();
+  }
+  for (let newIndex = 0; newIndex < notes.length; newIndex += 1) {
+    if (docTfs[newIndex]) continue;
+    const { tf, length } = bm25TokenizeNote(notes[newIndex], termToIndex);
+    docTfs[newIndex] = tf;
+    docLen[newIndex] = length;
+  }
+  return assembleBm25(notes, docTfs, docLen, termToIndex);
 }
 
 // One pass over the postings of each query term; returns raw scores per
@@ -1452,7 +1511,7 @@ export function scoreNote(note, query, notes, weights = {}, mapping = DEFAULT_MA
   return { score, reasons, channelScores };
 }
 
-const BM25_CACHE_VERSION = 1;
+const BM25_CACHE_VERSION = 2;
 
 function bm25CachePath(vaultPath) {
   return join(vaultPath, ".ipa", "cache", "bm25.bin");
@@ -1461,16 +1520,21 @@ function bm25CachePath(vaultPath) {
 // Freshness signature: the cached index is valid only while every note file
 // is byte-identical (same path set, mtime, size) to the files the index was
 // built from. Stat calls are cheap next to re-tokenizing the vault.
-function bm25FileSignature(notes) {
-  const files = [];
+function bm25NoteStats(notes) {
+  const stats = new Map();
   for (const note of notes) {
     try {
       const stat = statSync(note.path);
-      files.push([note.relPath, Math.round(stat.mtimeMs), stat.size]);
+      stats.set(note.relPath, [Math.round(stat.mtimeMs), stat.size]);
     } catch {
       return null;
     }
   }
+  return stats;
+}
+
+function bm25FileSignature(statsByPath) {
+  const files = [...statsByPath.entries()].map(([path, [mtime, size]]) => [path, mtime, size]);
   files.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
   return files;
 }
@@ -1499,6 +1563,7 @@ function writeBm25Cache(vaultPath, index, files) {
       k1: index.k1,
       b: index.b,
       docIds: index.docIds,
+      docPaths: index.docPaths,
       nTerms: index.postingsOffsets.length - 1,
       postingsLength: index.postings.length,
       terms: [...index.termToIndex.keys()],
@@ -1523,7 +1588,7 @@ function writeBm25Cache(vaultPath, index, files) {
   }
 }
 
-function loadBm25Cache(vaultPath, notes) {
+function loadBm25Cache(vaultPath) {
   const path = bm25CachePath(vaultPath);
   if (!existsSync(path)) return null;
   try {
@@ -1531,8 +1596,7 @@ function loadBm25Cache(vaultPath, notes) {
     const headerLength = buffer.readUInt32LE(0);
     const header = JSON.parse(buffer.toString("utf8", 4, 4 + headerLength));
     if (header.version !== BM25_CACHE_VERSION) return null;
-    if (header.nDocs !== notes.length) return null;
-    if (!bm25SignaturesEqual(header.files, bm25FileSignature(notes))) return null;
+    if (!Array.isArray(header.docPaths) || header.docPaths.length !== header.nDocs) return null;
     let offset = 4 + headerLength;
     const postingsOffsets = copyTypedSection(buffer, offset, (header.nTerms + 1) * 4, Uint32Array);
     offset += (header.nTerms + 1) * 4;
@@ -1546,16 +1610,21 @@ function loadBm25Cache(vaultPath, notes) {
     const termToIndex = new Map();
     for (let i = 0; i < terms.length; i += 1) termToIndex.set(terms[i], i);
     return {
-      termToIndex,
-      docIds: header.docIds,
-      postingsOffsets,
-      postings,
-      docLen,
-      idf,
-      avgdl: header.avgdl,
-      nDocs: header.nDocs,
-      k1: header.k1,
-      b: header.b
+      index: {
+        termToIndex,
+        docIds: header.docIds,
+        docPaths: header.docPaths,
+        postingsOffsets,
+        postings,
+        docLen,
+        idf,
+        avgdl: header.avgdl,
+        nDocs: header.nDocs,
+        k1: header.k1,
+        b: header.b
+      },
+      files: header.files,
+      docPaths: header.docPaths
     };
   } catch {
     return null;
@@ -1563,15 +1632,18 @@ function loadBm25Cache(vaultPath, notes) {
 }
 
 function resolveBm25Index(vaultPath, notes) {
-  if (vaultPath) {
-    const cached = loadBm25Cache(vaultPath, notes);
-    if (cached) return cached;
+  if (!vaultPath) return buildBm25Index(notes);
+  const statsByPath = bm25NoteStats(notes);
+  const cached = loadBm25Cache(vaultPath);
+  if (cached && statsByPath && cached.index.nDocs === notes.length && bm25SignaturesEqual(cached.files, bm25FileSignature(statsByPath))) {
+    return cached.index;
   }
-  const index = buildBm25Index(notes);
-  if (vaultPath) {
-    const files = bm25FileSignature(notes);
-    if (files) writeBm25Cache(vaultPath, index, files);
-  }
+  // A stale cache still carries every unchanged note's postings — rebuild
+  // incrementally instead of re-tokenizing the whole vault.
+  const index = cached && statsByPath
+    ? rebuildBm25Incremental(cached, notes, statsByPath)
+    : buildBm25Index(notes);
+  if (statsByPath) writeBm25Cache(vaultPath, index, bm25FileSignature(statsByPath));
   return index;
 }
 
@@ -2504,7 +2576,7 @@ function normalizeSearchChannelOutput(output, pluginPath) {
 
 export async function viewNote(vaultPath, noteName, options = {}) {
   const { mapping } = await readVaultConfig(vaultPath);
-  const notes = await loadNotesForView(vaultPath, mapping);
+  const notes = options.notes ?? await loadNotesForView(vaultPath, mapping);
   const note = findNote(notes, noteName);
   if (!note) throw new Error(`note not found: ${noteName}`);
   const raw = await readFile(note.path, "utf8");
@@ -2994,9 +3066,8 @@ export async function replaceInNote(vaultPath, noteName, oldText, newText, optio
   return { ...result, operation: "replace-in-note", matches };
 }
 
-export async function traversal(vaultPath, mode, noteName) {
-  const { mapping } = await readVaultConfig(vaultPath);
-  const notes = await loadNotes(vaultPath, mapping);
+export async function traversal(vaultPath, mode, noteName, options = {}) {
+  const notes = options.notes ?? await loadNotes(vaultPath, (await readVaultConfig(vaultPath)).mapping);
   const note = findNote(notes, noteName);
   if (!note) throw new Error(`note not found: ${noteName}`);
   if (mode === "up") return { mode, note: note.id, paths: upwardPaths(note, notes) };
@@ -4418,8 +4489,10 @@ function linkSuggestionScore(rank) {
   return Number(rank.toFixed(4));
 }
 
-export async function suggestLinks(vaultPath, noteName = null) {
-  const context = await prepareSearchContext(vaultPath);
+export async function suggestLinks(vaultPath, noteName = null, options = {}) {
+  // Long-running hosts (Obsidian) pass their cached search context so a
+  // per-note suggestion does not rebuild the whole vault context.
+  const context = options.context ?? await prepareSearchContext(vaultPath);
   const { notes } = context;
   const vocab = linkSuggestVocab(context.config);
   const selected = noteName ? [findNote(notes, noteName)].filter(Boolean) : notes;
