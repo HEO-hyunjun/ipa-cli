@@ -1526,6 +1526,57 @@ test("harness install/update preserve user-owned forks whose harness marker was 
   assert.equal(await readFile(guardHookPath, "utf8"), forkedHook, "user-owned hook script must survive uninstall");
 });
 
+test("vault fragments are inlined into managed prompt surfaces and accepted by doctor", async () => {
+  // Given: vault-owned fragments for a vault-local skill, the global skill,
+  // and the vault prompt block.
+  const vault = await fixtureVault();
+  const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
+  const options = { homeDir: home, profile: "ipa-test" };
+  const fragmentsDir = join(vault, ".ipa", "harness", "fragments");
+  await mkdir(fragmentsDir, { recursive: true });
+  await writeFile(join(fragmentsDir, "ipa-rule.md"), "회의록 화자 확인은 `ipa search \"화자 이름\"`로 먼저 검색한다.\n", "utf8");
+  await writeFile(join(fragmentsDir, "skill.md"), "SoT 원칙: 프로젝트 문서가 진실의 원천이다.\n", "utf8");
+  await writeFile(join(fragmentsDir, "local-prompt.md"), "이 vault의 회의록은 02 Archive/회의록 아래에 둔다.\n", "utf8");
+
+  // When: install renders artifacts with the fragments inlined.
+  await harnessInstall(vault, "claude", options);
+
+  // Then: each surface carries its fragment under a Vault Operating Rules section.
+  const localSkill = await readFile(join(vault, ".claude", "skills", "ipa-rule", "SKILL.md"), "utf8");
+  assert.match(localSkill, /## Vault Operating Rules/);
+  assert.match(localSkill, /회의록 화자 확인/);
+  const globalSkill = await readFile(join(home, ".claude", "skills", "ipa", "SKILL.md"), "utf8");
+  assert.match(globalSkill, /## Vault Operating Rules/);
+  assert.match(globalSkill, /SoT 원칙/);
+  const localPrompt = await readFile(join(vault, "CLAUDE.md"), "utf8");
+  assert.match(localPrompt, /02 Archive\/회의록 아래에 둔다/);
+
+  // Then: doctor accepts fragment-injected artifacts as up to date.
+  const doctor = await harnessDoctor(vault, options);
+  assert.equal(doctor.status, "ok");
+  assert.ok(!(doctor.issues ?? []).some((issue) => issue.code === "harness.component_outdated"), "fragment-injected artifacts must not be flagged outdated");
+
+  // Then: status lists the fragments.
+  const status = await harnessStatus(vault, options);
+  assert.deepEqual(status.fragments, ["ipa-rule", "local-prompt", "skill"]);
+
+  // When: a fragment is edited after install, the component reads outdated
+  // until harness update re-renders it — the standard operating-rules flow.
+  await writeFile(join(fragmentsDir, "ipa-rule.md"), "회의록 화자 확인 규칙 v2.\n", "utf8");
+  const stale = await harnessDoctor(vault, options);
+  assert.ok((stale.issues ?? []).some((issue) => issue.code === "harness.component_outdated"), "edited fragment must surface as component_outdated");
+  await harnessUpdate(vault, "claude", options);
+  assert.match(await readFile(join(vault, ".claude", "skills", "ipa-rule", "SKILL.md"), "utf8"), /규칙 v2/);
+  assert.ok(!((await harnessDoctor(vault, options)).issues ?? []).some((issue) => issue.code === "harness.component_outdated"));
+
+  // Then: a fragment that matches no artifact is flagged (typo guard).
+  await writeFile(join(fragmentsDir, "ipa-rules.md"), "오타 프래그먼트\n", "utf8");
+  const unknown = await harnessDoctor(vault, options);
+  assert.ok((unknown.issues ?? []).some((issue) => issue.code === "harness.fragment_unknown"), "unknown fragment names must warn");
+
+  await harnessUninstall(vault, "claude", options);
+});
+
 test("harness install with --only hook:guard creates guard hook and required opencode-plugin dependency for opencode", async () => {
   // Given: a fixture vault and an isolated home directory.
   const vault = await fixtureVault();

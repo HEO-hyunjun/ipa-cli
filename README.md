@@ -489,6 +489,19 @@ install, update, and uninstall leave them untouched (install reports them as
 `skipped_user_owned`), doctor stops flagging them as missing or outdated, and
 `ipa harness status` lists them under `user-owned`.
 
+Forking is the escape hatch; the primary way to add vault operating rules to
+managed prompt surfaces is **fragments**. Drop a Markdown file under
+`.ipa/harness/fragments/` named after the artifact it extends — `skill.md`
+(global IPA skill), `prompt.md` (global prompt block), `local-prompt.md`
+(vault prompt block), or a vault-local skill name such as `ipa-rule.md` — and
+run `ipa harness update <target>`. The fragment is inlined into the rendered
+artifact as a `## Vault Operating Rules` section. Because doctor and
+`outdated_components` compare installed files against template **plus**
+fragment, fragment-based customization is never flagged as a problem; editing
+a fragment simply shows the component as outdated until the next
+`harness update`. Unknown fragment names are flagged by doctor
+(`harness.fragment_unknown`), and `ipa harness status` lists active fragments.
+
 For the selected target, install writes:
 
 - user-global IPA CLI skill: `~/.codex/skills/ipa/SKILL.md`,

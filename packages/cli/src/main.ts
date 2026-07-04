@@ -1132,7 +1132,8 @@ function renderHarnessStatus(payload) {
       ["guard policy", payload.guard?.policy ?? "-"],
       ["inbox", payload.guard?.inbox_dir ?? "-"],
       ["archive", payload.guard?.archive_dir ?? "-"],
-      ["guard allow", (payload.guard?.allow ?? []).length ? payload.guard.allow.join(", ") : "-"]
+      ["guard allow", (payload.guard?.allow ?? []).length ? payload.guard.allow.join(", ") : "-"],
+      ["fragments", (payload.fragments ?? []).length ? payload.fragments.join(", ") : "-"]
     ])
   ];
   const globalRows = Object.entries(payload.global ?? {}).map(([target, state]) => [

@@ -6485,15 +6485,6 @@ The harness installs focused helper skills under \`${skillRoot}/\`:
 `;
 }
 
-async function installVaultLocalSkills(vaultPath, spec) {
-  const files = [];
-  const skipped = [];
-  for (const skill of VAULT_LOCAL_SKILLS) {
-    await writeManagedVaultFile(vaultPath, vaultLocalSkillRelPath(spec, skill.name), vaultLocalSkillContent(skill), files, skipped);
-  }
-  return { files, skipped };
-}
-
 async function uninstallVaultLocalSkills(vaultPath, spec) {
   const removed = [];
   for (const skill of VAULT_LOCAL_SKILLS) {
@@ -7376,6 +7367,37 @@ export default IPAHarnessPlugin;
 `;
 }
 
+// Vault-owned prompt fragments (.ipa/harness/fragments/<name>.md) let a vault
+// inject its own operating rules into managed prompt surfaces without forking
+// them. Fragment names: "skill" (global skill), "prompt" (global prompt
+// block), "local-prompt" (vault prompt block), or a vault-local skill name
+// (e.g. "ipa-rule"). The fragment is inlined as a "## Vault Operating Rules"
+// section when artifacts are rendered, so install writes it and doctor/status
+// compare installed files against template+fragment — vault customization via
+// fragments is never flagged as outdated. Editing a fragment then shows up as
+// component_outdated until `ipa harness update <target>` re-applies it.
+function harnessFragmentNames() {
+  return ["skill", "prompt", "local-prompt", ...VAULT_LOCAL_SKILLS.map((skill) => skill.name)];
+}
+
+function harnessFragmentsRoot(vaultPath) {
+  return join(harnessRoot(vaultPath), "fragments");
+}
+
+function readHarnessFragment(vaultPath, name) {
+  const path = join(harnessFragmentsRoot(vaultPath), `${name}.md`);
+  if (!existsSync(path)) return null;
+  const text = readFileSyncText(path).trim();
+  return text.length ? text : null;
+}
+
+function withVaultFragment(vaultPath, name, content) {
+  const fragment = readHarnessFragment(vaultPath, name);
+  if (!fragment) return content;
+  const body = `\n## Vault Operating Rules\n\n${fragment}\n`;
+  return content.endsWith("\n") ? `${content}${body}` : `${content}\n${body}`;
+}
+
 function harnessHookScriptContent(component, vaultPath, spec, mapping, options = {}) {
   switch (component) {
     case "hook:session-env": return sessionEnvScript();
@@ -7394,7 +7416,7 @@ function harnessExpectedArtifacts(vaultPath, spec, mapping, selected, options = 
   const artifacts = [];
   const isOpencode = spec.name === "opencode";
   if (componentSelected(selected, "skill")) {
-    artifacts.push({ component: "skill", scope: "global", kind: "file", path: spec.skillFile, content: harnessSkillContent(vaultPath, spec, options) });
+    artifacts.push({ component: "skill", scope: "global", kind: "file", path: spec.skillFile, content: withVaultFragment(vaultPath, "skill", harnessSkillContent(vaultPath, spec, options)) });
   }
   if (!isOpencode) {
     for (const [component, script] of Object.entries(HARNESS_HOOK_COMPONENT_TO_SCRIPT)) {
@@ -7408,14 +7430,14 @@ function harnessExpectedArtifacts(vaultPath, spec, mapping, selected, options = 
     }
   }
   if (componentSelected(selected, "prompt")) {
-    artifacts.push({ component: "prompt", scope: "global", kind: "block", path: spec.globalPromptFile, content: globalPromptContent(spec) });
+    artifacts.push({ component: "prompt", scope: "global", kind: "block", path: spec.globalPromptFile, content: withVaultFragment(vaultPath, "prompt", globalPromptContent(spec)) });
   }
   if (componentSelected(selected, "local-prompt")) {
-    artifacts.push({ component: "local-prompt", scope: "vault", kind: "block", path: join(vaultPath, spec.localPrompt), content: localPromptContent(vaultPath, spec, mapping, options) });
+    artifacts.push({ component: "local-prompt", scope: "vault", kind: "block", path: join(vaultPath, spec.localPrompt), content: withVaultFragment(vaultPath, "local-prompt", localPromptContent(vaultPath, spec, mapping, options)) });
   }
   if (componentSelected(selected, "local-skills")) {
     for (const skill of VAULT_LOCAL_SKILLS) {
-      artifacts.push({ component: "local-skills", scope: "vault", kind: "file", path: join(vaultPath, vaultLocalSkillRelPath(spec, skill.name)), content: vaultLocalSkillContent(skill) });
+      artifacts.push({ component: "local-skills", scope: "vault", kind: "file", path: join(vaultPath, vaultLocalSkillRelPath(spec, skill.name)), content: withVaultFragment(vaultPath, skill.name, vaultLocalSkillContent(skill)) });
     }
   }
   return artifacts;
@@ -7676,6 +7698,7 @@ export async function harnessStatus(vaultPath, options = {}) {
     update_hint: outdatedTargets.length
       ? `harness components are older than the installed CLI templates; run: ${outdatedTargets.map((target) => `ipa harness update ${target}`).join(", ")}`
       : null,
+    fragments: await listHarnessFragments(vaultPath),
     plugin_scaffold: pluginScaffoldStatus(vaultPath),
     guard: await harnessGuardStatus(vaultPath)
   };
@@ -7763,15 +7786,19 @@ export async function harnessInstall(vaultPath, target = "codex", options = {}) 
     "utf8"
   );
   const files = [`.ipa/harness/${name}/manifest.json`, `.ipa/harness/${name}/guard.mjs`, ".ipa/harness/manifest.json"];
-  if (componentSelected(selected, "local-prompt")) {
-    await upsertManagedBlock(join(vaultPath, spec.localPrompt), localPromptContent(vaultPath, spec, mapping, options));
-    files.push(spec.localPrompt);
-  }
   const skippedUserOwned = [];
-  if (componentSelected(selected, "local-skills")) {
-    const localSkills = await installVaultLocalSkills(vaultPath, spec);
-    files.push(...localSkills.files);
-    skippedUserOwned.push(...localSkills.skipped);
+  // Vault-scope artifacts come from the same harnessExpectedArtifacts renderer
+  // as the global ones, so vault fragments and outdated comparisons always see
+  // identical content.
+  for (const artifact of harnessExpectedArtifacts(vaultPath, spec, mapping, selected, options)) {
+    if (artifact.scope !== "vault") continue;
+    const relPath = toPosix(relative(vaultPath, artifact.path));
+    if (artifact.kind === "block") {
+      await upsertManagedBlock(artifact.path, artifact.content);
+      files.push(relPath);
+    } else {
+      await writeManagedVaultFile(vaultPath, relPath, artifact.content, files, skippedUserOwned);
+    }
   }
   const installOptions = { ...options, components: { ...options.components, selected } };
   const { files: globalFiles, skipped: globalSkipped } = await installGlobalHarness(vaultPath, spec, mapping, installOptions);
@@ -7839,10 +7866,23 @@ export async function harnessUpdate(vaultPath, target = "codex", options = {}) {
   };
 }
 
+async function listHarnessFragments(vaultPath) {
+  const root = harnessFragmentsRoot(vaultPath);
+  if (!existsSync(root)) return [];
+  const entries = await readdir(root);
+  return entries.filter((entry) => entry.endsWith(".md")).map((entry) => entry.slice(0, -3)).sort();
+}
+
 export async function harnessDoctor(vaultPath, options = {}) {
   const index = await readHarnessIndex(vaultPath);
   const { mapping } = await readVaultConfig(vaultPath);
   const issues = [];
+  const knownFragments = new Set(harnessFragmentNames());
+  for (const fragment of await listHarnessFragments(vaultPath)) {
+    if (!knownFragments.has(fragment)) {
+      issues.push({ severity: "warn", code: "harness.fragment_unknown", message: `fragment .ipa/harness/fragments/${fragment}.md matches no harness artifact; expected one of: ${[...knownFragments].join(", ")}` });
+    }
+  }
   for (const [target, entry] of Object.entries(index.targets ?? {})) {
     const spec = harnessTargetSpec(target, options);
     const targetManifest = await readTargetManifest(vaultPath, target);
