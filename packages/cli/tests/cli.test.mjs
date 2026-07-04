@@ -606,8 +606,8 @@ test("harness status lists selected and omitted components per target", async ()
   const { env } = await fixtureProfile();
   const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
   const harnessEnv = { ...env, IPA_HARNESS_HOME: home };
-  run(harnessEnv, ["--json", "harness", "install", "codex", "--with", "hook:evidence"]);
-  run(harnessEnv, ["--json", "harness", "install", "claude"]);
+  run(harnessEnv, ["--json", "harness", "install", "codex"]);
+  run(harnessEnv, ["--json", "harness", "install", "claude", "--without", "hook:evidence"]);
   const text = run(harnessEnv, ["harness", "status"]);
   assert.match(text, /omitted \(codex\)\s+-/);
   assert.match(text, /omitted \(claude\)\s+hook:evidence/);

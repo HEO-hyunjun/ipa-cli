@@ -6152,7 +6152,7 @@ const HARNESS_HOOK_COMPONENT_TO_SCRIPT = {
   "hook:call-counter": "ipa-call-counter.mjs",
   "hook:formatter-gate": "ipa-formatter-gate.mjs",
   "hook:vault-ref": "ipa-vault-ref-nudge.mjs",
-  "hook:evidence": "ipa-user-prompt-nudge.mjs"
+  "hook:evidence": "ipa-prompt-evidence.mjs"
 };
 
 const HARNESS_HOOK_COMPONENT_TO_EVENT = {
@@ -6192,10 +6192,11 @@ function componentsValidForTarget(name) {
 }
 
 function defaultComponentsForTarget(name) {
-  // hook:evidence logs every user prompt into the vault tune log and injects a
-  // per-turn nudge; the 2026-07 A/B benchmark showed no behavioral benefit over
-  // the prompt/skill surface, so it is opt-in via --with hook:evidence.
-  return componentsValidForTarget(name).filter((component) => component !== "hook:evidence");
+  // hook:evidence is a pure prompt-event recorder for the tune workflow. The
+  // per-turn context injection it once carried was removed after the 2026-07
+  // A/B benchmark (no behavioral benefit); recording costs nothing per turn,
+  // so the recorder ships in the default set.
+  return componentsValidForTarget(name);
 }
 
 function resolveHarnessComponents(name, options = {}) {
@@ -6376,7 +6377,7 @@ Use this skill when the user wants to improve IPA search quality, review misses,
 ## Rules
 
 - Treat prompt and search logs as evidence, not labels. A prompt event tells you what the user asked; it does not prove the correct note.
-- In harness sessions, search calls are logged automatically; use plain \`ipa search "keyword"\` for evidence collection. Prompt-level events (\`prompt_event_id\`/\`source_prompt\`) exist only when the opt-in evidence hook is installed (\`ipa harness install <target> --with hook:evidence\`). \`IPA_SEARCH_LOG=1\` remains a compatibility fallback for non-harness searches.
+- In harness sessions, prompts and search calls are logged automatically (\`prompt_event_id\`/\`source_prompt\` connect them); use plain \`ipa search "keyword"\` for evidence collection. \`IPA_SEARCH_LOG=1\` remains a compatibility fallback for non-harness searches.
 - Use \`prompt_event_id\`, \`turn_id\`, \`source_prompt\`, and \`generated_query\` to connect prompt/search pairs. If a prompt has no matching search event, treat it as "no query was run" rather than inferring one from nearby timestamps.
 - Do not run the optimizer by default. Present the command and wait unless the user explicitly asks you to execute it.
 - Do not activate a tune result just because it is newest. Activate only a reviewed artifact that improves the target cases without obvious regressions.
@@ -6670,7 +6671,8 @@ const IPA_MANAGED_HOOK_SCRIPTS = [
   "ipa-md-write-nudge.mjs",
   "ipa-call-counter.mjs",
   "ipa-formatter-gate.mjs",
-  "ipa-vault-ref-nudge.mjs"
+  "ipa-vault-ref-nudge.mjs",
+  "ipa-prompt-evidence.mjs"
 ];
 
 function isManagedHookCommand(command) {
@@ -7000,7 +7002,9 @@ function vaultRefNudgeScript(vaultPath, mapping, options = {}) {
   return `#!/usr/bin/env node
 // ${HARNESS_MARKER}: IPA vault path-reference nudge.
 import { readFileSync } from "node:fs";
-import { resolve, sep } from "node:path";
+import { homedir } from "node:os";
+import { join, resolve, sep } from "node:path";
+import { spawnSync } from "node:child_process";
 
 const vaultPath = ${vaultResolverSnippet(vaultPath, options)};
 const folders = ${folders};
@@ -7029,9 +7033,14 @@ console.log([
 `;
 }
 
-function userPromptNudgeScript(vaultPath, options = {}) {
+// Pure tune-evidence recorder: appends every user prompt as a prompt event and
+// refreshes the per-cwd current-prompt sidecar so in-CLI search events can be
+// correlated back to the prompt that caused them (prompt_event_id /
+// source_prompt). The per-turn context injection this hook once carried was
+// removed after the 2026-07 A/B benchmark showed no behavioral benefit.
+function promptEvidenceScript(vaultPath, options = {}) {
   return `#!/usr/bin/env node
-// ${HARNESS_MARKER}: IPA UserPromptSubmit context nudge.
+// ${HARNESS_MARKER}: IPA prompt evidence recorder.
 import { createHash, randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -7040,7 +7049,6 @@ import { spawnSync } from "node:child_process";
 
 const vaultPath = ${vaultResolverSnippet(vaultPath, options)};
 const agent = ${JSON.stringify(options.agent ?? "unknown")};
-const prefix = "ipa";
 
 function inputJson() {
   try {
@@ -7132,23 +7140,6 @@ function recordPromptEvent(input) {
 
 const input = inputJson();
 recordPromptEvent(input);
-
-const lines = [
-  "[Evidence nudge]",
-  "Answer with evidence, not memory. Pick the needed source before responding: IPA = prior work/user knowledge; workspace = current files/tests/state; web = external/current facts.",
-  \`For IPA/vault/project-history turns, run \${prefix} context "keyword" --size medium --format markdown, then \${prefix} search "keyword" and \${prefix} view "Note Title" --full when context is narrow or a note is likely relevant.\`,
-  "Do this even when the user did not explicitly ask to search/view. Use short keywords or exact titles, not raw paths/full prompts.",
-  \`For one-note related-note, previous-meeting, comparison, or wikilink-candidate tasks, run \${prefix} link suggest "Note Title". If unsure about IPA syntax, run \${prefix} help or \${prefix} <command> --help.\`,
-  \`Current behavior claims need workspace inspection/commands. External/current facts need web/official docs. New notes: \${prefix} inbox add. Existing scripted edits/frontmatter fixes: \${prefix} note replace.\`,
-  \`After vault Markdown edits: \${prefix} validator --note "Title"; \${prefix} formatter plan --note "Title"; \${prefix} formatter apply --note "Title".\`
-];
-
-process.stdout.write(JSON.stringify({
-  hookSpecificOutput: {
-    hookEventName: "UserPromptSubmit",
-    additionalContext: lines.join("\\n")
-  }
-}) + "\\n");
 `;
 }
 
@@ -7817,7 +7808,7 @@ function harnessHookScriptContent(component, vaultPath, spec, mapping, options =
     case "hook:session-env": return sessionEnvScript();
     case "hook:guard": return inboxGuardScript(vaultPath, mapping.inbox_dir, options);
     case "hook:vault-ref": return vaultRefNudgeScript(vaultPath, mapping, options);
-    case "hook:evidence": return userPromptNudgeScript(vaultPath, { ...options, agent: spec.name });
+    case "hook:evidence": return promptEvidenceScript(vaultPath, { ...options, agent: spec.name });
     case "hook:markdown-nudge": return markdownWriteNudgeScript(vaultPath, mapping, options);
     case "hook:call-counter": return callCounterScript(vaultPath, options);
     case "hook:formatter-gate": return formatterGateScript(vaultPath, options);
@@ -7907,7 +7898,7 @@ async function installGlobalHarness(vaultPath, spec, mapping, options = {}) {
   const isOpencode = spec.name === "opencode";
   const envPath = join(spec.hooksDir, "ipa-session-env.mjs");
   const guardPath = join(spec.hooksDir, "ipa-inbox-guard.mjs");
-  const promptPath = join(spec.hooksDir, "ipa-user-prompt-nudge.mjs");
+  const promptPath = join(spec.hooksDir, "ipa-prompt-evidence.mjs");
   const writeNudgePath = join(spec.hooksDir, "ipa-md-write-nudge.mjs");
   const callCounterPath = join(spec.hooksDir, "ipa-call-counter.mjs");
   const formatterGatePath = join(spec.hooksDir, "ipa-formatter-gate.mjs");
@@ -7959,6 +7950,7 @@ async function uninstallGlobalHarness(spec) {
     join(spec.hooksDir, "ipa-session-env.mjs"),
     join(spec.hooksDir, "ipa-inbox-guard.mjs"),
     join(spec.hooksDir, "ipa-user-prompt-nudge.mjs"),
+    join(spec.hooksDir, "ipa-prompt-evidence.mjs"),
     join(spec.hooksDir, "ipa-md-write-nudge.mjs"),
     join(spec.hooksDir, "ipa-call-counter.mjs"),
     join(spec.hooksDir, "ipa-formatter-gate.mjs"),

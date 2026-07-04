@@ -875,9 +875,7 @@ test("no-op refactor does not rewrite every note", async () => {
 test("harness install, doctor and guard enforce inbox-only new markdown writes", async () => {
   const vault = await fixtureVault();
   const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
-  // hook:evidence is opt-in since the 2026-07 benchmark; this test still
-  // covers its script content and behavior through the --with path.
-  const options = { homeDir: home, profile: "ipa-test", components: { with: ["hook:evidence"] } };
+  const options = { homeDir: home, profile: "ipa-test" };
   // Hook scripts now resolve the vault via `ipa config show`, which reads env +
   // the global profile registry. Point that resolution at this test's vault so
   // the spawned hooks operate on the fixture instead of the developer's vault.
@@ -950,12 +948,14 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   });
   assert.equal(sessionEnv.status, 0);
   assert.match(await readFile(envFile, "utf8"), /export IPA_SEARCH_LOG='1'/);
-  const promptHook = join(home, ".codex", "hooks", "ipa-user-prompt-nudge.mjs");
+  // The evidence hook is a pure recorder: it logs prompt events for the tune
+  // workflow and must not inject per-turn context (removed after the 2026-07 A/B).
+  const promptHook = join(home, ".codex", "hooks", "ipa-prompt-evidence.mjs");
   const promptHookSource = await readFile(promptHook, "utf8");
-  assert.match(promptHookSource, /\[Evidence nudge\]/);
-  assert.match(promptHookSource, /link suggest "Note Title"/);
-  assert.match(promptHookSource, /\$\{prefix\} <command> --help/);
-  assert.doesNotMatch(promptHookSource, /Required workflow/);
+  assert.match(promptHookSource, /prompt evidence recorder/);
+  assert.match(promptHookSource, /source_prompt/);
+  assert.doesNotMatch(promptHookSource, /\[Evidence nudge\]/);
+  assert.doesNotMatch(promptHookSource, /additionalContext/);
   // The vault-local block carries vault facts only; generic workflow stays in
   // the global skill and concepts are queryable via ipa convention.
   const agentsPrompt = await readFile(join(vault, "AGENTS.md"), "utf8");
@@ -983,8 +983,7 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   assert.match(tuneSkill, /Use this skill whenever the user wants better IPA search results/);
   assert.match(tuneSkill, /ipa tune log --limit 50/);
   assert.match(tuneSkill, /ipa tune testset list/);
-  assert.match(tuneSkill, /search calls are logged automatically/);
-  assert.match(tuneSkill, /--with hook:evidence/);
+  assert.match(tuneSkill, /prompts and search calls are logged automatically/);
   assert.doesNotMatch(tuneSkill, /IPA_SEARCH_LOG=1 ipa search "keyword"/);
   assert.match(tuneSkill, /Label Confirmation Protocol/);
   assert.match(tuneSkill, /Do not run the optimizer by default/);
@@ -1008,7 +1007,7 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   assert.match(hooks, /ipa-session-env\.mjs/);
   assert.match(hooks, /SessionStart/);
   assert.match(hooks, /ipa-inbox-guard\.mjs/);
-  assert.match(hooks, /ipa-user-prompt-nudge\.mjs/);
+  assert.match(hooks, /ipa-prompt-evidence\.mjs/);
   assert.match(hooks, /ipa-md-write-nudge\.mjs/);
   assert.match(hooks, /ipa-formatter-gate\.mjs/);
   assert.match(hooks, /ipa-vault-ref-nudge\.mjs/);
@@ -1023,28 +1022,9 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
     encoding: "utf8"
   });
   assert.equal(promptNudge.status, 0);
-  const promptContext = JSON.parse(promptNudge.stdout).hookSpecificOutput.additionalContext;
-  assert.match(promptContext, /\[Evidence nudge\]/);
-  assert.match(promptContext, /ipa context "keyword" --size medium --format markdown/);
-  assert.match(promptContext, /ipa search "keyword"/);
-  assert.match(promptContext, /Answer with evidence, not memory/);
-  assert.match(promptContext, /IPA = prior work\/user knowledge/);
-  assert.match(promptContext, /workspace = current files\/tests\/state/);
-  assert.match(promptContext, /web = external\/current facts/);
-  assert.match(promptContext, /did not explicitly ask to search\/view/);
-  assert.match(promptContext, /workspace inspection\/commands/);
-  assert.match(promptContext, /web\/official docs/);
-  assert.match(promptContext, /ipa view "Note Title" --full/);
-  assert.doesNotMatch(promptContext, /IPA_SEARCH_LOG=1 ipa search "keyword"/);
-  assert.match(promptContext, /not raw paths\/full prompts/);
-  assert.match(promptContext, /note replace/);
-  assert.match(promptContext, /frontmatter fixes/);
-  assert.match(promptContext, /formatter apply --note/);
-  assert.doesNotMatch(promptContext, /Required workflow/);
-  assert.doesNotMatch(promptContext, /Triggers \(not exhaustive\)/);
-  assert.doesNotMatch(promptContext, /Downloads/);
-  assert.doesNotMatch(promptContext, /sales_graph/);
-  assert.doesNotMatch(promptContext, /Possible related notes/);
+  // The recorder must stay silent: no per-turn context injection (removed
+  // after the 2026-07 A/B benchmark), only the tune-log side effects below.
+  assert.equal(promptNudge.stdout.trim(), "");
   const promptLog = await tuneLog(vault);
   assert.equal(promptLog.count, 1);
   assert.equal(promptLog.events[0].event_type, "prompt");
@@ -1187,8 +1167,7 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
 test("harness install registers home-relative ~ hook paths and migrates legacy/duplicate/other-machine entries", async () => {
   const vault = await fixtureVault();
   const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
-  // Opt into hook:evidence so the UserPromptSubmit migration path stays covered.
-  const options = { homeDir: home, profile: "ipa-test", components: { with: ["hook:evidence"] } };
+  const options = { homeDir: home, profile: "ipa-test" };
   const settingsPath = join(home, ".claude", "settings.json");
 
   // Pre-seed settings.json the way a synced/multi-machine setup would look:
@@ -1223,9 +1202,9 @@ test("harness install registers home-relative ~ hook paths and migrates legacy/d
   assert.ok(!ipaCommands.some((c) => c.includes(home)), "absolute home path should be migrated away");
   assert.ok(!ipaCommands.some((c) => c.includes("other-machine")), "other-machine path should be migrated away");
 
-  // Duplicate prompt hooks collapse to exactly one.
+  // Legacy nudge entries are cleaned and the recorder registers exactly once.
   const promptIpa = config.hooks.UserPromptSubmit
-    .flatMap((g) => g.hooks).filter((h) => h.command.includes("ipa-user-prompt-nudge.mjs"));
+    .flatMap((g) => g.hooks).filter((h) => h.command.includes("ipa-prompt-evidence.mjs"));
   assert.equal(promptIpa.length, 1);
 
   // Unrelated non-IPA hooks are preserved.
@@ -1245,9 +1224,9 @@ test("hook scripts resolve the vault path via homedir() with profile fallback in
   await mkdir(join(vault, ".ipa"), { recursive: true });
   await mkdir(join(vault, "00 Inbox"), { recursive: true });
   await writeFile(join(vault, ".ipa", "config.yaml"), "folders:\n  inbox: \"00 Inbox\"\n", "utf8");
-  await harnessInstall(vault, "claude", { homeDir: home, components: { with: ["hook:evidence"] } });
+  await harnessInstall(vault, "claude", { homeDir: home });
 
-  const scripts = ["ipa-inbox-guard.mjs", "ipa-user-prompt-nudge.mjs", "ipa-md-write-nudge.mjs", "ipa-call-counter.mjs", "ipa-formatter-gate.mjs"];
+  const scripts = ["ipa-inbox-guard.mjs", "ipa-prompt-evidence.mjs", "ipa-md-write-nudge.mjs", "ipa-call-counter.mjs", "ipa-formatter-gate.mjs", "ipa-vault-ref-nudge.mjs"];
   for (const name of scripts) {
     const src = await readFile(join(home, ".claude", "hooks", name), "utf8");
     assert.ok(!src.includes(`const vaultPath = "${vault}"`), `${name} must not hard-code the absolute vault path`);
@@ -1343,7 +1322,7 @@ test("harness install opencode creates OpenCode-native managed artifacts and uni
   const manifest = JSON.parse(await readFile(join(vault, ".ipa", "harness", "opencode", "manifest.json"), "utf8"));
   assert.equal(manifest.target, "opencode");
   assert.ok(Array.isArray(manifest.components), "manifest must declare components for default full install");
-  assert.ok(!manifest.components.includes("hook:evidence"), "default install must not include hook:evidence");
+  assert.ok(manifest.components.includes("hook:evidence"), "default install includes the evidence recorder");
   assert.ok(manifest.components.includes("skill"), "default full install must include skill");
   assert.ok(manifest.components.includes("prompt"), "default full install must include prompt");
   assert.ok(manifest.components.includes("opencode-plugin"), "default full install must include opencode-plugin");
@@ -1402,7 +1381,7 @@ test("harness install with --only skill,prompt creates only selected artifacts p
   // Then: hook scripts are NOT created because no hook components were selected.
   assert.equal(existsSync(join(codexHome, "hooks", "ipa-session-env.mjs")), false);
   assert.equal(existsSync(join(codexHome, "hooks", "ipa-inbox-guard.mjs")), false);
-  assert.equal(existsSync(join(codexHome, "hooks", "ipa-user-prompt-nudge.mjs")), false);
+  assert.equal(existsSync(join(codexHome, "hooks", "ipa-prompt-evidence.mjs")), false);
   assert.equal(existsSync(join(codexHome, "hooks", "ipa-md-write-nudge.mjs")), false);
   assert.equal(existsSync(join(codexHome, "hooks", "ipa-formatter-gate.mjs")), false);
 
@@ -1412,7 +1391,7 @@ test("harness install with --only skill,prompt creates only selected artifacts p
     const hooksConfig = await readFile(hooksConfigPath, "utf8");
     assert.doesNotMatch(hooksConfig, /ipa-session-env/);
     assert.doesNotMatch(hooksConfig, /ipa-inbox-guard/);
-    assert.doesNotMatch(hooksConfig, /ipa-user-prompt-nudge/);
+    assert.doesNotMatch(hooksConfig, /ipa-prompt-evidence/);
     assert.doesNotMatch(hooksConfig, /ipa-md-write-nudge/);
     assert.doesNotMatch(hooksConfig, /ipa-formatter-gate/);
   }
@@ -1466,14 +1445,14 @@ test("harness install with --without hook:evidence omits evidence hook while pre
   assert.ok(install.global_files.some((file) => file.endsWith(".codex/hooks/ipa-formatter-gate.mjs")));
 
   // Then: the evidence hook script is NOT created.
-  assert.equal(existsSync(join(codexHome, "hooks", "ipa-user-prompt-nudge.mjs")), false);
-  assert.ok(!install.global_files.some((file) => file.endsWith(".codex/hooks/ipa-user-prompt-nudge.mjs")));
+  assert.equal(existsSync(join(codexHome, "hooks", "ipa-prompt-evidence.mjs")), false);
+  assert.ok(!install.global_files.some((file) => file.endsWith(".codex/hooks/ipa-prompt-evidence.mjs")));
 
   // Then: hooks config does not register the evidence hook.
   const hooksConfig = JSON.parse(await readFile(join(codexHome, "hooks.json"), "utf8"));
   const allCommands = Object.values(hooksConfig.hooks ?? {})
     .flatMap((groups) => groups.flatMap((g) => (g.hooks ?? []).map((h) => h.command)));
-  assert.ok(!allCommands.some((c) => /ipa-user-prompt-nudge\.mjs/.test(c)), "evidence hook must not be registered");
+  assert.ok(!allCommands.some((c) => /ipa-prompt-evidence\.mjs/.test(c)), "evidence hook must not be registered");
   assert.ok(allCommands.some((c) => /ipa-session-env\.mjs/.test(c)), "session-env hook must remain");
   assert.ok(allCommands.some((c) => /ipa-inbox-guard\.mjs/.test(c)), "guard hook must remain");
 
@@ -2514,7 +2493,7 @@ test("harness status/doctor flag outdated components and harness update reinstal
 
   status = await harnessStatus(vault, options);
   assert.deepEqual(status.outdated, {});
-  assert.equal(existsSync(join(home, ".codex", "hooks", "ipa-user-prompt-nudge.mjs")), false, "omitted evidence hook must stay uninstalled after update");
+  assert.equal(existsSync(join(home, ".codex", "hooks", "ipa-prompt-evidence.mjs")), false, "omitted evidence hook must stay uninstalled after update");
   assert.equal(existsSync(guardHook), true);
 
   const missing = await harnessUpdate(vault, "claude", options);
