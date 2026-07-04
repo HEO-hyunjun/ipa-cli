@@ -32,7 +32,7 @@
 {"id":"e17-search-personalization","model":"sonnet","pass":true,"costUsd":1.4051139,"ipaCalls":22}
 {"id":"f18-preipa-bootstrap","model":"opus","pass":true,"costUsd":1.6778970000000002,"ipaCalls":10}
 {"id":"f18-preipa-bootstrap","model":"sonnet","pass":true,"costUsd":0.9998649,"ipaCalls":8}
-{"id":"f20-empty-coldstart","model":"opus","pass":false,"costUsd":1.2773700000000001,"ipaCalls":17}
-{"id":"f20-empty-coldstart","model":"sonnet","pass":true,"costUsd":1.0313283000000002,"ipaCalls":4}
+{"id":"f20-empty-coldstart","model":"opus","pass":true,"costUsd":1.5070355000000002,"ipaCalls":20}
+{"id":"f20-empty-coldstart","model":"sonnet","pass":true,"costUsd":0.9444417,"ipaCalls":20}
 {"id":"f21-fresh-onboarding","model":"opus","pass":true,"costUsd":2.4613335,"ipaCalls":14}
 {"id":"f21-fresh-onboarding","model":"sonnet","pass":true,"costUsd":1.3156185000000002,"ipaCalls":16}
