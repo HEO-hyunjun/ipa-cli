@@ -4894,6 +4894,21 @@ export async function contractExportFixtures(vaultPath, targetRel) {
   return { exported: Object.keys(files).map((name) => toPosix(relative(vaultPath, join(target, name)))) };
 }
 
+const PLUGIN_GATE_EXAMPLE = `// @ts-check
+// Example session gate: blocks the end of a session that edited a note titled
+// "Blocked Example" — rename the file (drop the leading underscore) to enable.
+/** @type {import("../types/ipa-plugin").Gate} */
+const gate = {
+  name: "example-session-gate",
+  check(ctx) {
+    const hit = ctx.session.edits.find((edit) => edit.title === "Blocked Example");
+    if (!hit) return null;
+    return { block: true, message: "example gate: finish the follow-up work for Blocked Example first" };
+  }
+};
+export default gate;
+`;
+
 const PLUGIN_JSCONFIG = `{
   "compilerOptions": {
     "checkJs": true,
@@ -5067,6 +5082,40 @@ export interface RankedHit {
 }
 
 export type PostRank = (hits: RankedHit[], ctx: SearchContext & { threshold: number; cap: number; weights: Record<string, number> }) => RankedHit[] | void | Promise<RankedHit[] | void>;
+
+/**
+ * Session gate plugins live in .ipa/plugins/gates/*.js and run when a harness
+ * session tries to end (Stop hook -> \`ipa harness gate\`). ctx.session.edits
+ * lists the notes this session created or edited. Return { block: true,
+ * message } to hold the final response until the condition is fixed; return
+ * null/undefined/{ block: false } to pass. A gate that throws is reported but
+ * never blocks. Enable/disable via \`gates.plugins\` in .ipa/config.yaml.
+ */
+export interface GateSessionEdit {
+  title: string;
+  path: string | null;
+  updated_at: string | null;
+}
+
+export interface GateContext {
+  vaultPath: string;
+  config: Record<string, unknown>;
+  mapping: Mapping;
+  notes: Note[];
+  lookup: (ref: string) => Note | null;
+  session: { id: string | null; edits: GateSessionEdit[] };
+}
+
+export interface GateResult {
+  block: boolean;
+  message?: string;
+}
+
+export interface Gate {
+  name: string;
+  description?: string;
+  check: (ctx: GateContext) => GateResult | null | undefined | Promise<GateResult | null | undefined>;
+}
 `;
 
 const PLUGIN_RULE_EXAMPLE = `// @ts-check
@@ -5131,7 +5180,7 @@ export async function pluginInit(vaultPath, options = {}) {
     existing: [],
     examples: Boolean(options.examples ?? true)
   };
-  for (const rel of [root, `${root}/rules`, `${root}/search`, `${root}/types`]) {
+  for (const rel of [root, `${root}/rules`, `${root}/search`, `${root}/gates`, `${root}/types`]) {
     await mkdir(join(vaultPath, rel), { recursive: true });
   }
   const force = Boolean(options.force);
@@ -5140,6 +5189,7 @@ export async function pluginInit(vaultPath, options = {}) {
   if (result.examples) {
     await writePluginScaffoldFile(vaultPath, `${root}/rules/_example-title-length.js`, PLUGIN_RULE_EXAMPLE, force, result);
     await writePluginScaffoldFile(vaultPath, `${root}/search/_example-heading-search.js`, PLUGIN_SEARCH_EXAMPLE, force, result);
+    await writePluginScaffoldFile(vaultPath, `${root}/gates/_example-session-gate.js`, PLUGIN_GATE_EXAMPLE, force, result);
   }
   return result;
 }
@@ -5151,7 +5201,8 @@ function pluginScaffoldStatus(vaultPath) {
     jsconfig: existsSync(join(root, "jsconfig.json")),
     types: existsSync(join(root, "types", "ipa-plugin.d.ts")),
     rules_dir: existsSync(join(root, "rules")),
-    search_dir: existsSync(join(root, "search"))
+    search_dir: existsSync(join(root, "search")),
+    gates_dir: existsSync(join(root, "gates"))
   };
 }
 
@@ -5159,7 +5210,7 @@ export async function listPlugins(vaultPath) {
   const { config } = await readVaultConfig(vaultPath);
   const root = join(vaultPath, ".ipa", "plugins");
   const entries = [];
-  for (const kind of ["search", "rules"]) {
+  for (const kind of ["search", "rules", "gates"]) {
     const dir = join(root, kind);
     const files = existsSync(dir) ? await readdir(dir) : [];
     for (const file of files.filter((name) => name.endsWith(".js") && !name.startsWith("_")).sort()) {
@@ -5202,7 +5253,8 @@ export function pluginEnabled(config, kind, relPath) {
   const settings = [
     config.plugins,
     config.search?.plugins,
-    kind === "rules" ? config.rules?.plugins : undefined
+    kind === "rules" ? config.rules?.plugins : undefined,
+    kind === "gates" ? config.gates?.plugins : undefined
   ];
   let enabled = true;
   for (const setting of settings) {
@@ -5237,6 +5289,25 @@ async function importVaultModule(path) {
     return globalThis.__ipaImportPlugin(path);
   }
   return import(pathToFileURL(path).href + `?t=${Date.now()}`);
+}
+
+// Session gate plugins ({ name, check(ctx) }) run at the harness Stop gate.
+// check() returns { block, message } to hold the final response, or null/false
+// to pass. A gate that throws is reported but never blocks — a broken plugin
+// must not lock the session shut.
+function normalizeGatePlugin(plugin) {
+  const mod = plugin.module ?? {};
+  const candidate = typeof mod.check === "function" ? mod
+    : mod.gate && typeof mod.gate.check === "function" ? mod.gate
+    : mod.default && typeof mod.default.check === "function" ? mod.default
+    : null;
+  if (!candidate) return null;
+  const fallback = basename(plugin.path ?? "gate", ".js");
+  return {
+    name: typeof candidate.name === "string" && candidate.name.trim() ? candidate.name.trim() : fallback,
+    path: plugin.path ?? null,
+    check: (ctx) => candidate.check(ctx)
+  };
 }
 
 async function loadPluginModules(vaultPath, kind) {
@@ -5275,6 +5346,9 @@ export async function validatePlugin(path, kind = null) {
     const mod = await importVaultModule(path);
     if ((kind === "search" || path.includes("/search/")) && typeof mod.search !== "function" && !normalizeSearchChannelPlugin({ path, module: mod })) {
       issues.push({ code: "plugin.contract", severity: "error", message: "search plugin must export search() or a channel descriptor" });
+    }
+    if ((kind === "gates" || path.includes("/gates/")) && !normalizeGatePlugin({ path, module: mod })) {
+      issues.push({ code: "plugin.contract", severity: "error", message: "gate plugin must export { name, check(ctx) } (default export or module-level)" });
     }
     if (kind === "rules" || path.includes("/rules/")) {
       const rules = normalizeRulePlugin({ path, module: mod });
@@ -5315,6 +5389,26 @@ export async function pluginDryRun(vaultPath, kind, pluginRelPath, options = {})
       ? normalizeSearchChannelOutput(await channel.search({ ...pluginContext, preparedQuery: prepareSearchQuery(options.query ?? "", preparedNotes) }), pluginRelPath)
       : normalizeSearchPluginOutput(await mod.search(options.query ?? "", notes, pluginContext), pluginRelPath);
     return { kind, plugin: pluginRelPath, query: options.query, results };
+  }
+  if (kind === "gates") {
+    const gate = normalizeGatePlugin({ path: pluginRelPath, module: mod });
+    if (!gate) throw new Error("gate plugin must export { name, check(ctx) }");
+    const editTitles = asList(options.notes ?? options.note);
+    const edits = editTitles.map((title) => {
+      const found = findNote(notes, title);
+      if (!found) throw new Error(`note not found: ${title}`);
+      return { title: found.id, path: found.relPath, updated_at: new Date().toISOString() };
+    });
+    const ctx = {
+      vaultPath,
+      config,
+      mapping,
+      notes,
+      lookup: (ref) => findNote(notes, ref) ?? null,
+      session: { id: options.session ?? "dry-run", edits }
+    };
+    const result = await gate.check(ctx);
+    return { kind, plugin: pluginRelPath, gate: gate.name, edits: edits.map((item) => item.title), result: result ?? null };
   }
   const note = findNote(notes, options.note);
   if (!note) throw new Error(`note not found: ${options.note}`);
@@ -6842,7 +6936,7 @@ ${prefix} note set "Note Title" --field ${mapping.note_type} --value index --app
 
 ## Vault Convention And Plugins
 
-Vault-specific conventions are code, not prose: convention checks live in \`.ipa/plugins/rules/*.js\`, retrieval boosts in \`.ipa/plugins/search/*.js\`. Authoring and verification (\`${prefix} plugin init\` scaffold → \`plugin validate\` → \`plugin dry-run\`) follow the \`ipa-rule\` skill workflow.
+Vault-specific conventions are code, not prose: convention checks live in \`.ipa/plugins/rules/*.js\`, retrieval boosts in \`.ipa/plugins/search/*.js\`, and session-end policy in \`.ipa/plugins/gates/*.js\` (run by the Stop gate via \`${prefix} harness gate\`). Authoring and verification (\`${prefix} plugin init\` scaffold → \`plugin validate\` → \`plugin dry-run\`) follow the \`ipa-rule\` skill workflow.
 `;
 }
 
@@ -6858,7 +6952,7 @@ This vault has an IPA CLI harness installed for ${spec.name}. Vault work goes th
 
 - Folders: inbox \`${mapping.inbox_dir}\`, project \`${mapping.project_dir}\`, archive \`${mapping.archive_dir}\`
 - Vault config: .ipa/config.yaml; profile registry: ${profileRegistryDisplay()}
-- Vault-specific conventions are enforced by \`.ipa/plugins/rules/*.js\`, retrieval boosts by \`.ipa/plugins/search/*.js\`; verify with \`${prefix} plugin validate\` and \`${prefix} plugin dry-run\`.
+- Vault-specific conventions are enforced by \`.ipa/plugins/rules/*.js\`, retrieval boosts by \`.ipa/plugins/search/*.js\`, session-end policy by \`.ipa/plugins/gates/*.js\`; verify with \`${prefix} plugin validate\` and \`${prefix} plugin dry-run\`.
 - In harness sessions plain \`${prefix} search "keyword"\` calls are logged as tune evidence automatically.
 
 Focused workflows live as skills under \`${skillRoot}/\` — routing map in the global \`ipa\` skill.
@@ -7344,17 +7438,18 @@ process.stdout.write(JSON.stringify({
 `;
 }
 
+// Stop hook: thin client of \`ipa harness gate\`. All gate policy (builtin
+// formatter check + vault-owned gate plugins) lives in core so vaults can
+// extend the Stop gate without forking this script.
 function formatterGateScript(vaultPath, options = {}) {
   return `#!/usr/bin/env node
-// ${HARNESS_MARKER}: block final response until pending IPA formatter patches are applied.
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+// ${HARNESS_MARKER}: block final response until the IPA session gate passes.
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 
 const vaultPath = ${vaultResolverSnippet(vaultPath, options)};
-const pendingPath = join(vaultPath, ".ipa", "harness", "formatter-pending.json");
-const prefix = "ipa";
 
 function inputJson() {
   try {
@@ -7386,47 +7481,6 @@ function sessionIdFrom(input) {
   ]);
 }
 
-// Entries from sessions that ended without clearing the gate are pruned by age.
-const PENDING_TTL_MS = 48 * 60 * 60 * 1000;
-
-function freshNotes(notes) {
-  const cutoff = Date.now() - PENDING_TTL_MS;
-  return notes.filter((item) => {
-    const ts = Date.parse(item?.updated_at ?? "");
-    return Number.isNaN(ts) || ts >= cutoff;
-  });
-}
-
-function readPending() {
-  if (!existsSync(pendingPath)) return { version: 1, notes: [] };
-  try {
-    const parsed = JSON.parse(readFileSync(pendingPath, "utf8"));
-    return { version: 1, notes: freshNotes(Array.isArray(parsed.notes) ? parsed.notes : []) };
-  } catch {
-    return { version: 1, notes: [] };
-  }
-}
-
-function clearPending(remaining) {
-  if (!remaining.length) {
-    try {
-      unlinkSync(pendingPath);
-      return;
-    } catch {
-      // fall through and persist the empty list instead
-    }
-  }
-  try {
-    writeFileSync(pendingPath, JSON.stringify({ version: 1, notes: remaining }, null, 2) + "\\n", "utf8");
-  } catch {
-    // best effort; the TTL prune keeps the file from growing unbounded
-  }
-}
-
-function shellArg(value) {
-  return JSON.stringify(String(value));
-}
-
 function block(message) {
   process.stderr.write(message + "\\n");
   process.stdout.write(JSON.stringify({
@@ -7442,62 +7496,36 @@ function block(message) {
 
 const input = inputJson();
 const sessionId = sessionIdFrom(input);
-const pending = readPending();
-// Gate only notes edited in this session. Entries without a recorded session
-// (legacy or unknown runtime) stay gated by every session as a safe fallback.
-const owned = sessionId
-  ? pending.notes.filter((item) => !item.session_id || item.session_id === sessionId)
-  : pending.notes;
-const notes = owned
-  .filter((item) => typeof item.title === "string" && item.title.trim())
-  .map((item) => item.title.trim());
-const uniqueNotes = [...new Set(notes)];
-if (!uniqueNotes.length) process.exit(0);
 
-const plan = spawnSync("ipa", ["--vault", vaultPath, "--json", "formatter", "plan", "--note", ...uniqueNotes], {
-  encoding: "utf8",
-  timeout: 15000
-});
+// Fast path: nothing pending and no gate plugins installed — skip the CLI spawn.
+const pendingPath = join(vaultPath, ".ipa", "harness", "formatter-pending.json");
+const gatesDir = join(vaultPath, ".ipa", "plugins", "gates");
+if (!existsSync(pendingPath) && !existsSync(gatesDir)) process.exit(0);
 
-const noteArgs = uniqueNotes.map(shellArg).join(" ");
-const commands = [
-  \`\${prefix} validator --note \${noteArgs}\`,
-  \`\${prefix} formatter plan --note \${noteArgs}\`,
-  \`\${prefix} formatter apply --note \${noteArgs}\`
-].join("\\n");
+const args = ["--vault", vaultPath, "--json", "harness", "gate"];
+if (sessionId) args.push("--session", sessionId);
+const result = spawnSync("ipa", args, { encoding: "utf8", timeout: 30000 });
 
-if (plan.status !== 0) {
-  block([
-    "[IPA CLI] Formatter gate could not verify pending vault Markdown edits.",
-    plan.stderr.trim() || plan.stdout.trim() || "formatter plan failed",
-    "Run:",
-    commands
-  ].join("\\n"));
-}
-
+// The CLI exits 1 when the gate blocks, so judge by the JSON payload, not the
+// exit code; only an unparseable stdout means the gate itself could not run.
 let parsed = null;
 try {
-  parsed = JSON.parse(plan.stdout);
+  parsed = JSON.parse(result.stdout);
 } catch {
+  parsed = null;
+}
+if (!parsed) {
   block([
-    "[IPA CLI] Formatter gate could not parse formatter plan output.",
-    "Run:",
-    commands
+    "[IPA CLI] Session gate could not verify pending vault work.",
+    (result.stderr || result.stdout || "ipa harness gate failed").trim(),
+    "Run: ipa harness gate"
   ].join("\\n"));
 }
 
-const patchCount = Number(parsed?.summary?.patches ?? parsed?.patches?.length ?? 0);
-if (patchCount > 0) {
-  block([
-    \`[IPA CLI] Formatter gate blocked final response: \${patchCount} formatter patch(es) remain for edited vault note(s).\`,
-    "Run:",
-    commands,
-    "Do not stop at formatter plan; run formatter apply after reviewing the plan."
-  ].join("\\n"));
+if (parsed && parsed.block) {
+  const messages = (parsed.blocks ?? []).map((item) => item.message).filter(Boolean);
+  block(["[IPA CLI] Session gate blocked final response.", ...messages].join("\\n\\n"));
 }
-
-const ownedSet = new Set(owned);
-clearPending(pending.notes.filter((item) => !ownedSet.has(item)));
 `;
 }
 
@@ -8247,6 +8275,102 @@ export async function harnessUninstall(vaultPath, target = "codex", options = {}
   if (index.targets) delete index.targets[name];
   await writeHarnessIndex(vaultPath, index);
   return { status: "ok", target: name, installed: false, removed: [`.ipa/harness/${name}`, spec.localPrompt, ...localSkillRemoved], global_removed: globalRemoved };
+}
+
+// Session gate: the single check the Stop hook consults before a session may
+// end. Combines the builtin formatter check over this session's pending edits
+// with vault-owned gate plugins (.ipa/plugins/gates/*.js). On pass, the
+// session's ledger entries are cleared. Gate plugin errors are reported but
+// never block — a broken plugin must not lock the session shut.
+export async function harnessSessionGate(vaultPath, options = {}) {
+  const sessionId = options.session ?? null;
+  const pendingPath = join(vaultPath, ".ipa", "harness", "formatter-pending.json");
+  const ttlMs = 48 * 60 * 60 * 1000;
+  let entries = [];
+  if (existsSync(pendingPath)) {
+    try {
+      const parsed = JSON.parse(await readFile(pendingPath, "utf8"));
+      entries = Array.isArray(parsed.notes) ? parsed.notes : [];
+    } catch {
+      entries = [];
+    }
+  }
+  const cutoff = Date.now() - ttlMs;
+  entries = entries.filter((item) => {
+    const ts = Date.parse(item?.updated_at ?? "");
+    return Number.isNaN(ts) || ts >= cutoff;
+  });
+  const owned = sessionId
+    ? entries.filter((item) => !item.session_id || item.session_id === sessionId)
+    : entries;
+  const ownedTitles = [...new Set(owned
+    .map((item) => typeof item.title === "string" ? item.title.trim() : "")
+    .filter(Boolean))];
+  const blocks = [];
+  const errors = [];
+  if (ownedTitles.length) {
+    const plan = await formatVault(vaultPath, false, { notes: ownedTitles, ruleApply: true });
+    if (plan.summary.patches > 0) {
+      const noteArgs = ownedTitles.map((title) => JSON.stringify(title)).join(" ");
+      blocks.push({
+        source: "formatter",
+        message: [
+          `Formatter gate blocked final response. ${plan.summary.patches} pending formatter patch(es) for: ${ownedTitles.join(", ")}`,
+          "Run:",
+          `ipa validator --note ${noteArgs}`,
+          `ipa formatter plan --note ${noteArgs}`,
+          `ipa formatter apply --note ${noteArgs}`,
+          "Do not stop at formatter plan; run formatter apply after reviewing the plan."
+        ].join("\n")
+      });
+    }
+  }
+  const gatePlugins = (await loadPluginModules(vaultPath, "gates"))
+    .map((plugin) => normalizeGatePlugin(plugin))
+    .filter(Boolean);
+  if (gatePlugins.length) {
+    const { config, mapping } = await readVaultConfig(vaultPath);
+    const notes = await loadNotes(vaultPath, mapping);
+    const ctx = {
+      vaultPath,
+      config,
+      mapping,
+      notes,
+      lookup: (ref) => findNote(notes, ref) ?? null,
+      session: {
+        id: sessionId,
+        edits: owned.map((item) => ({ title: item.title, path: item.path ?? null, updated_at: item.updated_at ?? null }))
+      }
+    };
+    for (const gate of gatePlugins) {
+      try {
+        const result = await gate.check(ctx);
+        if (result && result.block) {
+          blocks.push({ source: gate.name, message: String(result.message ?? `gate ${gate.name} blocked the session`) });
+        }
+      } catch (error) {
+        errors.push({ source: gate.name, message: error.message });
+      }
+    }
+  }
+  if (!blocks.length && owned.length) {
+    const ownedSet = new Set(owned);
+    const remaining = entries.filter((item) => !ownedSet.has(item));
+    if (remaining.length) {
+      await writeFile(pendingPath, JSON.stringify({ version: 1, notes: remaining }, null, 2) + "\n", "utf8");
+    } else if (existsSync(pendingPath)) {
+      await rm(pendingPath, { force: true });
+    }
+  }
+  return {
+    status: "ok",
+    block: blocks.length > 0,
+    session_id: sessionId,
+    notes: ownedTitles,
+    gates: gatePlugins.map((gate) => gate.name),
+    blocks,
+    errors
+  };
 }
 
 export async function harnessUpdate(vaultPath, target = "codex", options = {}) {

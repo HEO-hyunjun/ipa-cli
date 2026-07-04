@@ -419,6 +419,17 @@ resolution), and `prepared` (the same per-note precomputation — lowercased
 body, token sets, keyword text — that builtin channels score against), so
 plugins do not re-normalize note bodies per query.
 
+Session gates (`.ipa/plugins/gates/*.js`) extend the harness Stop gate with
+vault-owned policy: each gate exports `{ name, check(ctx) }`, receives the
+notes this session created or edited (`ctx.session.edits`) plus the loaded
+vault, and returns `{ block: true, message }` to hold the final response until
+the condition is fixed — whatever "finished" means in that vault's own
+operating policy (a companion note that must move together, a report that
+must be linked before the session ends). The Stop hook consults
+`ipa harness gate`, which combines the builtin formatter check with all
+enabled gates; a gate that throws is reported but never blocks. Disable
+individual gates via `gates.plugins` in `.ipa/config.yaml`.
+
 ## Tune workflow
 
 `ipa tune` saves the best params from each run as an immutable JSON under

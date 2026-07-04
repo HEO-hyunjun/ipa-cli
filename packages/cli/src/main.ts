@@ -28,6 +28,7 @@ import {
   harnessInstall,
   harnessStatus,
   harnessUninstall,
+  harnessSessionGate,
   harnessUpdate,
   inboxAdd,
   inboxTriage,
@@ -1849,6 +1850,19 @@ function buildProgram() {
       await withVault(globalOptions(program), async (vault, resolved) => print(await harnessDoctor(vault, {
         profile: resolved.profile
       }), jsonOutput(program)));
+    });
+  harnessCommand
+    .command("gate")
+    .option("--session <id>", "Session id scoping pending edits")
+    .action(async (options) => {
+      await withVault(globalOptions(program), async (vault, resolved) => {
+        const result = await harnessSessionGate(vault, {
+          profile: resolved.profile,
+          session: options.session
+        });
+        print(result, jsonOutput(program));
+        if (result.block) process.exitCode = 1;
+      });
     });
   const guardCommand = harnessCommand.command("guard");
   guardCommand

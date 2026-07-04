@@ -47,8 +47,10 @@ import {
   harnessGuardStatus,
   harnessInstall,
   harnessStatus,
+  harnessSessionGate,
   harnessUninstall,
   harnessUpdate,
+  validatePlugin,
   selfUpdate,
   tuneAnalyze,
   tuneEval,
@@ -2499,6 +2501,71 @@ test("harness status/doctor flag outdated components and harness update reinstal
   const missing = await harnessUpdate(vault, "claude", options);
   assert.equal(missing.status, "error");
   assert.equal(missing.reason, "not_installed");
+});
+
+test("session gate combines formatter pending with vault-owned gate plugins", async () => {
+  const vault = await fixtureVault();
+  await mkdir(join(vault, ".ipa", "plugins", "gates"), { recursive: true });
+  await writeFile(
+    join(vault, ".ipa", "plugins", "gates", "pair-gate.js"),
+    `export default {
+  name: "pair-gate",
+  check(ctx) {
+    const edited = new Set(ctx.session.edits.map((edit) => edit.title));
+    if (edited.has("Alpha") && !edited.has("Beta")) {
+      return { block: true, message: "editing Alpha requires updating Beta in the same session" };
+    }
+    return null;
+  }
+};\n`,
+    "utf8"
+  );
+
+  // Then: the plugin surface (list/validate/dry-run) covers the gates kind.
+  const plugins = await listPlugins(vault);
+  assert.ok(plugins.plugins.some((item) => item.kind === "gates" && item.path.endsWith("pair-gate.js")));
+  const validation = await validatePlugin(join(vault, ".ipa", "plugins", "gates", "pair-gate.js"), "gates");
+  assert.deepEqual(validation.issues, []);
+  const dry = await pluginDryRun(vault, "gates", ".ipa/plugins/gates/pair-gate.js", { notes: ["Alpha"] });
+  assert.equal(dry.gate, "pair-gate");
+  assert.equal(dry.result.block, true);
+
+  // Given: this session edited Alpha (formatter-clean) but not Beta.
+  await formatVault(vault, true, { notes: ["Alpha", "Beta"] });
+  const pendingPath = join(vault, ".ipa", "harness", "formatter-pending.json");
+  await mkdir(dirname(pendingPath), { recursive: true });
+  const seedLedger = (titles) => writeFile(
+    pendingPath,
+    JSON.stringify({ version: 1, notes: titles.map((title) => ({ title, session_id: "sess-1", updated_at: new Date().toISOString() })) }, null, 2) + "\n",
+    "utf8"
+  );
+  await seedLedger(["Alpha"]);
+
+  // Then: the gate blocks this session and keeps the ledger.
+  const blocked = await harnessSessionGate(vault, { session: "sess-1" });
+  assert.equal(blocked.block, true);
+  assert.ok(blocked.blocks.some((item) => item.source === "pair-gate"));
+  assert.equal(existsSync(pendingPath), true, "ledger must survive a blocked gate");
+
+  // Then: another session is not gated by sess-1 edits.
+  const other = await harnessSessionGate(vault, { session: "sess-2" });
+  assert.equal(other.block, false);
+
+  // When: the same session also updates Beta — the gate passes and clears the ledger.
+  await seedLedger(["Alpha", "Beta"]);
+  const passed = await harnessSessionGate(vault, { session: "sess-1" });
+  assert.equal(passed.block, false, JSON.stringify(passed.blocks));
+  assert.equal(existsSync(pendingPath), false, "ledger cleared on pass");
+
+  // Then: a crashing gate reports an error but never blocks the session.
+  await writeFile(
+    join(vault, ".ipa", "plugins", "gates", "broken-gate.js"),
+    'export default { name: "broken", check() { throw new Error("boom"); } };\n',
+    "utf8"
+  );
+  const withBroken = await harnessSessionGate(vault, { session: "sess-3" });
+  assert.equal(withBroken.block, false);
+  assert.ok(withBroken.errors.some((item) => item.source === "broken"));
 });
 
 test("harness update auto-joins new default components and honors --with/--without", async () => {
