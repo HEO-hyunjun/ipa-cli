@@ -54,6 +54,13 @@ test("diff assertions ignore harness md and .ipa internals", () => {
   assert.ok(allPass(rs), JSON.stringify(rs));
 });
 
+test("changedMd excludes .claude/ harness skills written by harness install", () => {
+  // `ipa harness install claude`가 샌드박스에 쓰는 볼트-로컬 스킬은 볼트 노트가 아니다.
+  const diff = { added: [".claude/skills/ipa-config/SKILL.md", ".claude/skills/ipa-tune/SKILL.md", "00 Inbox/진짜 노트.md"], removed: [], modified: [] };
+  const rs = evaluateExpect({ md_changed_max: 1 }, baseCtx({ diff }));
+  assert.ok(allPass(rs), JSON.stringify(rs)); // .claude/* 3개는 세지 않고 실제 노트 1개만 카운트
+});
+
 test("formatter_pending_empty and file_contains", () => {
   const ctx = baseCtx();
   assert.ok(allPass(evaluateExpect({ formatter_pending_empty: true }, ctx))); // 파일 부재 = 통과

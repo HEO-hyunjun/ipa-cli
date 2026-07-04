@@ -4,7 +4,7 @@ import { join, basename } from "node:path";
 import { execFileSync } from "node:child_process";
 
 const HARNESS_MD = new Set(["CLAUDE.md", "AGENTS.md"]);
-const isVaultMd = (p) => p.endsWith(".md") && !p.startsWith(".ipa/") && !HARNESS_MD.has(p);
+const isVaultMd = (p) => p.endsWith(".md") && !p.startsWith(".ipa/") && !p.startsWith(".claude/") && !HARNESS_MD.has(p);
 
 function changedMd(diff) {
   return [...diff.added, ...diff.removed, ...diff.modified].filter(isVaultMd);
