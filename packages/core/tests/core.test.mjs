@@ -920,6 +920,12 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   assert.match(skill, /## Scripted Edits/);
   assert.match(skill, /ipa note replace "Note Title"/);
   assert.match(skill, /ipa note set "Note Title" --field ref --add "Index Note" --apply/);
+  // The global skill is the unified entry point: it routes focused work to the
+  // vault-local helper skills and falls back to CLI guidance outside the vault.
+  assert.match(skill, /## Skill Routing/);
+  assert.match(skill, /`ipa-consult` — IPA concept questions/);
+  assert.match(skill, new RegExp(`${vault.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}/\\.agents/skills/`));
+  assert.match(skill, /read the matching `SKILL\.md`/);
   // The global prompt block is pointer-level: it names the entry commands and
   // points at the skill/convention/help surfaces instead of duplicating them.
   const globalPrompt = await readFile(join(home, ".codex", "AGENTS.md"), "utf8");

@@ -6762,7 +6762,7 @@ function harnessSkillContent(vaultPath, spec, mapping = DEFAULT_MAPPING, options
   const prefix = commandPrefix(vaultPath, options);
   return `---
 name: ipa
-description: Search, read, validate, format, and safely write IPA vault notes with the ipa CLI. Use when a task mentions IPA, the vault, a vault note, inbox capture, note search, note validation, or note formatting.
+description: Entry point for every IPA vault task — search, read, validate, format, and safely write vault notes with the ipa CLI, and route focused work (concept questions, triage, review, tuning, rules, config) to the vault's helper skills. Use when a task mentions IPA, the vault, a vault note, inbox capture, note search, note validation, note formatting, or asks what an IPA concept means.
 ---
 
 <!-- ${HARNESS_MARKER} -->
@@ -6778,6 +6778,19 @@ description: Search, read, validate, format, and safely write IPA vault notes wi
 - IPA concepts + vault operating rules: \`${prefix} convention\`
 
 Sessions running outside the vault directory do not load the vault's own \`${spec.localPrompt}\`; before writing or reorganizing notes from such a session, run \`${prefix} convention\` and read \`${vaultPath}/${spec.localPrompt}\` for user-maintained rules outside the managed block.
+
+## Skill Routing
+
+This skill is the single entry point for vault requests from any directory. Focused workflows live as vault-local skills under \`${vaultPath}/${vaultLocalSkillRootRel(spec)}/\`:
+
+- \`ipa-consult\` — IPA concept questions ("what is an index", "refs vs tags") and workflow friction ("the vault feels messy", "X keeps bothering me")
+- \`ipa-triage\` — inbox → refs/tags → wikilinks → archive processing
+- \`ipa-review\` — vault or subtree structural health checks with approved fixes
+- \`ipa-tune\` — search quality complaints, testset labelling, tune analysis
+- \`ipa-rule\` — authoring vault convention rule plugins
+- \`ipa-config\` — profile/config and field/folder mapping changes
+
+Inside the vault these load as invocable skills — invoke the matching one. Outside the vault they are not auto-loaded: read the matching \`SKILL.md\` at the path above and follow its workflow with \`${prefix}\` commands. If the skill file does not exist, fall back to \`${prefix} convention\` and the commands below.
 
 ## Read First
 
