@@ -233,14 +233,14 @@ const COMMAND_HELP = {
       ["guard check --action ACTION", "Write action to evaluate; default is create-like behavior"]
     ],
     examples: [
-      ["ipa harness install opencode", "Full OpenCode install (all components including evidence)"],
-      ["ipa harness install opencode --without hook:evidence", "Default install except the evidence hook"],
+      ["ipa harness install opencode", "Default OpenCode install (all components except hook:evidence)"],
+      ["ipa harness install opencode --with hook:evidence", "Default install plus the opt-in evidence hook"],
       ["ipa harness install opencode --only skill,prompt", "Install only the global skill and prompt components"],
       ["ipa harness install codex --only hook:guard", "Install only the Codex inbox guard hook"]
     ],
     notes: [
-      "Without --only, init/install applies the default full install for the target (all components).",
-      "Components: skill, prompt, local-prompt, local-skills, plugin-scaffold, opencode-plugin, hook:session-env, hook:guard, hook:markdown-nudge, hook:formatter-gate, hook:evidence."
+      "Without --only, init/install applies the default install for the target (all components except hook:evidence).",
+      "Components: skill, prompt, local-prompt, local-skills, plugin-scaffold, opencode-plugin, hook:session-env, hook:guard, hook:markdown-nudge, hook:formatter-gate, hook:evidence (opt-in)."
     ]
   }),
   inbox: formatDetailedHelp({

@@ -5844,7 +5844,10 @@ function componentsValidForTarget(name) {
 }
 
 function defaultComponentsForTarget(name) {
-  return componentsValidForTarget(name);
+  // hook:evidence logs every user prompt into the vault tune log and injects a
+  // per-turn nudge; the 2026-07 A/B benchmark showed no behavioral benefit over
+  // the prompt/skill surface, so it is opt-in via --with hook:evidence.
+  return componentsValidForTarget(name).filter((component) => component !== "hook:evidence");
 }
 
 function resolveHarnessComponents(name, options = {}) {
@@ -5873,7 +5876,7 @@ function resolveHarnessComponents(name, options = {}) {
       if (!selected.includes(component)) selected.push(component);
     }
   } else {
-    selected = [...valid];
+    selected = defaultComponentsForTarget(name);
     for (const component of withList) {
       if (!selected.includes(component)) selected.push(component);
     }

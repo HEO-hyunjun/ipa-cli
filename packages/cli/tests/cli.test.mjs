@@ -346,17 +346,18 @@ test("legacy surface fixture is covered by JS fixtures", async () => {
   assert.match(refactors, /ref-remove\s+frontmatter ref 제거 \(전체 vault\)/);
 });
 
-test("harness help lists opencode target, selector options, and default full install", async () => {
+test("harness help lists opencode target, selector options, and default install", async () => {
   const { env } = await fixtureProfile();
   const help = run(env, ["harness", "--help"]);
   assert.match(help, /ipa harness install opencode/);
-  assert.match(help, /ipa harness install opencode --without hook:evidence/);
+  assert.match(help, /ipa harness install opencode --with hook:evidence/);
   assert.match(help, /ipa harness install opencode --only skill,prompt/);
   assert.match(help, /ipa harness install codex --only hook:guard/);
   assert.match(help, /--only <component\.\.\.>/);
   assert.match(help, /--with <component\.\.\.>/);
   assert.match(help, /--without <component\.\.\.>/);
-  assert.match(help, /default full install/i);
+  assert.match(help, /all components except hook:evidence/i);
+  assert.match(help, /hook:evidence \(opt-in\)/);
 });
 
 test("harness install accepts component selectors for opencode and codex", async () => {
@@ -577,8 +578,8 @@ test("harness status lists selected and omitted components per target", async ()
   const { env } = await fixtureProfile();
   const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
   const harnessEnv = { ...env, IPA_HARNESS_HOME: home };
-  run(harnessEnv, ["--json", "harness", "install", "codex"]);
-  run(harnessEnv, ["--json", "harness", "install", "claude", "--without", "hook:evidence"]);
+  run(harnessEnv, ["--json", "harness", "install", "codex", "--with", "hook:evidence"]);
+  run(harnessEnv, ["--json", "harness", "install", "claude"]);
   const text = run(harnessEnv, ["harness", "status"]);
   assert.match(text, /omitted \(codex\)\s+-/);
   assert.match(text, /omitted \(claude\)\s+hook:evidence/);

@@ -872,7 +872,9 @@ test("no-op refactor does not rewrite every note", async () => {
 test("harness install, doctor and guard enforce inbox-only new markdown writes", async () => {
   const vault = await fixtureVault();
   const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
-  const options = { homeDir: home, profile: "ipa-test" };
+  // hook:evidence is opt-in since the 2026-07 benchmark; this test still
+  // covers its script content and behavior through the --with path.
+  const options = { homeDir: home, profile: "ipa-test", components: { with: ["hook:evidence"] } };
   // Hook scripts now resolve the vault via `ipa config show`, which reads env +
   // the global profile registry. Point that resolution at this test's vault so
   // the spawned hooks operate on the fixture instead of the developer's vault.
@@ -1151,7 +1153,8 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
 test("harness install registers home-relative ~ hook paths and migrates legacy/duplicate/other-machine entries", async () => {
   const vault = await fixtureVault();
   const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
-  const options = { homeDir: home, profile: "ipa-test" };
+  // Opt into hook:evidence so the UserPromptSubmit migration path stays covered.
+  const options = { homeDir: home, profile: "ipa-test", components: { with: ["hook:evidence"] } };
   const settingsPath = join(home, ".claude", "settings.json");
 
   // Pre-seed settings.json the way a synced/multi-machine setup would look:
@@ -1208,7 +1211,7 @@ test("hook scripts resolve the vault path via homedir() with profile fallback in
   await mkdir(join(vault, ".ipa"), { recursive: true });
   await mkdir(join(vault, "00 Inbox"), { recursive: true });
   await writeFile(join(vault, ".ipa", "config.yaml"), "folders:\n  inbox: \"00 Inbox\"\n", "utf8");
-  await harnessInstall(vault, "claude", { homeDir: home });
+  await harnessInstall(vault, "claude", { homeDir: home, components: { with: ["hook:evidence"] } });
 
   const scripts = ["ipa-inbox-guard.mjs", "ipa-user-prompt-nudge.mjs", "ipa-md-write-nudge.mjs", "ipa-call-counter.mjs", "ipa-formatter-gate.mjs"];
   for (const name of scripts) {
@@ -1300,13 +1303,13 @@ test("harness install opencode creates OpenCode-native managed artifacts and uni
   const status = await harnessStatus(vault, options);
   assert.deepEqual(status.installed, ["opencode"]);
 
-  // Then: the per-target manifest records default full install components,
-  // including hook:evidence (evidence is included by default; excluded only
-  // with --without hook:evidence).
+  // Then: the per-target manifest records default install components.
+  // hook:evidence is opt-in (--with hook:evidence) and must not be part of
+  // the default set (2026-07 A/B benchmark: no behavioral benefit).
   const manifest = JSON.parse(await readFile(join(vault, ".ipa", "harness", "opencode", "manifest.json"), "utf8"));
   assert.equal(manifest.target, "opencode");
   assert.ok(Array.isArray(manifest.components), "manifest must declare components for default full install");
-  assert.ok(manifest.components.includes("hook:evidence"), "default full install must include hook:evidence");
+  assert.ok(!manifest.components.includes("hook:evidence"), "default install must not include hook:evidence");
   assert.ok(manifest.components.includes("skill"), "default full install must include skill");
   assert.ok(manifest.components.includes("prompt"), "default full install must include prompt");
   assert.ok(manifest.components.includes("opencode-plugin"), "default full install must include opencode-plugin");
@@ -1696,12 +1699,12 @@ test("opencode plugin hook:evidence records prompt events from tui.prompt.append
   }
 });
 
-test("opencode plugin default full install composes formatter-gate and evidence event handlers", async () => {
+test("opencode plugin with hook:evidence composes formatter-gate and evidence event handlers", async () => {
   const vault = await fixtureVault();
   const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
-  // Default full install: no components option, so all components including
-  // hook:formatter-gate and hook:evidence are selected simultaneously.
-  const options = { homeDir: home, profile: "ipa-test" };
+  // hook:evidence is opt-in; select it explicitly so hook:formatter-gate and
+  // hook:evidence are registered on the same plugin event hook simultaneously.
+  const options = { homeDir: home, profile: "ipa-test", components: { with: ["hook:evidence"] } };
   const opencodeHome = join(home, ".config", "opencode");
   const previousVaultEnv = process.env.IPA_VAULT_PATH;
   process.env.IPA_VAULT_PATH = vault;
@@ -1875,12 +1878,13 @@ test("opencode plugin --without hook:evidence generates no evidence behavior", a
 });
 
 test("opencode full install reports plugin-backed hook components as present in status and doctor", async () => {
-  // Given: a fixture vault and an isolated home directory.
+  // Given: a fixture vault and an isolated home directory. hook:evidence is
+  // opt-in, so select it explicitly to cover every plugin-backed hook.
   const vault = await fixtureVault();
   const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
-  const options = { homeDir: home, profile: "ipa-test" };
+  const options = { homeDir: home, profile: "ipa-test", components: { with: ["hook:evidence"] } };
 
-  // When: full default install for the opencode target.
+  // When: full install (default set + hook:evidence) for the opencode target.
   await harnessInstall(vault, "opencode", options);
 
   // Then: status reports all selected hook components as present via the plugin file.

@@ -162,13 +162,15 @@ ipa harness doctor
 
 `harness init` is an alias for `harness install`. `install <target>` supports
 `codex`, `claude`, and `opencode`; the default target is `codex`. A normal
-`install`/`init` is a full install that includes the evidence nudge/logging
-hook (`hook:evidence`) unless explicitly excluded with `--without hook:evidence`.
+`install`/`init` installs every component except the evidence nudge/logging
+hook (`hook:evidence`), which is opt-in via `--with hook:evidence` (an A/B
+benchmark showed no behavioral benefit over the prompt/skill surface, while
+logging every prompt into the vault tune log).
 
-Component selectors narrow an install:
+Component selectors adjust an install:
 
 ```sh
-ipa harness install opencode --without hook:evidence
+ipa harness install opencode --with hook:evidence
 ipa harness install opencode --only skill,prompt
 ipa harness install codex --only hook:guard
 ```
@@ -460,15 +462,15 @@ run a search for a prompt, only the prompt event remains.
 `ipa harness` manages both user-global AI harness files and vault-local
 metadata under `.ipa/harness/`. `install <target>` supports `codex`, `claude`,
 and `opencode`; `init <target>` is the same bootstrap command. The default
-target is `codex`. A normal `install`/`init` is a full install that includes
-the evidence nudge/logging hook (`hook:evidence`) unless explicitly excluded
-with `--without hook:evidence`. Component selectors narrow an install:
+target is `codex`. A normal `install`/`init` installs every component except
+the evidence nudge/logging hook (`hook:evidence`), which is opt-in via
+`--with hook:evidence`. Component selectors adjust an install:
 `--only <component...>` installs just the named components, `--with
 <component...>` adds components to the default set, and `--without
 <component...>` removes components from the default set.
 
 ```sh
-ipa harness install opencode --without hook:evidence
+ipa harness install opencode --with hook:evidence
 ipa harness install opencode --only skill,prompt
 ipa harness install codex --only hook:guard
 ```
@@ -487,7 +489,8 @@ For the selected target, install writes:
   `~/.claude/skills/ipa/SKILL.md`, or `~/.config/opencode/skills/ipa/SKILL.md`
 - user-global `SessionStart` environment hook that exports `IPA_SEARCH_LOG=1`
 - user-global inbox creation guard hook
-- user-global `UserPromptSubmit` IPA context-first nudge hook
+- user-global `UserPromptSubmit` IPA context-first nudge hook (only with the
+  opt-in `hook:evidence` component)
 - user-global post-write Markdown lint/format nudge hook
 - user-global `Stop` formatter gate that blocks final responses while edited
   vault notes still have formatter patches
