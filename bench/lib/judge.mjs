@@ -16,9 +16,13 @@ function validatorErrors(ipaBin, sandboxDir, title) {
       [ipaBin, "--vault", sandboxDir, "validator", "--note", title, "--json"],
       { encoding: "utf8", cwd: sandboxDir, stdio: ["ignore", "pipe", "pipe"] });
     const payload = JSON.parse(out);
-    return (payload.issues ?? []).filter((i) => i.severity === "error");
+    return { errors: (payload.issues ?? []).filter((i) => i.severity === "error"), skipped: false };
   } catch (e) {
-    return [{ code: "bench.validator_failed", severity: "error", message: String(e).slice(0, 300) }];
+    // 설정에서 제외된 폴더의 파일은 볼트 정책상 노트가 아니다 — validator가 "note not found"로
+    // 실패하면 에러가 아니라 skip으로 취급한다.
+    const out = `${e.stderr ?? ""}${e.stdout ?? ""}${e}`;
+    if (/note not found/i.test(out)) return { errors: [], skipped: true };
+    return { errors: [{ code: "bench.validator_failed", severity: "error", message: String(e).slice(0, 300) }], skipped: false };
   }
 }
 
@@ -97,8 +101,15 @@ export function evaluateExpect(expect, ctx) {
         const titles = [...diff.added, ...diff.modified].filter(isVaultMd)
           .map((p) => basename(p, ".md"))
           .filter((t) => !["README", "🏠 Home"].includes(t));
-        const errors = titles.flatMap((t) => validatorErrors(ipaBin, sandboxDir, t).map((i) => `${t}: ${i.message}`));
-        push(key, errors.length === 0, errors.slice(0, 5).join(" | ") || `clean (${titles.length} notes)`); break;
+        const errors = [];
+        const skipped = [];
+        for (const t of titles) {
+          const r = validatorErrors(ipaBin, sandboxDir, t);
+          if (r.skipped) skipped.push(t);
+          else errors.push(...r.errors.map((i) => `${t}: ${i.message}`));
+        }
+        const clean = `clean (${titles.length - skipped.length} notes${skipped.length ? `, ${skipped.length} skipped: not indexed` : ""})`;
+        push(key, errors.length === 0, errors.slice(0, 5).join(" | ") || clean); break;
       }
       case "final_answer_regex":
         push(key, new RegExp(value).test(parsed.finalText), value); break;

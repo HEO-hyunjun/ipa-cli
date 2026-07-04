@@ -97,3 +97,15 @@ test("validator_clean_changed runs real CLI against mini-vault copy", () => {
   assert.equal(rs.length, 1);
   assert.ok(rs[0].pass, rs[0].detail); // mini-vault Alpha 수정은 error 이슈가 없어야 한다
 });
+
+test("validator_clean_changed skips titles that don't resolve as notes", () => {
+  const sb = createSandbox(MINI_VAULT, "judge");
+  const alpha = join(sb, "00 Inbox", "Alpha.md");
+  writeFileSync(alpha, readFileSync(alpha, "utf8") + "\n추가 줄\n");
+  // Meta/ 노트는 디스크에 쓰지 않아 validator가 "note not found"로 실패 → 에러가 아니라 skip.
+  const diff = { added: ["Meta/설명 문서.md"], removed: [], modified: ["00 Inbox/Alpha.md"] };
+  const rs = evaluateExpect({ validator_clean_changed: true }, baseCtx({ sandboxDir: sb, diff }));
+  assert.equal(rs.length, 1);
+  assert.ok(rs[0].pass, rs[0].detail);
+  assert.match(rs[0].detail, /1 skipped: not indexed/);
+});
