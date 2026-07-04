@@ -30,7 +30,9 @@ export default [
     ],
     budget: { maxCostUsd: 2.5, maxIpaCalls: 25 }, goldenPath: 8 },
 
-  { ...base, id: "f20-empty-coldstart", persona: "empty", harness: false, holdout: false,
+  // preconfigured:false — 샌드박스에 .ipa-config를 미리 깔면 볼트가 처음부터 해석되어
+  // "부트스트랩" 전제가 무너진다 (실측: 양 모델이 config 생성을 건너뜀). ipa config init 도입과 함께 적용.
+  { ...base, id: "f20-empty-coldstart", persona: "empty", harness: false, holdout: false, preconfigured: false,
     prompts: [
       "새 볼트를 시작하려고 해. IPA 구조로 초기 세팅하고 첫 노트로 '볼트 운영 원칙'을 만들어줘.",
       "빈 폴더인데 IPA 방식 볼트로 부트스트랩하고 운영 원칙 노트 하나 작성해줘.",
@@ -42,7 +44,7 @@ export default [
         file_contains: { path: ".ipa/config.yaml", regex: "inbox" },
       } },
     ],
-    budget: { maxCostUsd: 1.5, maxIpaCalls: 15 }, goldenPath: 5 },
+    budget: { maxCostUsd: 2.0, maxIpaCalls: 20 }, goldenPath: 5 },
 
   // 신규 온보딩 풀 저니: 프로필 미설정(preconfigured:false) 상태에서 볼트 연결 → 셋업 → 시범 마이그레이션.
   // CLI 바이너리 설치 자체(install.sh)는 벤치 비범위 — 러너 XDG_CONFIG_HOME 격리로 실제 프로필 레지스트리는 보호된다.

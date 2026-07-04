@@ -24,6 +24,11 @@ export function runClaudeTurn({ cwd, model, message, resumeSessionId = null, max
     "--model", model,
     "--max-turns", String(maxTurns),
     "--allowedTools", "Bash,Read,Write,Edit,Glob,Grep",
+    // 개발 머신의 전역 ipa 스킬·전역 CLAUDE.md는 실제 vault 경로를 광고해 세션을 실볼트로
+    // 유인한다 (실측: f20 opus가 ~/sync 볼트로 cd). CLAUDE_CONFIG_DIR 격리는 -p 인증을 깨므로
+    // 세션 설정으로 두 표면만 외과적으로 차단한다. 샌드박스의 vault-local 하네스는 cwd 기준으로
+    // 정상 로드된다 — 벤치의 하네스 검증 범위는 vault-local 표면이다 (bench/README 참고).
+    "--settings", '{"skillOverrides":{"ipa":"off"},"claudeMdExcludes":["**/.claude/CLAUDE.md"]}',
   ];
   if (resumeSessionId) args.push("--resume", resumeSessionId);
   const xdgDir = `${cwd}-xdg`; // 프로필 레지스트리 격리 (~/.config/ipa 보호)
