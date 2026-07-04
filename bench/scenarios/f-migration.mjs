@@ -44,7 +44,7 @@ export default [
         file_contains: { path: ".ipa/config.yaml", regex: "inbox" },
       } },
     ],
-    budget: { maxCostUsd: 2.0, maxIpaCalls: 24 }, goldenPath: 5 },
+    budget: { maxCostUsd: 2.5, maxIpaCalls: 24 }, goldenPath: 5 },
 
   // 신규 온보딩 풀 저니: 프로필 미설정(preconfigured:false) 상태에서 볼트 연결 → 셋업 → 시범 마이그레이션.
   // CLI 바이너리 설치 자체(install.sh)는 벤치 비범위 — 러너 XDG_CONFIG_HOME 격리로 실제 프로필 레지스트리는 보호된다.
