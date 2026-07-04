@@ -8,7 +8,7 @@ export function installHarness({ ipaBin, sandboxDir, homeDir }) {
   mkdirSync(homeDir, { recursive: true });
   execFileSync(process.execPath, [ipaBin, "harness", "install", "claude"], {
     cwd: sandboxDir,
-    env: { ...process.env, HOME: homeDir, IPA_VAULT_PATH: sandboxDir, XDG_CONFIG_HOME: `${sandboxDir}-xdg` },
+    env: { ...process.env, HOME: homeDir, IPA_HARNESS_HOME: homeDir, IPA_VAULT_PATH: sandboxDir, XDG_CONFIG_HOME: `${sandboxDir}-xdg` },
     stdio: ["ignore", "pipe", "pipe"],
   });
 }
@@ -27,9 +27,14 @@ export function runClaudeTurn({ cwd, model, message, resumeSessionId = null, max
   ];
   if (resumeSessionId) args.push("--resume", resumeSessionId);
   const xdgDir = `${cwd}-xdg`; // 프로필 레지스트리 격리 (~/.config/ipa 보호)
+  const harnessHome = homeDir ?? `${cwd}-home`;
   mkdirSync(xdgDir, { recursive: true });
-  const env = { ...process.env, IPA_VAULT_PATH: cwd, XDG_CONFIG_HOME: xdgDir };
-  if (homeDir) { mkdirSync(homeDir, { recursive: true }); env.HOME = homeDir; }
+  mkdirSync(harnessHome, { recursive: true });
+  // IPA_HARNESS_HOME: 세션 안에서 에이전트가 실행하는 `ipa harness install/update`의 전역 쓰기 대상을
+  // 격리한다 (실측: HOME은 Claude Code의 셸 스냅샷이 실제 값으로 복원하지만, 로그인 셸에 없는 이
+  // 변수는 XDG_CONFIG_HOME처럼 세션 내부 Bash까지 전파된다 — 실제 ~/.claude 오염 사고 2회의 근본 수정).
+  const env = { ...process.env, IPA_VAULT_PATH: cwd, XDG_CONFIG_HOME: xdgDir, IPA_HARNESS_HOME: harnessHome };
+  if (homeDir) { env.HOME = homeDir; }
   return new Promise((resolve, reject) => {
     const child = spawn(claudeCmd[0], args, { cwd, env });
     let out = "", err = "";
