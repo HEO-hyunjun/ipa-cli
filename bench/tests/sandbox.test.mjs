@@ -38,3 +38,17 @@ test("snapshot + diffSnapshots detect add/modify/remove", () => {
   assert.deepEqual(d.removed, ["00 Inbox/Alpha.md"]);
   assert.deepEqual(d.modified, ["note.md"]);
 });
+
+test("snapshot normalizes NFD on-disk names to NFC keys", () => {
+  const nfdName = "무릎 노트.md".normalize("NFD");
+  const nfcName = "무릎 노트.md".normalize("NFC");
+  const sb = createSandbox(makePersona(), "test");
+  writeFileSync(join(sb, "00 Inbox", nfdName), "one\n");
+  const before = snapshot(sb);
+  writeFileSync(join(sb, "00 Inbox", nfdName), "two\n");       // modified
+  const d = diffSnapshots(before, snapshot(sb));
+  assert.ok(d.modified.includes(`00 Inbox/${nfcName}`),
+    `modified should contain NFC key, got ${JSON.stringify(d.modified)}`);
+  assert.ok(d.modified.some((p) => new RegExp("무릎 노트".normalize("NFC")).test(p)),
+    "NFC regex should match the modified key");
+});

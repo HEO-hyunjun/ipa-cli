@@ -20,7 +20,7 @@ export function snapshot(dir) {
       if (SKIP_DIRS.has(entry.name)) continue;
       const full = join(current, entry.name);
       if (entry.isDirectory()) walk(full);
-      else map.set(relative(dir, full).split(sep).join("/"),
+      else map.set(relative(dir, full).split(sep).join("/").normalize("NFC"),
         createHash("sha1").update(readFileSync(full)).digest("hex"));
     }
   };
