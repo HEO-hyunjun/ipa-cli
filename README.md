@@ -183,7 +183,11 @@ ipa harness install codex --only hook:guard
 Harness install/init adds user-global IPA skills/hooks for Codex, Claude, or
 OpenCode, vault-local `AGENTS.md` / `CLAUDE.md` guidance blocks,
 `.ipa/harness/*` metadata, and the `.ipa/plugins` JS authoring scaffold used
-for convention/search plugins.
+for convention/search plugins. For the `claude` target it also registers a
+`Bash(ipa *)` allow rule in `~/.claude/settings.json` (the `permissions`
+component) so `ipa` commands run without a per-call approval prompt; the
+user-owned settings file is read-merge-written and never clobbered. Opt out
+with `--without permissions`.
 
 ## Vault-local plugins
 

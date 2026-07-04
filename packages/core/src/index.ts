@@ -6332,6 +6332,7 @@ const HARNESS_COMPONENTS = [
   "local-skills",
   "plugin-scaffold",
   "opencode-plugin",
+  "permissions",
   "hook:session-env",
   "hook:guard",
   "hook:markdown-nudge",
@@ -6382,9 +6383,11 @@ const HARNESS_HOOK_COMPONENT_TO_PLUGIN_MARKER = {
 
 function componentsValidForTarget(name) {
   // The Bash call counter and the vault path-reference nudge are claude/codex
-  // hooks; the opencode plugin has no equivalent handlers yet.
-  if (name === "opencode") return HARNESS_COMPONENTS.filter((component) => component !== "hook:call-counter" && component !== "hook:vault-ref");
-  return HARNESS_COMPONENTS.filter((component) => component !== "opencode-plugin");
+  // hooks; the opencode plugin has no equivalent handlers yet. The permissions
+  // component registers a Claude Code allow rule, so it only applies to claude.
+  if (name === "opencode") return HARNESS_COMPONENTS.filter((component) => component !== "hook:call-counter" && component !== "hook:vault-ref" && component !== "permissions");
+  if (name === "claude") return HARNESS_COMPONENTS.filter((component) => component !== "opencode-plugin");
+  return HARNESS_COMPONENTS.filter((component) => component !== "opencode-plugin" && component !== "permissions");
 }
 
 function defaultComponentsForTarget(name) {
@@ -6808,6 +6811,39 @@ async function readJsonObject(path) {
 async function writeJsonObject(path, value) {
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, JSON.stringify(value, null, 2) + "\n", "utf8");
+}
+
+// Claude Code permission rule that lets `ipa` shell commands run without a
+// per-call approval prompt in agent sessions. Registered in the user-owned
+// ~/.claude/settings.json under permissions.allow by the "permissions"
+// harness component.
+const CLAUDE_PERMISSION_RULE = "Bash(ipa *)";
+
+function mergeClaudePermissionRule(config) {
+  if (!config.permissions || typeof config.permissions !== "object") config.permissions = {};
+  if (!Array.isArray(config.permissions.allow)) config.permissions.allow = [];
+  if (!config.permissions.allow.includes(CLAUDE_PERMISSION_RULE)) {
+    config.permissions.allow.push(CLAUDE_PERMISSION_RULE);
+  }
+}
+
+// Mirror removeManagedHookCommands: drop only our own entry and prune the
+// containers we own once they go empty, leaving every other permission intact.
+function removeClaudePermissionRule(config) {
+  if (!config.permissions || !Array.isArray(config.permissions.allow)) return;
+  config.permissions.allow = config.permissions.allow.filter((rule) => rule !== CLAUDE_PERMISSION_RULE);
+  if (!config.permissions.allow.length) delete config.permissions.allow;
+  if (config.permissions && !Object.keys(config.permissions).length) delete config.permissions;
+}
+
+function claudePermissionRulePresent(spec) {
+  if (spec.name !== "claude") return false;
+  try {
+    const config = JSON.parse(readFileSyncText(spec.hooksConfig) || "{}");
+    return Array.isArray(config.permissions?.allow) && config.permissions.allow.includes(CLAUDE_PERMISSION_RULE);
+  } catch {
+    return false;
+  }
 }
 
 function hookCommand(path, spec) {
@@ -8045,31 +8081,46 @@ async function installGlobalHarness(vaultPath, spec, mapping, options = {}) {
   }
 
   if (!isOpencode) {
-    const config = await readJsonObject(spec.hooksConfig);
-    removeManagedHookCommands(config);
-    if (componentSelected(selected, "hook:session-env")) {
-      addHookCommand(config, "SessionStart", null, hookCommand(envPath, spec), "Setting IPA search logging environment...", 5);
+    // The hooks config (and, for claude, the permission rule) live in a
+    // user-owned settings file. A hand-edited/unparseable file must never be
+    // clobbered: skip registration and report it, leaving the file untouched.
+    let config = null;
+    try {
+      config = await readJsonObject(spec.hooksConfig);
+    } catch {
+      config = null;
     }
-    if (componentSelected(selected, "hook:guard")) {
-      addHookCommand(config, "PreToolUse", "Write|Edit|MultiEdit", hookCommand(guardPath, spec), "Checking IPA inbox write policy...", 5);
+    if (config === null) {
+      skipped.push(spec.hooksConfig);
+    } else {
+      removeManagedHookCommands(config);
+      if (componentSelected(selected, "hook:session-env")) {
+        addHookCommand(config, "SessionStart", null, hookCommand(envPath, spec), "Setting IPA search logging environment...", 5);
+      }
+      if (componentSelected(selected, "hook:guard")) {
+        addHookCommand(config, "PreToolUse", "Write|Edit|MultiEdit", hookCommand(guardPath, spec), "Checking IPA inbox write policy...", 5);
+      }
+      if (componentSelected(selected, "hook:markdown-nudge")) {
+        addHookCommand(config, "PostToolUse", "Write|Edit|MultiEdit", hookCommand(writeNudgePath, spec), "Reminding IPA lint/format checks...", 5);
+      }
+      if (componentSelected(selected, "hook:call-counter")) {
+        addHookCommand(config, "PostToolUse", "Bash", hookCommand(callCounterPath, spec), null, 5);
+      }
+      if (componentSelected(selected, "hook:vault-ref")) {
+        addHookCommand(config, "UserPromptSubmit", null, hookCommand(vaultRefPath, spec), null, 5);
+      }
+      if (componentSelected(selected, "hook:evidence")) {
+        addHookCommand(config, "UserPromptSubmit", null, hookCommand(promptPath, spec), null, 5);
+      }
+      if (componentSelected(selected, "hook:formatter-gate")) {
+        addHookCommand(config, "Stop", null, hookCommand(formatterGatePath, spec), "Checking IPA formatter apply gate...", 20);
+      }
+      if (componentSelected(selected, "permissions")) {
+        mergeClaudePermissionRule(config);
+      }
+      await writeJsonObject(spec.hooksConfig, config);
+      files.push(spec.hooksConfig);
     }
-    if (componentSelected(selected, "hook:markdown-nudge")) {
-      addHookCommand(config, "PostToolUse", "Write|Edit|MultiEdit", hookCommand(writeNudgePath, spec), "Reminding IPA lint/format checks...", 5);
-    }
-    if (componentSelected(selected, "hook:call-counter")) {
-      addHookCommand(config, "PostToolUse", "Bash", hookCommand(callCounterPath, spec), null, 5);
-    }
-    if (componentSelected(selected, "hook:vault-ref")) {
-      addHookCommand(config, "UserPromptSubmit", null, hookCommand(vaultRefPath, spec), null, 5);
-    }
-    if (componentSelected(selected, "hook:evidence")) {
-      addHookCommand(config, "UserPromptSubmit", null, hookCommand(promptPath, spec), null, 5);
-    }
-    if (componentSelected(selected, "hook:formatter-gate")) {
-      addHookCommand(config, "Stop", null, hookCommand(formatterGatePath, spec), "Checking IPA formatter apply gate...", 20);
-    }
-    await writeJsonObject(spec.hooksConfig, config);
-    files.push(spec.hooksConfig);
   }
   return { files, skipped };
 }
@@ -8089,10 +8140,16 @@ async function uninstallGlobalHarness(spec) {
   for (const path of [spec.skillFile, ...scripts]) await removeManagedFile(path, removed);
   if (spec.pluginFile) await removeManagedFile(spec.pluginFile, removed);
   if (existsSync(spec.hooksConfig)) {
-    const config = await readJsonObject(spec.hooksConfig);
-    removeManagedHookCommands(config);
-    await writeJsonObject(spec.hooksConfig, config);
-    removed.push(spec.hooksConfig);
+    // Fail safe on an unparseable user-owned settings file: leave it untouched.
+    try {
+      const config = await readJsonObject(spec.hooksConfig);
+      removeManagedHookCommands(config);
+      removeClaudePermissionRule(config);
+      await writeJsonObject(spec.hooksConfig, config);
+      removed.push(spec.hooksConfig);
+    } catch {
+      // keep the file as-is rather than clobber content we cannot parse
+    }
   }
   if (await removeManagedBlock(spec.globalPromptFile)) {
     removed.push(spec.globalPromptFile);
@@ -8175,6 +8232,9 @@ function componentPresence(spec, vaultPath, selected) {
       presence["opencode-plugin"] = hasManagedFile(spec.pluginFile);
     }
   }
+  if (componentSelected(selected, "permissions")) {
+    presence.permissions = claudePermissionRulePresent(spec);
+  }
   for (const component of Object.keys(HARNESS_HOOK_COMPONENT_TO_SCRIPT)) {
     if (componentSelected(selected, component)) {
       if (spec.name === "opencode" && spec.pluginFile) {
@@ -8220,6 +8280,7 @@ export async function harnessStatus(vaultPath, options = {}) {
       markdown_nudge_hook: hasManagedFile(join(spec.hooksDir, "ipa-md-write-nudge.mjs")),
       formatter_gate_hook: hasManagedFile(join(spec.hooksDir, "ipa-formatter-gate.mjs")),
       hooks_config: existsSync(spec.hooksConfig),
+      permission_rule: claudePermissionRulePresent(spec),
       prompt: hasManagedFile(spec.globalPromptFile),
       local_skills: vaultLocalSkillStatus(vaultPath, spec),
       opencode_plugin: spec.pluginFile ? hasManagedFile(spec.pluginFile) : false,
@@ -8615,6 +8676,9 @@ export async function harnessDoctor(vaultPath, options = {}) {
     }
     if (spec.name === "opencode" && spec.pluginFile && componentSelected(selected, "opencode-plugin") && managedFileState(spec.pluginFile) === "missing") {
       issues.push({ severity: "warn", code: "harness.global_opencode_plugin_missing", target, message: "missing managed OpenCode plugin at ~/.config/opencode/plugins/ipa-harness.js" });
+    }
+    if (componentSelected(selected, "permissions") && !claudePermissionRulePresent(spec)) {
+      issues.push({ severity: "warn", code: "harness.permission_rule_missing", target, message: `missing Claude Code permission rule ${CLAUDE_PERMISSION_RULE} in ~/.claude/settings.json; run ipa harness update ${target}` });
     }
     if (componentSelected(selected, "prompt") && !hasManagedFile(spec.globalPromptFile)) {
       const promptPath = target === "opencode" ? "~/.config/opencode/AGENTS.md" : `~/.${target}/${spec.localPrompt}`;

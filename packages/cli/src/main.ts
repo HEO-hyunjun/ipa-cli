@@ -250,7 +250,7 @@ const COMMAND_HELP = {
     ],
     notes: [
       "Without --only, init/install applies the default install for the target (all components except hook:evidence).",
-      "Components: skill, prompt, local-prompt, local-skills, plugin-scaffold, opencode-plugin, hook:session-env, hook:guard, hook:markdown-nudge, hook:formatter-gate, hook:evidence (opt-in)."
+      "Components: skill, prompt, local-prompt, local-skills, plugin-scaffold, opencode-plugin, permissions (claude; adds a Bash(ipa *) allow rule to ~/.claude/settings.json), hook:session-env, hook:guard, hook:markdown-nudge, hook:formatter-gate, hook:evidence (opt-in)."
     ]
   }),
   inbox: formatDetailedHelp({

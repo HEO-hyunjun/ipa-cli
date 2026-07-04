@@ -1542,6 +1542,168 @@ test("harness install/update preserve user-owned forks whose harness marker was 
   assert.equal(await readFile(guardHookPath, "utf8"), forkedHook, "user-owned hook script must survive uninstall");
 });
 
+test("claude harness install registers a Bash(ipa *) permission rule idempotently and preserves other settings", async () => {
+  const vault = await fixtureVault();
+  const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
+  const options = { homeDir: home, profile: "ipa-test" };
+  const settingsPath = join(home, ".claude", "settings.json");
+
+  // Pre-seed a user-owned settings.json with an unrelated permission and a
+  // pre-existing non-IPA hook that must both survive the install.
+  await mkdir(dirname(settingsPath), { recursive: true });
+  await writeFile(settingsPath, JSON.stringify({
+    permissions: { allow: ["Bash(git *)"], deny: ["Bash(rm *)"] },
+    hooks: {
+      PostToolUse: [{ matcher: "Edit|Write", hooks: [{ type: "command", command: "~/.claude/hooks/ruff-lint.sh" }] }]
+    },
+    someOtherKey: { keep: true }
+  }, null, 2) + "\n", "utf8");
+
+  await harnessInstall(vault, "claude", options);
+  let settings = JSON.parse(await readFile(settingsPath, "utf8"));
+  assert.ok(settings.permissions.allow.includes("Bash(ipa *)"), "install adds the ipa allow rule");
+  assert.ok(settings.permissions.allow.includes("Bash(git *)"), "pre-existing allow rules survive");
+  assert.deepEqual(settings.permissions.deny, ["Bash(rm *)"], "unrelated permission keys survive");
+  assert.deepEqual(settings.someOtherKey, { keep: true }, "unrelated top-level keys survive");
+  const ruffPresent = (settings.hooks.PostToolUse ?? [])
+    .some((group) => (group.hooks ?? []).some((hook) => hook.command === "~/.claude/hooks/ruff-lint.sh"));
+  assert.ok(ruffPresent, "pre-existing non-IPA hooks survive");
+
+  // Second install is idempotent: the rule is present exactly once.
+  await harnessInstall(vault, "claude", options);
+  settings = JSON.parse(await readFile(settingsPath, "utf8"));
+  assert.equal(settings.permissions.allow.filter((rule) => rule === "Bash(ipa *)").length, 1, "no duplicate rule on re-install");
+
+  // status/doctor see the rule; the permissions component reads present.
+  const status = await harnessStatus(vault, options);
+  assert.equal(status.global.claude.permission_rule, true);
+  assert.ok(status.global.claude.selected_components.includes("permissions"));
+  assert.equal(status.global.claude.components.permissions, true);
+  const doctor = await harnessDoctor(vault, options);
+  assert.ok(!(doctor.issues ?? []).some((issue) => issue.code === "harness.permission_rule_missing"));
+
+  // Uninstall removes only our rule and prunes nothing else.
+  await harnessUninstall(vault, "claude", options);
+  settings = JSON.parse(await readFile(settingsPath, "utf8"));
+  assert.ok(!settings.permissions.allow.includes("Bash(ipa *)"), "uninstall drops the ipa allow rule");
+  assert.ok(settings.permissions.allow.includes("Bash(git *)"), "uninstall keeps other allow rules");
+  assert.deepEqual(settings.permissions.deny, ["Bash(rm *)"], "uninstall keeps unrelated permission keys");
+  assert.deepEqual(settings.someOtherKey, { keep: true }, "uninstall keeps unrelated top-level keys");
+});
+
+test("claude harness install creates settings.json when missing and codex/opencode ignore the permissions component", async () => {
+  const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
+  const options = { homeDir: home, profile: "ipa-test" };
+
+  // No settings.json yet: install creates a minimal valid file with the rule.
+  const claudeVault = await fixtureVault();
+  await harnessInstall(claudeVault, "claude", options);
+  const settings = JSON.parse(await readFile(join(home, ".claude", "settings.json"), "utf8"));
+  assert.ok(settings.permissions.allow.includes("Bash(ipa *)"));
+
+  // permissions is a claude-only component: codex never selects it, so its
+  // hooks.json carries no permission block and status/doctor stay silent.
+  const codexVault = await fixtureVault();
+  await harnessInstall(codexVault, "codex", options);
+  const codexStatus = await harnessStatus(codexVault, options);
+  assert.ok(!codexStatus.global.codex.selected_components.includes("permissions"));
+  assert.equal(codexStatus.global.codex.components.permissions, false);
+  const codexDoctor = await harnessDoctor(codexVault, options);
+  assert.ok(!(codexDoctor.issues ?? []).some((issue) => issue.code === "harness.permission_rule_missing"));
+
+  await harnessUninstall(claudeVault, "claude", options);
+  await harnessUninstall(codexVault, "codex", options);
+});
+
+test("claude harness install never clobbers an unparseable settings.json", async () => {
+  const vault = await fixtureVault();
+  const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
+  const options = { homeDir: home, profile: "ipa-test" };
+  const settingsPath = join(home, ".claude", "settings.json");
+  await mkdir(dirname(settingsPath), { recursive: true });
+  const garbage = "{ not json at all";
+  await writeFile(settingsPath, garbage, "utf8");
+
+  const install = await harnessInstall(vault, "claude", options);
+
+  // File is left byte-for-byte untouched and reported as skipped.
+  assert.equal(await readFile(settingsPath, "utf8"), garbage, "unparseable settings file must not be clobbered");
+  assert.ok(install.skipped_user_owned.includes(settingsPath), "the skipped settings file is reported");
+  // Other, file-based components still install.
+  assert.ok(existsSync(join(home, ".claude", "skills", "ipa", "SKILL.md")), "file components install despite the skip");
+  assert.match(await readFile(join(vault, "CLAUDE.md"), "utf8"), /IPA CLI Harness/);
+
+  await harnessUninstall(vault, "claude", options);
+});
+
+test("claude harness update auto-joins the permissions default for legacy manifests and honors omitted_components", async () => {
+  const vault = await fixtureVault();
+  const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
+  const options = { homeDir: home, profile: "ipa-test" };
+  const settingsPath = join(home, ".claude", "settings.json");
+
+  // Legacy install: a target manifest that predates the permissions component.
+  await harnessInstall(vault, "claude", { ...options, components: { without: ["permissions"] } });
+  let settings = JSON.parse(await readFile(settingsPath, "utf8"));
+  assert.ok(!(settings.permissions?.allow ?? []).includes("Bash(ipa *)"), "explicitly-omitted install carries no rule");
+
+  // Simulate an older manifest that never knew about permissions (neither
+  // selected nor omitted): update auto-joins it as a new default component.
+  const manifestPath = join(vault, ".ipa", "harness", "claude", "manifest.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  manifest.components = manifest.components.filter((component) => component !== "permissions");
+  manifest.omitted_components = (manifest.omitted_components ?? []).filter((component) => component !== "permissions");
+  await writeFile(manifestPath, JSON.stringify(manifest, null, 2) + "\n", "utf8");
+
+  const update = await harnessUpdate(vault, "claude", options);
+  assert.ok(update.components.includes("permissions"), "permissions auto-joins on update");
+  assert.ok(update.components_added.includes("permissions"), "permissions reported as newly added");
+  settings = JSON.parse(await readFile(settingsPath, "utf8"));
+  assert.ok(settings.permissions.allow.includes("Bash(ipa *)"), "update registers the auto-joined rule");
+
+  await harnessUninstall(vault, "claude", options);
+
+  // Deliberate omission survives update: a manifest that records permissions
+  // under omitted_components keeps it out.
+  await harnessInstall(vault, "claude", { ...options, components: { without: ["permissions"] } });
+  const omitManifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  assert.ok(omitManifest.omitted_components.includes("permissions"), "omission is recorded in the manifest");
+  const omittedUpdate = await harnessUpdate(vault, "claude", options);
+  assert.ok(!omittedUpdate.components.includes("permissions"), "recorded omission keeps permissions out on update");
+  settings = JSON.parse(await readFile(settingsPath, "utf8"));
+  assert.ok(!(settings.permissions?.allow ?? []).includes("Bash(ipa *)"), "omitted permissions leaves no rule after update");
+
+  const doctor = await harnessDoctor(vault, options);
+  assert.ok(!(doctor.issues ?? []).some((issue) => issue.code === "harness.permission_rule_missing"), "doctor stays silent when permissions is omitted");
+
+  await harnessUninstall(vault, "claude", options);
+});
+
+test("claude harness doctor flags a missing permission rule when the component is selected", async () => {
+  const vault = await fixtureVault();
+  const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
+  const options = { homeDir: home, profile: "ipa-test" };
+  const settingsPath = join(home, ".claude", "settings.json");
+  await harnessInstall(vault, "claude", options);
+
+  // Clean install: doctor is silent about the permission rule.
+  let doctor = await harnessDoctor(vault, options);
+  assert.ok(!(doctor.issues ?? []).some((issue) => issue.code === "harness.permission_rule_missing"));
+
+  // A sync tool rewrites settings.json and drops our allow rule.
+  const settings = JSON.parse(await readFile(settingsPath, "utf8"));
+  settings.permissions.allow = (settings.permissions.allow ?? []).filter((rule) => rule !== "Bash(ipa *)");
+  await writeFile(settingsPath, JSON.stringify(settings, null, 2) + "\n", "utf8");
+
+  doctor = await harnessDoctor(vault, options);
+  const missing = (doctor.issues ?? []).filter((issue) => issue.code === "harness.permission_rule_missing");
+  assert.equal(missing.length, 1, JSON.stringify(doctor.issues));
+  assert.equal(missing[0].target, "claude");
+  assert.match(missing[0].message, /ipa harness update claude/);
+
+  await harnessUninstall(vault, "claude", options);
+});
+
 test("vault fragments are inlined into managed prompt surfaces and accepted by doctor", async () => {
   // Given: vault-owned fragments for a vault-local skill, the global skill,
   // and the vault prompt block.
