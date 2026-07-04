@@ -13,6 +13,7 @@ import {
   cacheInspect,
   cacheStatus,
   cliVersionInfo,
+  configInit,
   contractExportFixtures,
   contractList,
   contractValidate,
@@ -140,11 +141,22 @@ const COMMAND_HELP = {
     ]
   }),
   config: formatDetailedHelp({
-    usage: "ipa [OPTIONS] config show",
-    summary: "Show the resolved vault/profile context for the current command.",
+    usage: "ipa [OPTIONS] config <init|show>",
+    summary: "Create the vault's .ipa/config.yaml, or show the resolved vault/profile context.",
+    commands: [
+      ["ipa config init", "Write .ipa/config.yaml with the default mapping template"],
+      ["ipa config show", "Show the resolved vault/profile context"]
+    ],
+    options: [
+      ["--force", "Overwrite an existing .ipa/config.yaml (init)"],
+      ["--inbox NAME", "Record an existing inbox folder name in the mapping (init)"],
+      ["--project NAME", "Record an existing project folder name in the mapping (init)"],
+      ["--archive NAME", "Record an existing archive folder name in the mapping (init)"]
+    ],
     examples: [
-      ["ipa config show", "Use project-local selector/default profile"],
-      ["ipa --profile work config show", "Show a named profile context"]
+      ["ipa config init", "Create the config with default folder/field names"],
+      ["ipa config init --inbox Inbox --project Projects", "Absorb an existing folder layout"],
+      ["ipa config show", "Use project-local selector/default profile"]
     ]
   }),
   convention: formatDetailedHelp({
@@ -687,6 +699,7 @@ function render(payload) {
   if (payload.thresholds && payload.target_scores) return renderTuneAnalyze(payload);
   if (Object.hasOwn(payload, "replayed")) return renderTuneReplay(payload);
   if (payload.events) return renderTuneLog(payload);
+  if (payload.operation === "config-init") return renderConfigInit(payload);
   if (payload.file && Object.hasOwn(payload, "config_updated") && Object.hasOwn(payload, "created")) return renderKeyValues("Tune testset", payload);
   if (payload.testsets) return renderTableReport("Tune testsets", ["Active", "File"], payload.testsets.map((item) => [payload.active === item ? "yes" : "", item]));
   if (Object.hasOwn(payload, "allowed")) return renderKeyValues("Harness guard", payload);
@@ -1275,6 +1288,19 @@ function renderSelfUpdate(payload) {
   return lines.join("\n");
 }
 
+function renderConfigInit(payload) {
+  const status = payload.overwritten ? "overwritten" : "created";
+  const rows = renderKeyValues("Config init", {
+    path: payload.path,
+    status,
+    inbox: payload.inbox,
+    project: payload.project,
+    archive: payload.archive
+  });
+  const hint = styleMuted(`Next: match folders/fields to your vault, then ${(payload.next_steps ?? []).join(" / ")}`);
+  return `${rows}\n\n${hint}`;
+}
+
 function renderKeyValues(title, payload) {
   return [styleTitle(title), "", formatRows(Object.entries(payload).map(([key, value]) => [key, String(value ?? "-")]))].join("\n");
 }
@@ -1654,6 +1680,20 @@ function buildProgram() {
     });
 
   const configCommand = setHelp(program.command("config"), "config");
+  configCommand
+    .command("init")
+    .option("--force", "Overwrite an existing .ipa/config.yaml")
+    .option("--inbox <name>", "Inbox folder name to record in the mapping")
+    .option("--project <name>", "Project folder name to record in the mapping")
+    .option("--archive <name>", "Archive folder name to record in the mapping")
+    .action(async (options) => {
+      await withVault(globalOptions(program), async (vault) => print(await configInit(vault, {
+        force: Boolean(options.force),
+        inbox: options.inbox,
+        project: options.project,
+        archive: options.archive
+      }), jsonOutput(program)));
+    });
   configCommand
     .command("show")
     .action(async () => {

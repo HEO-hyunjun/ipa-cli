@@ -287,6 +287,31 @@ test("tune testset init creates a default testset and config pointer", async () 
   assert.equal(log.events[0].query, "Alpha");
 });
 
+test("config init writes .ipa/config.yaml, refuses without --force, and lists in help", async () => {
+  const work = await mkdtemp(join(tmpdir(), "ipa-config-init-"));
+  const vault = join(work, "vault");
+  await mkdir(vault, { recursive: true });
+  const env = testEnv();
+
+  const created = JSON.parse(run(env, ["--vault", vault, "--json", "config", "init", "--inbox", "Inbox", "--project", "Projects"]));
+  assert.equal(created.created, true);
+  assert.equal(created.inbox, "Inbox");
+  assert.equal(created.project, "Projects");
+  const yaml = await readFile(join(vault, ".ipa", "config.yaml"), "utf8");
+  assert.match(yaml, /folders:\n {4}inbox: Inbox\n {4}project: Projects/);
+  assert.match(yaml, /note_type: type/);
+
+  const refused = runRaw(env, ["--vault", vault, "config", "init"]);
+  assert.notEqual(refused.status, 0);
+  assert.match(refused.stderr, /already exists/);
+
+  const forced = JSON.parse(run(env, ["--vault", vault, "--json", "config", "init", "--force"]));
+  assert.equal(forced.overwritten, true);
+
+  const help = run(env, ["config", "--help"]);
+  assert.match(help, /config init/);
+});
+
 test("legacy surface fixture is covered by JS fixtures", async () => {
   const { env } = await fixtureProfile("legacy-surface");
   const profile = ["--profile", "ipa-test"];

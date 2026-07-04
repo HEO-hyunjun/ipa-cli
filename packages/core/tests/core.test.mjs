@@ -12,6 +12,7 @@ import {
   cacheStatus,
   cascadeNote,
   cliVersionInfo,
+  configInit,
   conventionShow,
   digestNote,
   doctor,
@@ -911,6 +912,7 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   assert.match(skill, /ipa <command> --help/);
   assert.match(skill, /within ~3 ipa calls/);
   assert.match(skill, /ipa digest "Index Note"/);
+  assert.match(skill, /ipa config init/);
   assert.match(skill, /Never edit the time fields \(`date_created`\/`date_modified`\) by hand/);
   assert.match(skill, /ipa convention/);
   assert.doesNotMatch(skill, /current prompt context/);
@@ -980,7 +982,8 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   assert.match(ruleSkill, /Use this skill whenever the user mentions IPA rules/);
   assert.match(ruleSkill, /ipa plugin validate/);
   const configSkill = await readFile(join(vault, ".agents", "skills", "ipa-config", "SKILL.md"), "utf8");
-  assert.match(configSkill, /Use this skill whenever the user asks about ipa config show/);
+  assert.match(configSkill, /Use this skill whenever the user asks about ipa config init/);
+  assert.match(configSkill, /ipa config init/);
   assert.match(configSkill, /ipa profile current/);
   assert.match(configSkill, /\.ipa\/config\.yaml/);
   const tuneSkill = await readFile(join(vault, ".agents", "skills", "ipa-tune", "SKILL.md"), "utf8");
@@ -3018,8 +3021,45 @@ test("doctor --check runs a single check and rejects unknown names", async () =>
 
   const configOnly = await doctor(vault, { check: "config" });
   assert.deepEqual(configOnly.issues.map((issue) => issue.code), ["doctor.config.missing"]);
+  assert.match(configOnly.issues[0].message, /ipa config init/);
 
   await assert.rejects(doctor(vault, { check: "nope" }), /unknown doctor check: nope/);
+});
+
+test("config init writes the default mapping, honors folder overrides and --force", async () => {
+  const vault = await fixtureVault();
+  await rm(join(vault, ".ipa", "config.yaml"), { force: true });
+
+  const created = await configInit(vault);
+  assert.equal(created.created, true);
+  assert.equal(created.overwritten, false);
+  assert.deepEqual(created.next_steps, ["ipa doctor", "ipa convention"]);
+  const written = await readFile(join(vault, ".ipa", "config.yaml"), "utf8");
+  // Comment guides the human/agent to match folders to the vault, not vice versa.
+  assert.match(written, /폴더 이름을 볼트에 맞추세요/);
+
+  // The written config round-trips to the shipped defaults (single source of truth).
+  const { mapping } = await readVaultConfig(vault);
+  assert.equal(mapping.refs, "ref");
+  assert.equal(mapping.note_type, "type");
+  assert.equal(mapping.inbox_dir, "00 Inbox");
+  assert.equal(mapping.project_dir, "01 Project");
+  assert.equal(mapping.archive_dir, "02 Archive");
+  assert.equal(mapping.date_format, "YYYY/MM/DD (ddd) HH:mm:ss");
+  assert.deepEqual(mapping.exclude, []);
+
+  // Refuses to clobber an existing config without --force.
+  await assert.rejects(configInit(vault), /already exists.*--force/s);
+
+  // Folder overrides land in the mapping; --force overwrites.
+  const forced = await configInit(vault, { force: true, inbox: "Inbox", project: "Projects", archive: "Archive" });
+  assert.equal(forced.created, false);
+  assert.equal(forced.overwritten, true);
+  assert.equal(forced.inbox, "Inbox");
+  const remapped = await readVaultConfig(vault);
+  assert.equal(remapped.mapping.inbox_dir, "Inbox");
+  assert.equal(remapped.mapping.project_dir, "Projects");
+  assert.equal(remapped.mapping.archive_dir, "Archive");
 });
 
 test("plugin doctor attributes issues to the failing plugin path", async () => {

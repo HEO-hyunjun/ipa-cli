@@ -10,7 +10,7 @@ Surface:
 - `ipa convention check` — validate vault against active convention rules
 - `ipa formatter plan / apply` — autofix issues that rules know how to fix
 - `ipa tune / eval / list / use / analyze` — tpe-lite tuning on weights
-- `ipa config show / profile list / use / current` — config introspection
+- `ipa config init / show / profile list / use / current` — config bootstrap and introspection
 - `ipa search / view / traversal / validator / refactor` — legacy
   surface now backed by `runtime/*` modules built on the same service
   layer as `engine` / `convention` / `formatter` (see
@@ -240,6 +240,12 @@ profile: sample
 # or
 vault_path: /Users/me/sync/IPA
 ```
+
+Bootstrap the file with `ipa config init` (refuses to clobber an existing
+config unless `--force`). It writes the default `mapping` template below from
+core's own defaults; `--inbox/--project/--archive` record an existing folder
+layout at creation time. Match the folder/field names to the vault's real
+structure, not the other way around — then `ipa doctor` to verify.
 
 Vault-local portable config lives at `{vault}/.ipa/config.yaml`:
 

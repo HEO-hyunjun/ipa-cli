@@ -369,6 +369,62 @@ export async function readVaultConfig(vaultPath) {
   return { config, mapping: normalizeMapping(config), path };
 }
 
+function renderDefaultConfigYaml(folders) {
+  const m = DEFAULT_MAPPING;
+  return [
+    "# .ipa/config.yaml — IPA 볼트 설정 (mechanism in CLI, policy in vault)",
+    "# 폴더 이름을 볼트에 맞추세요 — 볼트를 폴더 이름에 맞추지 마세요.",
+    "# 아래 folders/fields 값은 볼트의 기존 구조를 그대로 적어 넣는 자리입니다.",
+    "",
+    "mapping:",
+    "  # frontmatter 필드 이름 — 볼트가 이미 쓰는 키로 바꾸세요.",
+    "  fields:",
+    `    note_type: ${yamlScalar(m.note_type)}`,
+    `    refs: ${yamlScalar(m.refs)}`,
+    `    tags: ${yamlScalar(m.tags)}`,
+    `    created_at: ${yamlScalar(m.created_at)}`,
+    `    updated_at: ${yamlScalar(m.updated_at)}`,
+    `    aliases: ${yamlScalar(m.aliases)}`,
+    "  # 최상위 폴더 이름 — 볼트의 실제 폴더명으로 바꾸세요 (예: Inbox, Projects, Archive).",
+    "  folders:",
+    `    inbox: ${yamlScalar(folders.inbox)}`,
+    `    project: ${yamlScalar(folders.project)}`,
+    `    archive: ${yamlScalar(folders.archive)}`,
+    "  # 날짜 표기 형식.",
+    `  date_format: ${yamlScalar(m.date_format)}`,
+    "files:",
+    "  # 검색/검증에서 제외할 glob 목록.",
+    "  exclude: []",
+    ""
+  ].join("\n");
+}
+
+export async function configInit(vaultPath, options = {}) {
+  const configPath = join(vaultPath, ".ipa", "config.yaml");
+  const rel = toPosix(relative(vaultPath, configPath));
+  const exists = existsSync(configPath);
+  if (exists && !options.force) {
+    throw new Error(`${rel} already exists. Pass --force to overwrite.`);
+  }
+  const folders = {
+    inbox: options.inbox || DEFAULT_MAPPING.inbox_dir,
+    project: options.project || DEFAULT_MAPPING.project_dir,
+    archive: options.archive || DEFAULT_MAPPING.archive_dir
+  };
+  await mkdir(dirname(configPath), { recursive: true });
+  await writeFile(configPath, renderDefaultConfigYaml(folders), "utf8");
+  return {
+    operation: "config-init",
+    path: rel,
+    created: !exists,
+    overwritten: exists,
+    inbox: folders.inbox,
+    project: folders.project,
+    archive: folders.archive,
+    next_steps: ["ipa doctor", "ipa convention"]
+  };
+}
+
 async function walkFiles(root, predicate, base = root) {
   if (!existsSync(root)) return [];
   const entries = await readdir(root, { withFileTypes: true });
@@ -3794,7 +3850,7 @@ export async function doctor(vaultPath, options = {}) {
   const notes = await loadNotes(vaultPath, mapping);
   const issues = [];
   if ((!check || check === "config") && !existsSync(join(vaultPath, ".ipa", "config.yaml"))) {
-    issues.push({ code: "doctor.config.missing", severity: "warn", message: ".ipa/config.yaml missing" });
+    issues.push({ code: "doctor.config.missing", severity: "warn", message: ".ipa/config.yaml missing — run `ipa config init` to create it" });
   }
   const cacheRoot = join(vaultPath, ".ipa", "cache");
   if ((!check || check === "cache") && existsSync(cacheRoot)) {
@@ -6495,6 +6551,7 @@ function ipaCommandSelection(prefix = "ipa", mapping = DEFAULT_MAPPING) {
 - Index/root summary: \`${prefix} digest "Index Note"\` (children + snippets + dates), then \`view --full\` on at most the 2-3 most relevant children — never open every child.
 - Broad prior context or user-specific background: \`${prefix} context "keyword" --size medium --format markdown\`; widen with \`${prefix} search "other angle"\` only when context missed something. Several search angles go in one call — \`${prefix} search "A" "B" "C"\` (vault loads once). Results already carry snippets and dates — judge relevance from them before opening notes.
 - Related notes: \`${prefix} link suggest "Note Title"\`. Graph shape: \`${prefix} traversal --up|--down|--siblings "Note Title"\`.
+- New/empty vault with no \`.ipa/config.yaml\`: \`${prefix} config init\` (absorb existing folders with \`--inbox/--project/--archive\`, then edit to match), verify with \`${prefix} doctor\`.
 - New note: \`${prefix} inbox add ...\`. Body edit: \`${prefix} note replace ...\`. Frontmatter edit: \`${prefix} note set "Note" --field ${mapping.refs} --add "Index Note" --apply\`.
 - During note work always scope \`validator\`/\`formatter plan\` with \`--note\`; without it they are vault-wide maintenance sweeps.
 - Unsure command or syntax: \`${prefix} help\` or \`${prefix} <command> --help\`.
@@ -6549,7 +6606,7 @@ Keep rules narrow and convention-focused. Do not use rule plugins for search ran
   },
   {
     name: "ipa-config",
-    description: "Configure IPA vault and profile settings in .ipa/config.yaml and the global IPA profile registry. Use this skill whenever the user asks about ipa config show, IPA_PROFILE, profile init/new/use/list/current, vault selection, folder/field mapping, files.exclude, plugin enablement, search channels, test.file, weights.file, or profile/config troubleshooting.",
+    description: "Configure IPA vault and profile settings in .ipa/config.yaml and the global IPA profile registry. Use this skill whenever the user asks about ipa config init, ipa config show, IPA_PROFILE, profile init/new/use/list/current, vault selection, bootstrapping a new/empty vault, folder/field mapping, files.exclude, plugin enablement, search channels, test.file, weights.file, or profile/config troubleshooting.",
     body: `# IPA Config Skill
 
 Use this skill when the user wants to inspect or change IPA profile selection, vault mappings, folder names, plugin policy, search channels, active tune results, or \`.ipa/config.yaml\`.
@@ -6557,12 +6614,13 @@ Use this skill when the user wants to inspect or change IPA profile selection, v
 ## Workflow
 
 1. Resolve the active context first with \`ipa config show\`.
-2. Inspect profile state with \`ipa profile current\` and \`ipa profile list\`.
-3. Create or update profiles with \`ipa profile init --vault <path>\`, \`ipa profile new <name> <path>\`, or \`ipa profile use <name>\`.
-4. Keep machine-global profile concerns in the profile registry and vault-specific policy in \`.ipa/config.yaml\`.
-5. For vault-local config, prefer minimal edits to mapping, folders, files.exclude, plugins, search channel toggles, test.file, and weights.file.
-6. After changing \`mapping\` fields or folder names, re-render the installed harness with \`ipa harness update <target>\` (for example \`ipa harness update claude\`): prompt blocks and skills print the mapped field/folder names, so they stay stale until re-rendered.
-7. Verify config-sensitive behavior with \`ipa config show\`, \`ipa list-rules\`, \`ipa list-channels\`, \`ipa validator\`, and a focused \`ipa search "keyword"\`.
+2. If \`.ipa/config.yaml\` is missing (new/empty vault), create it with \`ipa config init\` — absorb an existing folder layout via \`--inbox/--project/--archive\`, then edit \`mapping\` so folder/field names match the vault. Match the config to the vault, not the vault to the defaults.
+4. Inspect profile state with \`ipa profile current\` and \`ipa profile list\`.
+5. Create or update profiles with \`ipa profile init --vault <path>\`, \`ipa profile new <name> <path>\`, or \`ipa profile use <name>\`.
+6. Keep machine-global profile concerns in the profile registry and vault-specific policy in \`.ipa/config.yaml\`.
+7. For vault-local config, prefer minimal edits to mapping, folders, files.exclude, plugins, search channel toggles, test.file, and weights.file.
+8. After changing \`mapping\` fields or folder names, re-render the installed harness with \`ipa harness update <target>\` (for example \`ipa harness update claude\`): prompt blocks and skills print the mapped field/folder names, so they stay stale until re-rendered.
+9. Verify config-sensitive behavior with \`ipa config show\`, \`ipa list-rules\`, \`ipa list-channels\`, \`ipa validator\`, and a focused \`ipa search "keyword"\`.
 
 Do not hard-code one user's absolute vault path into vault-local files. Use project-local selectors, profiles, or documented setup commands instead.`
   },
