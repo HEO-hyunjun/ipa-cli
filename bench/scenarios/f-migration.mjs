@@ -42,6 +42,8 @@ export default [
       { user: "좋아, 마무리해줘.", expect: {
         md_changed_min: 1,
         file_contains: { path: ".ipa/config.yaml", regex: "inbox" },
+        // config init이 운영 규칙 프래그먼트를 함께 스캐폴딩했는가 (내용 아닌 존재만 확인)
+        file_added: "\\.ipa/harness/fragments/prompt\\.md",
       } },
     ],
     budget: { maxCostUsd: 2.5, maxIpaCalls: 24 }, goldenPath: 5 },
