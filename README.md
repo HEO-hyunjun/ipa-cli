@@ -483,6 +483,12 @@ uninstalls and reinstalls the target with the same component selection (an
 omitted `hook:evidence` stays omitted), so renamed or dropped hook scripts do
 not survive as orphans.
 
+To fork a managed file (for example, to localize a vault-local skill), remove
+the `IPA_HARNESS_MANAGED` marker from it. Marker-less files are user-owned:
+install, update, and uninstall leave them untouched (install reports them as
+`skipped_user_owned`), doctor stops flagging them as missing or outdated, and
+`ipa harness status` lists them under `user-owned`.
+
 For the selected target, install writes:
 
 - user-global IPA CLI skill: `~/.codex/skills/ipa/SKILL.md`,

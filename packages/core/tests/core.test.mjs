@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { chmod, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -1460,6 +1460,69 @@ test("harness install with --without hook:evidence omits evidence hook while pre
   assert.equal((await harnessDoctor(vault, options)).status, "ok");
 
   await harnessUninstall(vault, "codex", options);
+});
+
+test("harness install/update preserve user-owned forks whose harness marker was stripped", async () => {
+  // Given: a claude harness install, then the user forks one vault-local skill
+  // and one global hook script by stripping the IPA_HARNESS_MANAGED marker.
+  const vault = await fixtureVault();
+  const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
+  const options = { homeDir: home, profile: "ipa-test" };
+  await harnessInstall(vault, "claude", options);
+
+  const forkOf = (managed) =>
+    managed.split("\n").filter((line) => !line.includes("IPA_HARNESS_MANAGED")).join("\n")
+      + "\n<!-- vault-specific fork -->\n";
+  const localSkillPath = join(vault, ".claude", "skills", "ipa-rule", "SKILL.md");
+  const forkedSkill = forkOf(await readFile(localSkillPath, "utf8"));
+  await writeFile(localSkillPath, forkedSkill, "utf8");
+  const guardHookPath = join(home, ".claude", "hooks", "ipa-inbox-guard.mjs");
+  const forkedHook = forkOf(await readFile(guardHookPath, "utf8"));
+  await writeFile(guardHookPath, forkedHook, "utf8");
+
+  // When: harness update runs (uninstall + reinstall).
+  const update = await harnessUpdate(vault, "claude", options);
+
+  // Then: both forks survive byte-for-byte, are reported as skipped, and no
+  // .bak backup is dropped next to them.
+  assert.equal(await readFile(localSkillPath, "utf8"), forkedSkill, "user-owned vault-local skill must survive update");
+  assert.equal(await readFile(guardHookPath, "utf8"), forkedHook, "user-owned hook script must survive update");
+  assert.ok(update.skipped_user_owned.includes(".claude/skills/ipa-rule/SKILL.md"), "vault-local fork must be reported as skipped");
+  assert.ok(update.skipped_user_owned.some((path) => path.endsWith("ipa-inbox-guard.mjs")), "global fork must be reported as skipped");
+  const skillDir = await readdir(dirname(localSkillPath));
+  const hooksDir = await readdir(dirname(guardHookPath));
+  assert.ok(![...skillDir, ...hooksDir].some((name) => name.includes(".bak")), "user-owned files must not leave .bak backups");
+
+  // Then: doctor treats the forks as user-owned, not missing or outdated.
+  const doctor = await harnessDoctor(vault, options);
+  const codes = (doctor.issues ?? []).map((issue) => issue.code);
+  assert.ok(!codes.includes("harness.local_skill_missing"), "forked vault-local skill must not be flagged missing");
+  assert.ok(!codes.includes("harness.global_guard_hook_missing"), "forked hook must not be flagged missing");
+  assert.ok(!codes.includes("harness.component_outdated"), "forks must not be flagged outdated");
+
+  // Then: the forked hook still gets a registration check — deleting its
+  // hooks-config entry is a real problem even for user-owned scripts.
+  const settingsPath = join(home, ".claude", "settings.json");
+  const settings = JSON.parse(await readFile(settingsPath, "utf8"));
+  settings.hooks.PreToolUse = (settings.hooks.PreToolUse ?? []).filter((group) =>
+    !(group.hooks ?? []).some((hook) => hook.command.includes("ipa-inbox-guard.mjs")));
+  await writeFile(settingsPath, JSON.stringify(settings, null, 2), "utf8");
+  const unregistered = await harnessDoctor(vault, options);
+  assert.ok(
+    (unregistered.issues ?? []).some((issue) => issue.code === "harness.global_guard_hook_unregistered"),
+    "user-owned hook without a hooks-config entry must still be flagged as unregistered"
+  );
+
+  // Then: status lists the forked components as user-owned.
+  const status = await harnessStatus(vault, options);
+  assert.ok(status.global.claude.user_owned_components.includes("local-skills"));
+  assert.ok(status.global.claude.user_owned_components.includes("hook:guard"));
+
+  await harnessUninstall(vault, "claude", options);
+
+  // Then: uninstall also leaves user-owned forks in place.
+  assert.equal(await readFile(localSkillPath, "utf8"), forkedSkill, "user-owned vault-local skill must survive uninstall");
+  assert.equal(await readFile(guardHookPath, "utf8"), forkedHook, "user-owned hook script must survive uninstall");
 });
 
 test("harness install with --only hook:guard creates guard hook and required opencode-plugin dependency for opencode", async () => {

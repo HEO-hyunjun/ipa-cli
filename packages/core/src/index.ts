@@ -6252,7 +6252,7 @@ function removeManagedHookCommands(config) {
   }
 }
 
-async function writeManagedFile(path, content, files) {
+async function writeManagedFile(path, content, files, skipped = null) {
   await mkdir(dirname(path), { recursive: true });
   if (existsSync(path)) {
     const previous = await readFile(path, "utf8");
@@ -6261,8 +6261,11 @@ async function writeManagedFile(path, content, files) {
       return;
     }
     if (!previous.includes(HARNESS_MARKER)) {
-      const stamp = nowIso().replace(/[:.]/g, "-");
-      await writeFile(`${path}.bak-${stamp}`, previous, "utf8");
+      // A managed-target file without the marker is user-owned (either a
+      // pre-existing file or a deliberately forked copy with the marker
+      // stripped). Never overwrite it; report it as skipped instead.
+      if (skipped) skipped.push(path);
+      return;
     }
   }
   await writeFile(path, content, "utf8");
@@ -6277,10 +6280,12 @@ async function removeManagedFile(path, removed) {
   removed.push(path);
 }
 
-async function writeManagedVaultFile(vaultPath, relPath, content, files) {
+async function writeManagedVaultFile(vaultPath, relPath, content, files, skipped = null) {
   const written = [];
-  await writeManagedFile(join(vaultPath, relPath), content, written);
+  const skippedAbs = [];
+  await writeManagedFile(join(vaultPath, relPath), content, written, skippedAbs);
   if (written.length) files.push(relPath);
+  if (skipped && skippedAbs.length) skipped.push(relPath);
 }
 
 async function removeManagedVaultFile(vaultPath, relPath, removed) {
@@ -6482,10 +6487,11 @@ The harness installs focused helper skills under \`${skillRoot}/\`:
 
 async function installVaultLocalSkills(vaultPath, spec) {
   const files = [];
+  const skipped = [];
   for (const skill of VAULT_LOCAL_SKILLS) {
-    await writeManagedVaultFile(vaultPath, vaultLocalSkillRelPath(spec, skill.name), vaultLocalSkillContent(skill), files);
+    await writeManagedVaultFile(vaultPath, vaultLocalSkillRelPath(spec, skill.name), vaultLocalSkillContent(skill), files, skipped);
   }
-  return files;
+  return { files, skipped };
 }
 
 async function uninstallVaultLocalSkills(vaultPath, spec) {
@@ -7443,11 +7449,24 @@ function harnessOutdatedComponents(vaultPath, spec, mapping, selected, options =
   return [...outdated];
 }
 
+// Components whose managed-target file exists but no longer carries the
+// HARNESS_MARKER: the user forked it (or it predates the install). Blocks are
+// excluded — they live inside user-owned files by design.
+function harnessUserOwnedComponents(vaultPath, spec, mapping, selected, options = {}) {
+  const userOwned = new Set();
+  for (const artifact of harnessExpectedArtifacts(vaultPath, spec, mapping, selected, options)) {
+    if (artifact.kind !== "file") continue;
+    if (managedFileState(artifact.path) === "user") userOwned.add(artifact.component);
+  }
+  return [...userOwned];
+}
+
 async function installGlobalHarness(vaultPath, spec, mapping, options = {}) {
   const selected = options.components?.selected
     ? options.components.selected
     : defaultComponentsForTarget(spec.name);
   const files = [];
+  const skipped = [];
   const isOpencode = spec.name === "opencode";
   const envPath = join(spec.hooksDir, "ipa-session-env.mjs");
   const guardPath = join(spec.hooksDir, "ipa-inbox-guard.mjs");
@@ -7462,7 +7481,7 @@ async function installGlobalHarness(vaultPath, spec, mapping, options = {}) {
       await upsertManagedBlock(artifact.path, artifact.content);
       files.push(artifact.path);
     } else {
-      await writeManagedFile(artifact.path, artifact.content, files);
+      await writeManagedFile(artifact.path, artifact.content, files, skipped);
     }
   }
 
@@ -7490,7 +7509,7 @@ async function installGlobalHarness(vaultPath, spec, mapping, options = {}) {
     await writeJsonObject(spec.hooksConfig, config);
     files.push(spec.hooksConfig);
   }
-  return files;
+  return { files, skipped };
 }
 
 async function uninstallGlobalHarness(spec) {
@@ -7518,11 +7537,19 @@ async function uninstallGlobalHarness(spec) {
 }
 
 function hasManagedFile(path) {
-  if (!existsSync(path)) return false;
+  return managedFileState(path) === "managed";
+}
+
+// "managed" = exists with the HARNESS_MARKER, "user" = exists without the
+// marker (a pre-existing or deliberately forked user-owned file), "missing" =
+// absent or unreadable. install/update never overwrite "user" files and
+// doctor does not flag them as missing.
+function managedFileState(path) {
+  if (!existsSync(path)) return "missing";
   try {
-    return existsSync(path) && readFileSyncText(path).includes(HARNESS_MARKER);
+    return readFileSyncText(path).includes(HARNESS_MARKER) ? "managed" : "user";
   } catch {
-    return false;
+    return "missing";
   }
 }
 
@@ -7619,6 +7646,7 @@ export async function harnessStatus(vaultPath, options = {}) {
       outdated_components: outdatedComponents,
       selected_components: selected,
       omitted_components: omitted,
+      user_owned_components: harnessUserOwnedComponents(vaultPath, spec, mapping, selected, options),
       cli_version: targetManifest?.cli_version ?? null,
       cli_commit: targetManifest?.cli_commit ?? null,
       skill: hasManagedFile(spec.skillFile),
@@ -7739,13 +7767,15 @@ export async function harnessInstall(vaultPath, target = "codex", options = {}) 
     await upsertManagedBlock(join(vaultPath, spec.localPrompt), localPromptContent(vaultPath, spec, mapping, options));
     files.push(spec.localPrompt);
   }
-  let localSkillFiles = [];
+  const skippedUserOwned = [];
   if (componentSelected(selected, "local-skills")) {
-    localSkillFiles = await installVaultLocalSkills(vaultPath, spec);
-    files.push(...localSkillFiles);
+    const localSkills = await installVaultLocalSkills(vaultPath, spec);
+    files.push(...localSkills.files);
+    skippedUserOwned.push(...localSkills.skipped);
   }
   const installOptions = { ...options, components: { ...options.components, selected } };
-  const globalFiles = await installGlobalHarness(vaultPath, spec, mapping, installOptions);
+  const { files: globalFiles, skipped: globalSkipped } = await installGlobalHarness(vaultPath, spec, mapping, installOptions);
+  skippedUserOwned.push(...globalSkipped);
   const index = await readHarnessIndex(vaultPath);
   index.targets = index.targets || {};
   index.targets[name] = {
@@ -7762,7 +7792,8 @@ export async function harnessInstall(vaultPath, target = "codex", options = {}) 
     installed: true,
     plugin_init: pluginInitResult,
     files,
-    global_files: globalFiles
+    global_files: globalFiles,
+    skipped_user_owned: skippedUserOwned
   };
 }
 
@@ -7803,6 +7834,7 @@ export async function harnessUpdate(vaultPath, target = "codex", options = {}) {
     global_removed: uninstall.global_removed,
     files: install.files,
     global_files: install.global_files,
+    skipped_user_owned: install.skipped_user_owned,
     plugin_init: install.plugin_init
   };
 }
@@ -7824,19 +7856,22 @@ export async function harnessDoctor(vaultPath, options = {}) {
     if (!existsSync(join(harnessRoot(vaultPath), target, "guard.mjs"))) {
       issues.push({ severity: "warn", code: "harness.guard_missing", target, message: "guard script is missing" });
     }
-    if (componentSelected(selected, "skill") && !hasManagedFile(spec.skillFile)) {
+    // Files in "user" state (marker stripped or pre-existing) are user-owned
+    // forks by contract: install/update leave them alone and doctor must not
+    // flag them as missing. status lists them under user_owned_components.
+    if (componentSelected(selected, "skill") && managedFileState(spec.skillFile) === "missing") {
       const skillPath = target === "opencode" ? "~/.config/opencode/skills/ipa/SKILL.md" : `~/.${target}/skills/ipa/SKILL.md`;
       issues.push({ severity: "warn", code: "harness.global_skill_missing", target, message: `missing managed IPA skill at ${skillPath}` });
     }
     for (const [component, script] of Object.entries(HARNESS_HOOK_COMPONENT_TO_SCRIPT)) {
       if (!componentSelected(selected, component)) continue;
       if (spec.name === "opencode" && spec.pluginFile) {
-        if (!opencodeHookComponentPresent(spec.pluginFile, component)) {
+        if (managedFileState(spec.pluginFile) !== "user" && !opencodeHookComponentPresent(spec.pluginFile, component)) {
           issues.push({ severity: "warn", code: `harness.global_${component.replace("hook:", "")}_hook_missing`, target, message: `missing managed OpenCode plugin behavior for ${component}` });
         }
       } else {
         const file = join(spec.hooksDir, script);
-        if (!hasManagedFile(file)) {
+        if (managedFileState(file) === "missing") {
           issues.push({ severity: "warn", code: `harness.global_${component.replace("hook:", "")}_hook_missing`, target, message: `missing managed hook ${script}` });
         }
       }
@@ -7856,9 +7891,10 @@ export async function harnessDoctor(vaultPath, options = {}) {
         for (const component of hookComponents) {
           const script = HARNESS_HOOK_COMPONENT_TO_SCRIPT[component];
           // A missing script is already reported above; only flag scripts that
-          // exist but lost their hooks-config entry (e.g. settings.json was
-          // replaced by a sync tool), because those silently never run.
-          if (!hasManagedFile(join(spec.hooksDir, script))) continue;
+          // exist (managed or user-forked) but lost their hooks-config entry
+          // (e.g. settings.json was replaced by a sync tool), because those
+          // silently never run.
+          if (managedFileState(join(spec.hooksDir, script)) === "missing") continue;
           const event = HARNESS_HOOK_COMPONENT_TO_EVENT[component];
           const registered = (hooksConfig.hooks?.[event] ?? []).some((group) =>
             (group.hooks ?? []).some((hook) => typeof hook.command === "string" && hook.command.includes(script))
@@ -7869,7 +7905,7 @@ export async function harnessDoctor(vaultPath, options = {}) {
         }
       }
     }
-    if (spec.name === "opencode" && spec.pluginFile && componentSelected(selected, "opencode-plugin") && !hasManagedFile(spec.pluginFile)) {
+    if (spec.name === "opencode" && spec.pluginFile && componentSelected(selected, "opencode-plugin") && managedFileState(spec.pluginFile) === "missing") {
       issues.push({ severity: "warn", code: "harness.global_opencode_plugin_missing", target, message: "missing managed OpenCode plugin at ~/.config/opencode/plugins/ipa-harness.js" });
     }
     if (componentSelected(selected, "prompt") && !hasManagedFile(spec.globalPromptFile)) {
@@ -7882,7 +7918,7 @@ export async function harnessDoctor(vaultPath, options = {}) {
     if (componentSelected(selected, "local-skills")) {
       for (const skill of VAULT_LOCAL_SKILLS) {
         const relPath = vaultLocalSkillRelPath(spec, skill.name);
-        if (!hasManagedFile(join(vaultPath, relPath))) {
+        if (managedFileState(join(vaultPath, relPath)) === "missing") {
           issues.push({ severity: "warn", code: "harness.local_skill_missing", target, message: `missing managed vault-local skill ${relPath}` });
         }
       }

@@ -683,7 +683,7 @@ function render(payload) {
   if (payload.profile !== undefined && payload.vault_path) return renderKeyValues("Active config", payload);
   if (payload.suggestions) return renderTableReport("Link suggestions", ["Suggestion", "Score"], payload.suggestions.map((item) => [item.target, item.score ?? "-"]));
   if (Object.hasOwn(payload, "up_to_date") || payload.reason === "not_a_git_checkout") return renderSelfUpdate(payload);
-  if (payload.target && Object.hasOwn(payload, "updated")) return renderKeyValues("Harness update", { status: payload.status, target: payload.target, updated: payload.updated, components: (payload.components ?? []).join(", "), omitted: (payload.omitted_components ?? []).join(", ") || "-" });
+  if (payload.target && Object.hasOwn(payload, "updated")) return renderKeyValues("Harness update", { status: payload.status, target: payload.target, updated: payload.updated, components: (payload.components ?? []).join(", "), omitted: (payload.omitted_components ?? []).join(", ") || "-", "user-owned kept": (payload.skipped_user_owned ?? []).join(", ") || "-" });
   if (Array.isArray(payload.changes)) return renderTableReport("Planned changes", ["Note", "Path", "Target"], payload.changes.map((item) => [item.note ?? "-", item.path ?? "-", item.target ?? item.to ?? "-"]));
   return JSON.stringify(payload, null, 2);
 }
@@ -1144,10 +1144,14 @@ function renderHarnessStatus(payload) {
   if (globalRows.length) lines.push("", table(["target", "skill", "guard", "prompt", "md nudge"], globalRows));
   const componentRows = Object.entries(payload.global ?? {}).flatMap(([target, state]) => {
     if (!state.selected_components) return [];
-    return [
+    const rows = [
       [`selected (${target})`, state.selected_components.length ? state.selected_components.join(", ") : "-"],
       [`omitted (${target})`, (state.omitted_components ?? []).length ? state.omitted_components.join(", ") : "-"]
     ];
+    if ((state.user_owned_components ?? []).length) {
+      rows.push([`user-owned (${target})`, state.user_owned_components.join(", ")]);
+    }
+    return rows;
   });
   if (componentRows.length) {
     lines.push("", formatRows(componentRows));
@@ -1204,6 +1208,9 @@ function renderHarnessChange(payload) {
     lines.push("", `Plugin scaffold: ${created} created, ${existing} existing, ${skipped} skipped`);
   }
   if (payload.global_files?.length) lines.push("", "Global files:", ...payload.global_files.map((file) => `  ${file}`));
+  if (payload.skipped_user_owned?.length) {
+    lines.push("", "Skipped user-owned files (marker removed; left untouched):", ...payload.skipped_user_owned.map((file) => `  ${file}`));
+  }
   if (payload.removed?.length) lines.push("", "Removed vault-local files:", ...payload.removed.map((file) => `  ${file}`));
   if (payload.global_removed?.length) lines.push("", "Removed global files:", ...payload.global_removed.map((file) => `  ${file}`));
   return lines.join("\n");
