@@ -6376,7 +6376,7 @@ Use this skill when the user wants to improve IPA search quality, review misses,
 ## Rules
 
 - Treat prompt and search logs as evidence, not labels. A prompt event tells you what the user asked; it does not prove the correct note.
-- In harness sessions, prompt context is recorded automatically; use plain \`ipa search "keyword"\` for evidence collection. \`IPA_SEARCH_LOG=1\` remains a compatibility fallback for non-harness searches.
+- In harness sessions, search calls are logged automatically; use plain \`ipa search "keyword"\` for evidence collection. Prompt-level events (\`prompt_event_id\`/\`source_prompt\`) exist only when the opt-in evidence hook is installed (\`ipa harness install <target> --with hook:evidence\`). \`IPA_SEARCH_LOG=1\` remains a compatibility fallback for non-harness searches.
 - Use \`prompt_event_id\`, \`turn_id\`, \`source_prompt\`, and \`generated_query\` to connect prompt/search pairs. If a prompt has no matching search event, treat it as "no query was run" rather than inferring one from nearby timestamps.
 - Do not run the optimizer by default. Present the command and wait unless the user explicitly asks you to execute it.
 - Do not activate a tune result just because it is newest. Activate only a reviewed artifact that improves the target cases without obvious regressions.

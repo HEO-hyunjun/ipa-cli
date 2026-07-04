@@ -983,7 +983,8 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   assert.match(tuneSkill, /Use this skill whenever the user wants better IPA search results/);
   assert.match(tuneSkill, /ipa tune log --limit 50/);
   assert.match(tuneSkill, /ipa tune testset list/);
-  assert.match(tuneSkill, /prompt context is recorded automatically/);
+  assert.match(tuneSkill, /search calls are logged automatically/);
+  assert.match(tuneSkill, /--with hook:evidence/);
   assert.doesNotMatch(tuneSkill, /IPA_SEARCH_LOG=1 ipa search "keyword"/);
   assert.match(tuneSkill, /Label Confirmation Protocol/);
   assert.match(tuneSkill, /Do not run the optimizer by default/);
