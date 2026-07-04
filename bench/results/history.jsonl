@@ -70,3 +70,9 @@
 {"ts":"2026-07-04T14-54-33-680Z","sessions":3,"passed":3,"totalCostUsd":0.03,"args":["--dry-run","--max-workers","2","--scenario","a91-pool","--scenario","a92-pool","--scenario","a93-pool"]}
 {"ts":"2026-07-04T14-54-56-801Z","sessions":1,"passed":1,"totalCostUsd":1.747,"args":["--scenario","e17-search-personalization","--model","opus","--update-baseline"]}
 {"ts":"2026-07-04T15-00-11-989Z","sessions":2,"passed":2,"totalCostUsd":2.907,"args":["--scenario","c11-frontmatter-only","--scenario","f21-fresh-onboarding","--model","opus","--update-baseline","--max-workers","5"]}
+{"ts":"2026-07-04T16-35-51-113Z","sessions":1,"passed":1,"totalCostUsd":0.01,"args":["--dry-run","--scenario","a9-dryrun-probe"]}
+{"ts":"2026-07-04T16-35-51-330Z","sessions":3,"passed":3,"totalCostUsd":0.03,"args":["--dry-run","--max-workers","2","--scenario","a91-pool","--scenario","a92-pool","--scenario","a93-pool"]}
+{"ts":"2026-07-04T16-37-16-511Z","sessions":1,"passed":1,"totalCostUsd":0.38,"args":["--scenario","c9-inbox-capture","--model","sonnet","--max-workers","1"]}
+{"ts":"2026-07-04T16-38-44-575Z","sessions":1,"passed":1,"totalCostUsd":0.296,"args":["--scenario","c9-inbox-capture","--model","sonnet","--max-workers","1"]}
+{"ts":"2026-07-04T16-39-56-314Z","sessions":1,"passed":1,"totalCostUsd":0.376,"args":["--scenario","c9-inbox-capture","--model","opus","--max-workers","1"]}
+{"ts":"2026-07-04T16-40-52-947Z","sessions":2,"passed":2,"totalCostUsd":0.77,"args":["--scenario","c9-inbox-capture","--update-baseline","--max-workers","5"]}
