@@ -2,11 +2,13 @@
   "id": "ipa-obsidian",
   "entry": "packages/obsidian/src/main.ts",
   "outDir": "packages/obsidian/dist",
-  "external": ["obsidian", "electron"],
+  "external": [
+    "obsidian",
+    "electron"
+  ],
   "assets": [
     "packages/obsidian/manifest.json",
     "packages/obsidian/styles.css",
     "packages/obsidian/versions.json"
-  ],
-  "devVaultPluginDir": "/Users/mac/Documents/workspace/sync/IPA/.obsidian/plugins/ipa-obsidian"
+  ]
 }

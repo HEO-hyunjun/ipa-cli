@@ -29,6 +29,7 @@ import {
   harnessStatus,
   harnessUninstall,
   harnessSessionGate,
+  obsidianPluginSync,
   harnessUpdate,
   inboxAdd,
   inboxTriage,
@@ -113,6 +114,7 @@ const COMMAND_GROUPS = [
       ["contract", "Validate runtime contract fixtures"],
       ["harness", "Install, uninstall, update, and inspect AI harness hooks"],
       ["update", "Update the ipa CLI from its git checkout"],
+      ["obsidian", "Install or sync the Obsidian plugin into the active vault"],
       ["list-channels / list-rules / list-refactors", "Inspect builtin registries"]
     ]
   }
@@ -429,11 +431,23 @@ const COMMAND_HELP = {
     ]
   }),
   tune: formatTuneHelp(),
+  obsidian: formatDetailedHelp({
+    usage: "ipa [OPTIONS] obsidian install|sync",
+    summary: "Deploy the built Obsidian plugin bundle into the active vault's .obsidian/plugins/ipa-obsidian/.",
+    commands: [
+      ["ipa obsidian install", "Create the plugin folder in the active vault and copy the built bundle (enable it in Obsidian afterwards)"],
+      ["ipa obsidian sync", "Refresh an existing install with the current build; does nothing if the vault has no install"]
+    ],
+    notes: [
+      "Copies release assets only (main.js, manifest.json, styles.css, versions.json); data.json settings are never touched.",
+      "ipa update --apply rebuilds the bundle and runs the sync automatically when the active vault carries an install."
+    ]
+  }),
   update: formatDetailedHelp({
     usage: "ipa [OPTIONS] update [--apply]",
     summary: "Update the ipa CLI from its git checkout: show pending upstream commits, then fast-forward pull and rebuild.",
     options: [
-      ["--apply", "Run git pull --ff-only, pnpm install, and pnpm run build in the repo"]
+      ["--apply", "Run git pull --ff-only, pnpm install, and pnpm run build in the repo; also syncs the vault-installed Obsidian plugin"]
     ],
     examples: [
       ["ipa update", "Show how far behind upstream the checkout is and the commands to run"],
@@ -1772,8 +1786,38 @@ function buildProgram() {
     .option("--apply", "Fast-forward pull, install dependencies, and rebuild")
     .action(async (options) => {
       const result = await selfUpdate({ apply: Boolean(options.apply), stream: !jsonOutput(program) });
+      if (options.apply && result.status === "ok") {
+        // Keep an installed vault-local Obsidian plugin in step with the CLI:
+        // sync the freshly built bundle when the active vault carries one.
+        try {
+          const resolved = await resolveSettings(globalOptions(program));
+          result.obsidian_sync = await obsidianPluginSync(resolved.vaultPath);
+        } catch {
+          result.obsidian_sync = { status: "ok", synced: false, reason: "no_vault_resolved" };
+        }
+      }
       print(result, jsonOutput(program));
       if (result.status === "error") process.exitCode = 1;
+    });
+
+  const obsidianCommand = setHelp(program.command("obsidian"), "obsidian");
+  obsidianCommand
+    .command("install")
+    .action(async () => {
+      await withVault(globalOptions(program), async (vault) => {
+        const result = await obsidianPluginSync(vault, { install: true });
+        print(result, jsonOutput(program));
+        if (result.status === "error") process.exitCode = 1;
+      });
+    });
+  obsidianCommand
+    .command("sync")
+    .action(async () => {
+      await withVault(globalOptions(program), async (vault) => {
+        const result = await obsidianPluginSync(vault);
+        print(result, jsonOutput(program));
+        if (result.status === "error") process.exitCode = 1;
+      });
     });
 
   const harnessCommand = setHelp(program.command("harness"), "harness");

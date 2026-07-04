@@ -13,6 +13,11 @@ const spec = JSON.parse(
 );
 
 const outDir = join(root, spec.outDir);
+// --copy-dev deploys into a vault's plugin folder. The vault comes from the
+// IPA_VAULT_PATH env (or a devVaultPluginDir override in build-spec.json) so
+// no personal path is committed to the repo.
+const devVaultPluginDir = spec.devVaultPluginDir
+  ?? (process.env.IPA_VAULT_PATH ? join(process.env.IPA_VAULT_PATH, ".obsidian", "plugins", "ipa-obsidian") : null);
 const releaseAssets = ["main.js", "manifest.json", "styles.css", "versions.json"];
 
 async function copyAssets() {
@@ -20,12 +25,12 @@ async function copyAssets() {
   for (const asset of spec.assets) {
     await cp(join(root, asset), join(outDir, basename(asset)));
   }
-  if (copyDev && spec.devVaultPluginDir) {
-    await mkdir(spec.devVaultPluginDir, { recursive: true });
+  if (copyDev && devVaultPluginDir) {
+    await mkdir(devVaultPluginDir, { recursive: true });
     for (const file of releaseAssets) {
       const source = join(outDir, file);
       if (existsSync(source)) {
-        await cp(source, join(spec.devVaultPluginDir, file));
+        await cp(source, join(devVaultPluginDir, file));
       }
     }
   }

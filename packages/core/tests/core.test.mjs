@@ -48,6 +48,7 @@ import {
   harnessInstall,
   harnessStatus,
   harnessSessionGate,
+  obsidianPluginSync,
   harnessUninstall,
   harnessUpdate,
   validatePlugin,
@@ -2566,6 +2567,42 @@ test("session gate combines formatter pending with vault-owned gate plugins", as
   const withBroken = await harnessSessionGate(vault, { session: "sess-3" });
   assert.equal(withBroken.block, false);
   assert.ok(withBroken.errors.some((item) => item.source === "broken"));
+});
+
+test("obsidian plugin sync deploys the built bundle into the vault plugin folder", async () => {
+  const vault = await fixtureVault();
+  const repoRoot = await mkdtemp(join(tmpdir(), "ipa-obsidian-repo-"));
+  const distDir = join(repoRoot, "packages", "obsidian", "dist");
+  await mkdir(distDir, { recursive: true });
+
+  // Then: an unbuilt bundle is reported, not silently skipped.
+  const missing = await obsidianPluginSync(vault, { repoRoot });
+  assert.equal(missing.status, "error");
+  assert.equal(missing.reason, "dist_missing");
+
+  for (const file of ["main.js", "manifest.json", "styles.css", "versions.json"]) {
+    await writeFile(join(distDir, file), `content of ${file}\n`, "utf8");
+  }
+
+  // Then: without { install }, a vault that never installed the plugin is left alone.
+  const untouched = await obsidianPluginSync(vault, { repoRoot });
+  assert.equal(untouched.synced, false);
+  assert.equal(untouched.reason, "not_installed");
+  assert.equal(existsSync(join(vault, ".obsidian", "plugins", "ipa-obsidian")), false);
+
+  // When: install creates the folder and copies the release assets.
+  const installed = await obsidianPluginSync(vault, { repoRoot, install: true });
+  assert.equal(installed.synced, true);
+  const target = join(vault, ".obsidian", "plugins", "ipa-obsidian");
+  assert.match(await readFile(join(target, "main.js"), "utf8"), /content of main\.js/);
+
+  // Then: sync refreshes assets but never touches user settings (data.json).
+  await writeFile(join(target, "data.json"), '{"user":"settings"}\n', "utf8");
+  await writeFile(join(distDir, "main.js"), "updated bundle\n", "utf8");
+  const synced = await obsidianPluginSync(vault, { repoRoot });
+  assert.equal(synced.synced, true);
+  assert.match(await readFile(join(target, "main.js"), "utf8"), /updated bundle/);
+  assert.match(await readFile(join(target, "data.json"), "utf8"), /user/);
 });
 
 test("harness update auto-joins new default components and honors --with/--without", async () => {

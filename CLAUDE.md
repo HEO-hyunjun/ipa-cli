@@ -41,7 +41,9 @@ split is the core design rule of the codebase.
   `formatVault(..., { patchesOnly, loadedNotes, ruleApply })`, plugin
   list/doctor. When changing core signatures or return shapes, grep
   `packages/obsidian/src/core/ipaClient.ts` and run `npm run build` (the
-  test script only builds the core bundle, not the Obsidian one).
+  test script only builds the core bundle, not the Obsidian one). Deployment
+  into a vault goes through `ipa obsidian install|sync`; `ipa update --apply`
+  rebuilds and syncs an installed vault plugin automatically.
 
 ## Repo layout
 
