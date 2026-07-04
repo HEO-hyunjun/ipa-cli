@@ -989,6 +989,11 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   assert.match(reviewSkill, /ipa review all --suggest-refactor/);
   assert.match(reviewSkill, /ipa refactor ref-replace/);
   assert.match(reviewSkill, /Apply any fix without user approval/);
+  const consultSkill = await readFile(join(vault, ".agents", "skills", "ipa-consult", "SKILL.md"), "utf8");
+  assert.match(consultSkill, /name: ipa-consult/);
+  assert.match(consultSkill, /ipa convention/);
+  assert.match(consultSkill, /Friction Counseling/);
+  assert.match(consultSkill, /Apply fixes, move notes, or edit config in this skill/);
   const hooks = await readFile(join(home, ".codex", "hooks.json"), "utf8");
   assert.match(hooks, /ipa-session-env\.mjs/);
   assert.match(hooks, /SessionStart/);
@@ -1627,6 +1632,11 @@ test("harness prompt surfaces render field and folder names from the config mapp
   // Then: the config skill tells agents to re-render the harness after mapping edits.
   const configSkill = await readFile(join(vault, ".claude", "skills", "ipa-config", "SKILL.md"), "utf8");
   assert.match(configSkill, /ipa harness update <target>/);
+
+  // Then: the consult skill teaches concepts with the mapped field names.
+  const consultSkill = await readFile(join(vault, ".claude", "skills", "ipa-consult", "SKILL.md"), "utf8");
+  assert.match(consultSkill, /`link` is vertical/);
+  assert.match(consultSkill, /`keywords` is horizontal/);
 
   // Then: the vault-local block carries the mapped folder names.
   const localPrompt = await readFile(join(vault, "CLAUDE.md"), "utf8");

@@ -600,8 +600,12 @@ The helper skills split common IPA operations into focused workflows:
 `.ipa/config.yaml` and profile registry work, `ipa-tune` for search-log
 sampling, labelled testsets, tune result analysis, and activating selected
 results, `ipa-triage` for the inbox → refs/tags → wikilinks → archive
-lifecycle (with a user-approval gate before any move), and `ipa-review` for
-vault-wide or subtree structural health checks with approved fixes. Vault-
+lifecycle (with a user-approval gate before any move), `ipa-review` for
+vault-wide or subtree structural health checks with approved fixes, and
+`ipa-consult` for IPA concept Q&A and friction counseling — it explains design
+intent from `ipa convention` and routes complaints ("search misses", "inbox
+piles up", "I keep violating X") to the skill or mechanism that fixes the
+cause. Vault-
 specific policy for these workflows (naming conventions, thresholds, SoT
 rules) belongs in `.ipa/harness/fragments/ipa-triage.md` /
 `ipa-review.md`, not in forked skill copies.

@@ -6514,6 +6514,63 @@ ipa refactor wikilink-replace "Old" "New" --apply
 - Edit a single note's body content (that is enrichment work, not review).
 - Apply any fix without user approval.
 - Create index/root notes without user approval.`
+  },
+  {
+    name: "ipa-consult",
+    description: "Consult on the IPA method and this vault's operation: explain IPA concepts and design intent, listen to friction (\"this is inconvenient\", \"the vault feels messy\"), diagnose from vault evidence, and route the fix to the right IPA capability. Use this skill whenever the user asks what IPA/index/root/refs/tags mean, why the vault is organized this way, how to organize something, or complains about vault workflow friction.",
+    body: (mapping) => `# IPA Consult Skill
+
+Act as an IPA method consultant: explain concepts with their design intent, and turn workflow friction into a diagnosis plus a concrete lever. This skill advises and routes — it does not apply changes itself; execution belongs to the skill or command it points at.
+
+Difference from ipa-review: review mechanically detects and fixes convention violations; consult handles "why does this hurt and which mechanism fixes it for good".
+
+## Read First
+
+Ground every answer in the vault, not memory:
+
+\`\`\`bash
+ipa convention                 # concepts, field/folder mapping, this vault's operating rules
+ipa search "IPA"               # vault-local philosophy/decision notes, if any
+ipa digest                     # current shape: counts, largest indexes, orphans
+\`\`\`
+
+## Core Design Intent
+
+Explain the why, not just the definition:
+
+- Folders are lifecycle states, not categories: \`${mapping.inbox_dir}\` (captured), \`${mapping.project_dir}\` (in progress), \`${mapping.archive_dir}\` (done). Classification lives in links, so a note never fights over one folder.
+- Content and structure are separate: \`${mapping.note_type}: note\` holds content; index/root notes are pure navigation and hold none.
+- \`${mapping.refs}\` is vertical (where a note belongs — hierarchy); \`${mapping.tags}\` is horizontal (what perspective cuts across indexes). They are orthogonal, never interchangeable.
+- Only the project folder is actively managed; the archive may grow without cleanup cost.
+- IPA deliberately covers only "record and retrieve". It does not force thinking (Zettelkasten) or drive execution (PARA) — requests beyond that scope are out of IPA's domain, and saying so is a valid answer.
+
+## Mode 1 — Concept Q&A ("what is an index", "refs vs tags")
+
+Answer from \`ipa convention\` using this vault's real field/folder names, explain the design intent behind the rule, and illustrate with an actual note found via \`ipa search\`.
+
+## Mode 2 — Friction Counseling ("X is inconvenient", "how do I organize Y")
+
+1. Clarify the friction first: when does it occur, in which workflow step, how often.
+2. Scan for evidence before advising: \`ipa validator\`, \`ipa review all\`, \`ipa traversal --down "Root"\`, \`ipa tune log --limit 20\` — pick what matches the complaint.
+3. Name the diagnosis, then route it to the mechanism that removes the friction permanently:
+
+| Friction | Lever |
+|---|---|
+| "I keep forgetting/violating convention X" | Add a rule plugin — ipa-rule skill |
+| "Search does not find the right note" | Label cases and tune — ipa-tune skill |
+| "Field or folder names do not fit how I think" | Remap in config — ipa-config skill (then \`ipa harness update\`) |
+| "The inbox keeps piling up" | Batch triage — ipa-triage skill |
+| "Tags/indexes/links feel messy" | Structural health pass — ipa-review skill |
+| "Agents keep doing X wrong in this vault" | Add an operating rule fragment under \`.ipa/harness/fragments/\` |
+| "The same manual fix repeats" | Rule plugin with a safe fix so the formatter applies it |
+
+4. Prefer the smallest lever that removes the cause; a one-off manual cleanup that will recur is not a resolution.
+
+## Must Not
+
+- Apply fixes, move notes, or edit config in this skill — hand off to the routed skill and say why.
+- Answer philosophy questions from general knowledge when \`ipa convention\` or a vault note contradicts it.
+- Recommend restructuring beyond what the observed friction justifies.`
   }
 ];
 
@@ -6799,7 +6856,7 @@ This vault has an IPA CLI harness installed for ${spec.name}. Vault work goes th
 - Vault-specific conventions are enforced by \`.ipa/plugins/rules/*.js\`, retrieval boosts by \`.ipa/plugins/search/*.js\`; verify with \`${prefix} plugin validate\` and \`${prefix} plugin dry-run\`.
 - In harness sessions plain \`${prefix} search "keyword"\` calls are logged as tune evidence automatically.
 
-Helper skills under \`${skillRoot}/\`: \`ipa-rule\` (vault convention rules), \`ipa-config\` (config/profile management), \`ipa-tune\` (search tuning workflow), \`ipa-triage\` (inbox → archive triage), \`ipa-review\` (vault structure health review).
+Helper skills under \`${skillRoot}/\`: \`ipa-rule\` (vault convention rules), \`ipa-config\` (config/profile management), \`ipa-tune\` (search tuning workflow), \`ipa-triage\` (inbox → archive triage), \`ipa-review\` (vault structure health review), \`ipa-consult\` (IPA concept Q&A and friction counseling).
 `;
 }
 
