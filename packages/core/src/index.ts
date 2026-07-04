@@ -7937,13 +7937,21 @@ export async function harnessDoctor(vaultPath, options = {}) {
   };
 }
 
+// Vault-declared guard allowances (.ipa/config.yaml `harness.guard.allow`):
+// path patterns where new markdown may be created outside the inbox, e.g. an
+// approved-workflow folder that writes directly into the archive.
+function guardAllowPatterns(config) {
+  return asList(config?.harness?.guard?.allow);
+}
+
 export async function harnessGuardStatus(vaultPath) {
-  const { mapping } = await readVaultConfig(vaultPath);
+  const { config, mapping } = await readVaultConfig(vaultPath);
   return {
     policy: "new_markdown_requires_inbox",
     inbox_dir: mapping.inbox_dir,
     project_dir: mapping.project_dir,
-    archive_dir: mapping.archive_dir
+    archive_dir: mapping.archive_dir,
+    allow: guardAllowPatterns(config)
   };
 }
 
@@ -7960,7 +7968,7 @@ function pathInFolder(relPath, folder) {
 
 export async function harnessGuardCheck(vaultPath, relPath, options = {}) {
   if (!relPath) throw new Error("harness guard check requires a vault-relative path");
-  const { mapping } = await readVaultConfig(vaultPath);
+  const { config, mapping } = await readVaultConfig(vaultPath);
   const normalized = toPosix(relPath).replace(/^\/+/, "");
   const absolute = resolve(vaultPath, normalized);
   if (!isInsideVault(vaultPath, absolute)) {
@@ -7982,6 +7990,10 @@ export async function harnessGuardCheck(vaultPath, relPath, options = {}) {
   }
   if (pathInFolder(normalized, mapping.inbox_dir)) {
     return { allowed: true, reason: "new markdown is under inbox", path: normalized, action, inbox_dir: mapping.inbox_dir };
+  }
+  const allowPatterns = guardAllowPatterns(config);
+  if (isExcludedPath(normalized, allowPatterns)) {
+    return { allowed: true, reason: "path matches a guard allow pattern from .ipa/config.yaml", path: normalized, action, inbox_dir: mapping.inbox_dir };
   }
   return {
     allowed: false,

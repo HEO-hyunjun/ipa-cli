@@ -42,6 +42,7 @@ import {
   traversal,
   harnessDoctor,
   harnessGuardCheck,
+  harnessGuardStatus,
   harnessInstall,
   harnessStatus,
   harnessUninstall,
@@ -2323,6 +2324,32 @@ test("harness guard check allows paths excluded from note indexing", async () =>
 
   const blocked = await harnessGuardCheck(vault, "01 Project/New Note.md", { action: "create" });
   assert.equal(blocked.allowed, false, JSON.stringify(blocked));
+});
+
+test("harness guard check honors harness.guard.allow patterns from config", async () => {
+  const vault = await fixtureVault();
+  const configPath = join(vault, ".ipa", "config.yaml");
+  const config = await readFile(configPath, "utf8");
+  await writeFile(
+    configPath,
+    `${config.trimEnd()}\nharness:\n  guard:\n    allow:\n      - "02 Archive/회의록/**"\n      - "01 Project"\n`,
+    "utf8"
+  );
+
+  // Allowed: new markdown under a declared allow pattern.
+  const meeting = await harnessGuardCheck(vault, "02 Archive/회의록/2026-07 주간회의.md", { action: "create" });
+  assert.equal(meeting.allowed, true, JSON.stringify(meeting));
+  assert.match(meeting.reason, /guard allow pattern/);
+  const project = await harnessGuardCheck(vault, "01 Project/plan.md", { action: "create" });
+  assert.equal(project.allowed, true, JSON.stringify(project));
+
+  // Still blocked: archive paths outside the allow patterns.
+  const blocked = await harnessGuardCheck(vault, "02 Archive/직행 노트.md", { action: "create" });
+  assert.equal(blocked.allowed, false, JSON.stringify(blocked));
+
+  // Guard status exposes the configured allow patterns.
+  const guard = await harnessGuardStatus(vault);
+  assert.deepEqual(guard.allow, ["02 Archive/회의록/**", "01 Project"]);
 });
 
 test("doctor --check runs a single check and rejects unknown names", async () => {

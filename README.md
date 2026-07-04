@@ -524,9 +524,24 @@ reach the model only through the managed `AGENTS.md` and skill text, not via a
 hook-injected context block.
 
 The built-in guard policy is intentionally small: new Markdown files must be
-created under the configured inbox folder, while existing Markdown edits and
-non-Markdown files are allowed. This supports editor/agent hooks without
-hard-coding one user's vault naming convention.
+created under the configured inbox folder, while existing Markdown edits,
+non-Markdown files, and paths excluded from note indexing are allowed. This
+supports editor/agent hooks without hard-coding one user's vault naming
+convention.
+
+Vaults can widen the policy declaratively instead of bypassing the guard. Add
+allow patterns to `.ipa/config.yaml`; new Markdown under a matching path is
+allowed even outside the inbox (for example, an approved workflow that files
+meeting notes directly into the archive):
+
+```yaml
+harness:
+  guard:
+    allow:
+      - "02 Archive/회의록/**"
+```
+
+`ipa harness guard status` lists the active allow patterns.
 
 Harness prompts use `ipa context "keyword" --size small|medium --format
 markdown` as the initial compact note pack. Treat that pack as a bootstrap:

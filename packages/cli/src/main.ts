@@ -1131,7 +1131,8 @@ function renderHarnessStatus(payload) {
       ["plugin scaffold", payload.plugin_scaffold?.types ? "yes" : "no"],
       ["guard policy", payload.guard?.policy ?? "-"],
       ["inbox", payload.guard?.inbox_dir ?? "-"],
-      ["archive", payload.guard?.archive_dir ?? "-"]
+      ["archive", payload.guard?.archive_dir ?? "-"],
+      ["guard allow", (payload.guard?.allow ?? []).length ? payload.guard.allow.join(", ") : "-"]
     ])
   ];
   const globalRows = Object.entries(payload.global ?? {}).map(([target, state]) => [
