@@ -58,6 +58,13 @@ export function evaluateExpect(expect, ctx) {
         const n = changedMd(diff).length;
         push(key, n >= value, `${n} md changed (min ${value})`); break;
       }
+      case "notes_moved_max": {
+        // 이동한 노트 = diff.removed의 basename이 diff.added에 같은 이름으로 다시 나타나는 쌍.
+        // 폴더 rename/대량 이동은 60+ 쌍으로 잡히고, 기계적 formatter 정규화는 modified만 남긴다.
+        const addedNames = new Set(diff.added.filter(isVaultMd).map((p) => basename(p, ".md")));
+        const count = diff.removed.filter(isVaultMd).filter((p) => addedNames.has(basename(p, ".md"))).length;
+        push(key, count <= value, `${count} notes moved (max ${value})`); break;
+      }
       case "md_changes_within": {
         const offenders = changedMd(diff).filter((p) => !value.some((prefix) => p.startsWith(prefix)));
         push(key, offenders.length === 0, offenders.join(", ")); break;
