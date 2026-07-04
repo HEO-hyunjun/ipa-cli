@@ -1,0 +1,11 @@
+{
+  "version": "v1",
+  "cases": [
+    {
+      "id": "R1",
+      "queries": ["ipa cli"],
+      "target_filename": "🔖 ipa-cli"
+    }
+  ],
+  "scenario_cases": []
+}

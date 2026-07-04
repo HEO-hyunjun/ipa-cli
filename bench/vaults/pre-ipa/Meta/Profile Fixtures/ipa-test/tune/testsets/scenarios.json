@@ -1,0 +1,18 @@
+[
+  {
+    "scenario": "active_vs_retired_index",
+    "query": "커피 레시피",
+    "expected_any": ["V60 15g 240g 기본 레시피", "🔖 브루잉 레시피", "🔖 커피"]
+  },
+  {
+    "scenario": "nested_root",
+    "query": "다익스트라 최단 경로",
+    "expected_any": ["🔖 최단 경로", "다익스트라에서 힙을 쓰는 이유"]
+  },
+  {
+    "scenario": "raw_inbox",
+    "query": "러닝화 발볼",
+    "expected_any": ["러닝화 후보 메모"]
+  }
+]
+

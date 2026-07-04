@@ -1,0 +1,23 @@
+[
+  {
+    "query": "카페인 수면",
+    "expected": ["수면과 카페인 상호작용"],
+    "reason": "cross-parent note under 수면 리듬 and 카페인 관리"
+  },
+  {
+    "query": "git 되돌리기 reset revert",
+    "expected": ["git reset revert checkout 차이"],
+    "reason": "Archive retired index search"
+  },
+  {
+    "query": "BFS DFS 그래프 탐색",
+    "expected": ["BFS와 DFS 선택 기준"],
+    "reason": "alias and parent title match"
+  },
+  {
+    "query": "PARA Area 없애기",
+    "expected": ["PARA에서 Area를 없애도 되는가"],
+    "reason": "Inbox note with multiple parents"
+  }
+]
+

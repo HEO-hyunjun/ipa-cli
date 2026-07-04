@@ -1,0 +1,19 @@
+{
+  "source": ".ipa/tune/results/default.json",
+  "mtime_ms": 1783162428901,
+  "size": 354,
+  "params": {
+    "threshold": 0.3,
+    "cap": 10,
+    "weights": {
+      "body_match": 0.363,
+      "child_body_match": 0.169,
+      "filename_partial": 0.15,
+      "fuzzy": 0.268,
+      "keyword": 0.055,
+      "project": 0.033,
+      "related": 0.032,
+      "sequence_match": 0.078
+    }
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "threshold": 0.31,
+  "max_results": 8,
+  "weights": {
+    "filename_fuzzy": 0.24,
+    "body_match": 0.28,
+    "parent_alias": 0.18
+  },
+  "study": {
+    "n_trials": 100,
+    "best_loss": 4.2,
+    "saved_at": "2026-05-06T21:30:00"
+  }
+}
+

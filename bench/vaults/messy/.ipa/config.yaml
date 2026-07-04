@@ -1,0 +1,19 @@
+mapping:
+  fields:
+    note_type: type
+    refs: ref
+    tags: tags
+    created_at: date_created
+    updated_at: date_modified
+    aliases: aliases
+  folders:
+    inbox: "00 Inbox"
+    project: "01 Project"
+    archive: "02 Archive"
+  date_format: "YYYY/MM/DD (ddd) HH:mm:ss"
+files:
+  exclude:
+    - README.md
+    - AGENTS.md
+    - CLAUDE.md
+    - "90 Settings/**"

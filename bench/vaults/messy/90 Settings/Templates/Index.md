@@ -1,0 +1,28 @@
+---
+date_created: {{date}} {{time}}
+date_modified: {{date}} {{time}}
+type: index
+ref: ["[[🏷️ Parent Root]]"]
+tags: []
+aliases: []
+stage: active
+pattern: domain
+---
+
+> [!abstract]
+> index context.
+
+## 핵심
+
+## 실험과 사례
+
+## 관련 자원
+
+## Backlinks
+
+```dataview
+LIST
+WHERE contains(parents, this.file.link)
+SORT file.name ASC
+```
+

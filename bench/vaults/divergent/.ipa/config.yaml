@@ -1,0 +1,33 @@
+mapping:
+  fields:
+    note_type: kind
+    refs: parents
+    tags: tags
+    created_at: created
+    updated_at: updated
+    aliases: aliases
+  folders:
+    inbox: "00 Inbox"
+    project: "01 Project"
+    archive: "02 Archive"
+files:
+  exclude:
+    - AGENTS.md
+    - 90 Settings/Profile Fixtures/**
+    - 99 Fixtures/**
+test:
+  file: .ipa/tune/testsets/testset.json
+weights:
+  file: .ipa/tune/results/default.json
+convention:
+  enabled: true
+  builtin: true
+  plugins:
+    lint: true
+    formatter: true
+formatter:
+  enabled: true
+  builtin: true
+  plugins:
+    lint: true
+    formatter: true

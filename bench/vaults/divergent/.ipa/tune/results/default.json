@@ -1,0 +1,18 @@
+{
+  "max_results": 10,
+  "study": {
+    "source": "manual-bootstrap",
+    "saved_at": "2026-05-08T00:00:00"
+  },
+  "threshold": 0.3,
+  "weights": {
+    "body_match": 0.363,
+    "child_body_match": 0.169,
+    "filename_partial": 0.15,
+    "fuzzy": 0.268,
+    "keyword": 0.055,
+    "project": 0.033,
+    "related": 0.032,
+    "sequence_match": 0.078
+  }
+}
