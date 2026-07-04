@@ -128,8 +128,9 @@ ipa profile new work /Users/mac/Documents/workspace/sync/IPA --default
 
 ipa profile current
 
-# Search.
+# Search. Several quoted queries run in one call against one loaded vault.
 ipa engine search "ipa cli" --explain --max 5
+ipa search "ipa cli" "하네스" "벤치마크"
 
 # List the active search channels (builtin/profile + vault-local plugins).
 ipa engine channels
@@ -405,6 +406,18 @@ export async function search(query, notes) {
 Search plugins return scored note hits. Lint plugins return issue objects.
 Formatter plugins return patch-like objects consumed by `ipa formatter plan`
 and `ipa formatter apply`.
+
+A search plugin module may export any of three surfaces (see the generated
+`.ipa/plugins/types/ipa-plugin.d.ts` for the full contract): a legacy
+`search(query, notes, ctx)` whose scores are added after channel weighting; a
+`channel = { name, defaultWeight, phase?, search(ctx) }` descriptor whose
+scores are max-merged into a weighted, tunable channel (`phase` may target the
+builtin `related`/`project` passes); and `postRank(hits, ctx)` which can
+re-order or filter the weighted ranking before the result cap. The `ctx`
+passed to all three carries `config` (vault config), `lookup` (O(1) note
+resolution), and `prepared` (the same per-note precomputation — lowercased
+body, token sets, keyword text — that builtin channels score against), so
+plugins do not re-normalize note bodies per query.
 
 ## Tune workflow
 
