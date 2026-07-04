@@ -26,6 +26,22 @@ function validatorErrors(ipaBin, sandboxDir, title) {
   }
 }
 
+function formatterPatchCount(ipaBin, sandboxDir, title) {
+  try {
+    const out = execFileSync(process.execPath,
+      [ipaBin, "--vault", sandboxDir, "formatter", "plan", "--note", title, "--json"],
+      { encoding: "utf8", cwd: sandboxDir, stdio: ["ignore", "pipe", "pipe"] });
+    const payload = JSON.parse(out);
+    return { patches: payload.summary?.patches ?? payload.patches?.length ?? 0, skipped: false };
+  } catch (e) {
+    // validatorErrors와 동일: 색인 제외 파일은 formatter plan이 "note not found"로 실패한다 —
+    // 에러가 아니라 skip으로 취급한다.
+    const out = `${e.stderr ?? ""}${e.stdout ?? ""}${e}`;
+    if (/note not found/i.test(out)) return { patches: 0, skipped: true };
+    return { patches: 0, skipped: false, error: String(e).slice(0, 300) };
+  }
+}
+
 export function evaluateExpect(expect, ctx) {
   const { sandboxDir, diff, parsed, ipaBin } = ctx;
   const results = [];
@@ -86,16 +102,23 @@ export function evaluateExpect(expect, ctx) {
         push(key, ok, `${value.path} ~ /${value.regex}/`); break;
       }
       case "formatter_pending_empty": {
-        const p = join(sandboxDir, ".ipa", "harness", "formatter-pending.json");
-        let ok = true, detail = "absent";
-        if (existsSync(p)) {
-          try {
-            const data = JSON.parse(readFileSync(p, "utf8"));
-            const list = Array.isArray(data) ? data : data.notes ?? data.pending ?? [];
-            ok = list.length === 0; detail = `${list.length} pending`;
-          } catch { ok = false; detail = "unparseable"; }
+        // 실제 formatter 상태를 측정한다 — write-nudge 원장(formatter-pending.json)이 아니라.
+        // 원장은 Write/Edit 툴로 노트 루트 md를 편집할 때만 쓰여서, CLI 골든패스로 작업하면
+        // 비어 있어 무조건 통과했다. 변경된 노트마다 `formatter plan --json`을 돌려 미적용
+        // 패치가 0인지 확인한다.
+        const titles = [...diff.added, ...diff.modified].filter(isVaultMd)
+          .map((p) => basename(p, ".md"))
+          .filter((t) => !["README", "🏠 Home"].includes(t));
+        const offenders = [];
+        const skipped = [];
+        for (const t of titles) {
+          const r = formatterPatchCount(ipaBin, sandboxDir, t);
+          if (r.skipped) skipped.push(t);
+          else if (r.error) offenders.push(`${t}: ${r.error}`);
+          else if (r.patches > 0) offenders.push(`${r.patches} patches pending in ${t}`);
         }
-        push(key, ok, detail); break;
+        const clean = `clean (${titles.length - skipped.length} notes${skipped.length ? `, ${skipped.length} skipped: not indexed` : ""})`;
+        push(key, offenders.length === 0, offenders.slice(0, 5).join(" | ") || clean); break;
       }
       case "validator_clean_changed": {
         const titles = [...diff.added, ...diff.modified].filter(isVaultMd)

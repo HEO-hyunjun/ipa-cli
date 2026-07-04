@@ -2,6 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
@@ -71,14 +72,47 @@ test("notes_moved_max counts basename pairs across removed/added", () => {
   assert.ok(!allPass(evaluateExpect({ notes_moved_max: 1 }, baseCtx({ diff }))));
 });
 
-test("formatter_pending_empty and file_contains", () => {
+test("file_contains reads sandbox files", () => {
   const ctx = baseCtx();
-  assert.ok(allPass(evaluateExpect({ formatter_pending_empty: true }, ctx))); // 파일 부재 = 통과
-  mkdirSync(join(ctx.sandboxDir, ".ipa", "harness"), { recursive: true });
-  writeFileSync(join(ctx.sandboxDir, ".ipa", "harness", "formatter-pending.json"), '["Note"]');
-  assert.ok(!allPass(evaluateExpect({ formatter_pending_empty: true }, ctx)));
+  mkdirSync(join(ctx.sandboxDir, ".ipa"), { recursive: true });
   writeFileSync(join(ctx.sandboxDir, ".ipa", "config.yaml"), "mapping:\n  folders:\n    inbox: Inbox\n");
   assert.ok(allPass(evaluateExpect({ file_contains: { path: ".ipa/config.yaml", regex: "inbox" } }, ctx)));
+});
+
+test("formatter_pending_empty runs real formatter against mini-vault copy", () => {
+  const sb = createSandbox(MINI_VAULT, "judge");
+  // Alpha는 no_h1 상시 패치를 안고 있어, 본문만 바꾼 변경도 통과하도록 먼저 적용해 정리한다.
+  execFileSync(process.execPath, [IPA_BIN, "--vault", sb, "formatter", "apply", "--note", "Alpha"],
+    { cwd: sb, stdio: "ignore" });
+  const before = snapshot(sb);
+  const alpha = join(sb, "00 Inbox", "Alpha.md");
+  writeFileSync(alpha, readFileSync(alpha, "utf8") + "\n추가 줄\n");
+  const cleanDiff = diffSnapshots(before, snapshot(sb));
+  const passRs = evaluateExpect({ formatter_pending_empty: true }, baseCtx({ sandboxDir: sb, diff: cleanDiff }));
+  assert.equal(passRs.length, 1);
+  assert.ok(passRs[0].pass, passRs[0].detail); // 적용 후 본문만 바뀐 노트는 미적용 패치 0
+
+  // date_modified만 ISO 타임스탬프로 바꿔 mixed-ISO 패치를 실제로 만든다 → 실패해야 한다.
+  writeFileSync(alpha, readFileSync(alpha, "utf8").replace(/date_modified: .*/, "date_modified: 2026-05-10T00:00:00Z"));
+  const dirtyDiff = { added: [], removed: [], modified: ["00 Inbox/Alpha.md"] };
+  const failRs = evaluateExpect({ formatter_pending_empty: true }, baseCtx({ sandboxDir: sb, diff: dirtyDiff }));
+  assert.equal(failRs.length, 1);
+  assert.ok(!failRs[0].pass, failRs[0].detail);
+  assert.match(failRs[0].detail, /patches pending in Alpha/);
+});
+
+test("formatter_pending_empty skips titles that don't resolve as notes", () => {
+  const sb = createSandbox(MINI_VAULT, "judge");
+  execFileSync(process.execPath, [IPA_BIN, "--vault", sb, "formatter", "apply", "--note", "Alpha"],
+    { cwd: sb, stdio: "ignore" });
+  const alpha = join(sb, "00 Inbox", "Alpha.md");
+  writeFileSync(alpha, readFileSync(alpha, "utf8") + "\n추가 줄\n");
+  // Meta/ 노트는 디스크에 쓰지 않아 formatter plan이 "note not found"로 실패 → 에러가 아니라 skip.
+  const diff = { added: ["Meta/설명 문서.md"], removed: [], modified: ["00 Inbox/Alpha.md"] };
+  const rs = evaluateExpect({ formatter_pending_empty: true }, baseCtx({ sandboxDir: sb, diff }));
+  assert.equal(rs.length, 1);
+  assert.ok(rs[0].pass, rs[0].detail);
+  assert.match(rs[0].detail, /1 skipped: not indexed/);
 });
 
 test("unknown assertion key fails loudly", () => {
