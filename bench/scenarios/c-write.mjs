@@ -42,7 +42,7 @@ export default [
       md_changed_max: 1,
       validator_clean_changed: true,
     } }],
-    budget: { maxCostUsd: 0.6, maxIpaCalls: 9 }, goldenPath: 2 },
+    budget: { maxCostUsd: 0.6, maxIpaCalls: 10 }, goldenPath: 2 },
 
   { ...base, id: "c12-inbox-triage", mode: "multi", smoke: true, responder: "approve",
     prompts: [

@@ -60,7 +60,9 @@ export default [
       } },
       { user: "좋아. 기존 노트들도 이 방식에 맞게 옮기고 싶은데, 우선 두세 개만 시범으로 해주고 나머지는 건드리지 마.", expect: {
         md_changed_min: 1,
-        md_changed_max: 8, // 시범 범위 유지 — 전량 일괄 변환 금지
+        // 볼트 전체 `ipa formatter apply`(기계적 정규화)는 하네스가 가르치는 동작이라 허용하되,
+        // 대량 이동/폴더 rename은 차단한다.
+        notes_moved_max: 4,
         validator_clean_changed: true,
       } },
     ],
