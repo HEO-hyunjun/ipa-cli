@@ -1,0 +1,68 @@
+// bench/tests/judge.test.mjs
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
+import { join, resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { tmpdir } from "node:os";
+import { evaluateExpect } from "../lib/judge.mjs";
+import { emptyParsed } from "../lib/transcript.mjs";
+import { createSandbox, snapshot, diffSnapshots } from "../lib/sandbox.mjs";
+
+const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+const IPA_BIN = join(REPO, "packages", "cli", "dist", "main.js");
+const MINI_VAULT = join(REPO, "packages", "test-vaults", "fixtures", "mini-vault");
+
+const baseCtx = (over = {}) => ({
+  sandboxDir: mkdtempSync(join(tmpdir(), "judge-")),
+  diff: { added: [], removed: [], modified: [] },
+  parsed: emptyParsed(),
+  ipaBin: IPA_BIN,
+  ...over,
+});
+
+const allPass = (rs) => rs.every((r) => r.pass);
+
+test("call assertions", () => {
+  const parsed = { ...emptyParsed(), ipaCalls: [{ id: "1", command: 'ipa note set "A" --add tags x', isError: false }] };
+  assert.ok(allPass(evaluateExpect({ ipa_used: true, used_command: "note set", not_used_command: "refactor" }, baseCtx({ parsed }))));
+  assert.ok(!allPass(evaluateExpect({ no_ipa_calls: true }, baseCtx({ parsed }))));
+});
+
+test("diff assertions ignore harness md and .ipa internals", () => {
+  const diff = { added: ["00 Inbox/새 메모.md", "CLAUDE.md", ".ipa/cache/files.jsonl"], removed: [], modified: ["01 Project/기존.md"] };
+  const rs = evaluateExpect({
+    md_changed_max: 2,
+    notes_added: { folder: "00 Inbox", min: 1, title_regex: "메모" },
+    file_added: "새 메모",
+    md_changes_within: ["00 Inbox", "01 Project"],
+  }, baseCtx({ diff }));
+  assert.ok(allPass(rs), JSON.stringify(rs));
+});
+
+test("formatter_pending_empty and file_contains", () => {
+  const ctx = baseCtx();
+  assert.ok(allPass(evaluateExpect({ formatter_pending_empty: true }, ctx))); // 파일 부재 = 통과
+  mkdirSync(join(ctx.sandboxDir, ".ipa", "harness"), { recursive: true });
+  writeFileSync(join(ctx.sandboxDir, ".ipa", "harness", "formatter-pending.json"), '["Note"]');
+  assert.ok(!allPass(evaluateExpect({ formatter_pending_empty: true }, ctx)));
+  writeFileSync(join(ctx.sandboxDir, ".ipa", "config.yaml"), "mapping:\n  folders:\n    inbox: Inbox\n");
+  assert.ok(allPass(evaluateExpect({ file_contains: { path: ".ipa/config.yaml", regex: "inbox" } }, ctx)));
+});
+
+test("unknown assertion key fails loudly", () => {
+  const rs = evaluateExpect({ no_ipa_callz: true }, baseCtx());
+  assert.equal(rs[0].pass, false);
+  assert.match(rs[0].detail, /unknown/);
+});
+
+test("validator_clean_changed runs real CLI against mini-vault copy", () => {
+  const sb = createSandbox(MINI_VAULT, "judge");
+  const before = snapshot(sb);
+  const alpha = join(sb, "00 Inbox", "Alpha.md");
+  writeFileSync(alpha, readFileSync(alpha, "utf8") + "\n추가 줄\n");
+  const diff = diffSnapshots(before, snapshot(sb));
+  const rs = evaluateExpect({ validator_clean_changed: true }, baseCtx({ sandboxDir: sb, diff }));
+  assert.equal(rs.length, 1);
+  assert.ok(rs[0].pass, rs[0].detail); // mini-vault Alpha 수정은 error 이슈가 없어야 한다
+});
