@@ -69,6 +69,8 @@ function buildCanonical() {
   cpSync(src, dst, { recursive: true });
   rmSync(join(dst, "99 Fixtures"), { recursive: true, force: true }); // 의도적 위반 픽스처 제외
   rmSync(join(dst, ".ipa", "plugins"), { recursive: true, force: true }); // divergent 전용 규칙 제거
+  rmSync(join(dst, ".ipa", "tune", "logs"), { recursive: true, force: true }); // 개인 절대경로 담긴 검색 로그 제거
+  rmSync(join(dst, "90 Settings", "Profile Fixtures"), { recursive: true, force: true }); // 개인 경로 담긴 내부 프로필 픽스처 제외
   for (const file of mdFiles(dst)) writeFileSync(file, transformFrontmatter(readFileSync(file, "utf8")));
   writeFileSync(join(dst, ".ipa", "config.yaml"), CANONICAL_CONFIG);
   // 포매터로 잔여 자동수정 가능 이슈 정규화
