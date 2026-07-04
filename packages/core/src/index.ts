@@ -6289,7 +6289,7 @@ function ipaCommandSelection(prefix = "ipa", mapping = DEFAULT_MAPPING) {
 
 - Exact note title known: \`${prefix} view "Note Title"\` (overview first), then \`--section\`/\`--full\` for the parts you actually need. Several notes: \`${prefix} view "A" "B" --full\` in one call.
 - Index/root summary: \`${prefix} digest "Index Note"\` (children + snippets + dates), then \`view --full\` on at most the 2-3 most relevant children — never open every child.
-- Broad prior context or user-specific background: \`${prefix} context "keyword" --size medium --format markdown\`; widen with \`${prefix} search "other angle"\` only when context missed something. Results already carry snippets and dates — judge relevance from them before opening notes.
+- Broad prior context or user-specific background: \`${prefix} context "keyword" --size medium --format markdown\`; widen with \`${prefix} search "other angle"\` only when context missed something. Several search angles go in one call — \`${prefix} search "A" "B" "C"\` (vault loads once). Results already carry snippets and dates — judge relevance from them before opening notes.
 - Related notes: \`${prefix} link suggest "Note Title"\`. Graph shape: \`${prefix} traversal --up|--down|--siblings "Note Title"\`.
 - New note: \`${prefix} inbox add ...\`. Body edit: \`${prefix} note replace ...\`. Frontmatter edit: \`${prefix} note set "Note" --field ${mapping.refs} --add "Index Note" --apply\`.
 - During note work always scope \`validator\`/\`formatter plan\` with \`--note\`; without it they are vault-wide maintenance sweeps.
@@ -6308,7 +6308,7 @@ function globalPromptContent(spec) {
 This ${tool} environment has the IPA CLI installed for the user's IPA note vault (prior work, decisions, project history, user-specific context).
 
 - When a request touches the vault, vault notes, or the user's prior work/decisions, answer from vault evidence: drive the work through \`ipa\` commands from the first turn instead of answering from memory or reading vault files directly.
-- Entry points: \`ipa search "keyword"\` (discovery), \`ipa view "Note Title"\` (read), \`ipa context "keyword" --size medium --format markdown\` (broad/history bootstrap). Full workflow: the \`ipa\` skill at \`${skillPath}\`; exact syntax: \`ipa <command> --help\`.
+- Entry points: \`ipa search "keyword"\` (discovery; several quoted queries in one call: \`ipa search "A" "B"\`), \`ipa view "Note Title"\` (read), \`ipa context "keyword" --size medium --format markdown\` (broad/history bootstrap). Full workflow: the \`ipa\` skill at \`${skillPath}\`; exact syntax: \`ipa <command> --help\`.
 - IPA concepts and this vault's operating rules: \`ipa convention\`.
 - Create new vault notes only through \`ipa inbox add\` — a guard hook blocks new markdown outside the inbox.
 - After editing vault markdown, finish the note-scoped loop: \`ipa validator --note ...\`, \`ipa formatter plan --note ...\`, \`ipa formatter apply --note ...\`. A Stop gate blocks final responses while formatter patches remain.`;
@@ -6357,7 +6357,8 @@ Use this skill when the user wants to inspect or change IPA profile selection, v
 3. Create or update profiles with \`ipa profile init --vault <path>\`, \`ipa profile new <name> <path>\`, or \`ipa profile use <name>\`.
 4. Keep machine-global profile concerns in the profile registry and vault-specific policy in \`.ipa/config.yaml\`.
 5. For vault-local config, prefer minimal edits to mapping, folders, files.exclude, plugins, search channel toggles, test.file, and weights.file.
-6. Verify config-sensitive behavior with \`ipa config show\`, \`ipa list-rules\`, \`ipa list-channels\`, \`ipa validator\`, and a focused \`ipa search "keyword"\`.
+6. After changing \`mapping\` fields or folder names, re-render the installed harness with \`ipa harness update <target>\` (for example \`ipa harness update claude\`): prompt blocks and skills print the mapped field/folder names, so they stay stale until re-rendered.
+7. Verify config-sensitive behavior with \`ipa config show\`, \`ipa list-rules\`, \`ipa list-channels\`, \`ipa validator\`, and a focused \`ipa search "keyword"\`.
 
 Do not hard-code one user's absolute vault path into vault-local files. Use project-local selectors, profiles, or documented setup commands instead.`
   },
@@ -6728,6 +6729,7 @@ ${prefix} view "Note Title"
 ${prefix} digest "Index Note"
 ${prefix} context "keyword" --size medium --format markdown
 ${prefix} search "keyword"
+${prefix} search "keyword A" "keyword B" "keyword C"   # several queries, one call
 \`\`\`
 
 ${ipaCommandSelection(prefix, mapping)}
@@ -6740,6 +6742,8 @@ New Markdown notes belong in the configured inbox:
 \`\`\`bash
 ${prefix} inbox add ./draft.md --title "Title" --ref "Index Note" --tag "topic"
 \`\`\`
+
+Set refs and tags (frontmatter \`${mapping.refs}\`/\`${mapping.tags}\`) at capture time — do not leave them for later. Reuse the vault's existing tag vocabulary first (\`${prefix} inbox triage --note "Title"\` suggests refs/tags from it). Create a new tag only when it names a perspective that cuts across more than one index; a tag as narrow as a single note or a single index adds no retrieval value — put that meaning in the ref instead.
 
 After editing vault Markdown, finish the note-scoped loop (vault-wide runs are maintenance sweeps — always scope with \`--note\`):
 
@@ -8385,7 +8389,7 @@ export async function conventionShow(vaultPath) {
       body: [
         `\`${mapping.note_type}\` — note | index | root.`,
         `\`${mapping.refs}\` — wikilinks to parent index/root notes, e.g. "[[Index Note]]". Edit with \`ipa note set "Note" --field ${mapping.refs} --add "Index Note" --apply\`.`,
-        `\`${mapping.tags}\` — flat keyword list for retrieval.`,
+        `\`${mapping.tags}\` — flat keyword list for retrieval. Tags are cross-cutting perspectives that span more than one index: reuse the existing vocabulary first, and never mint a tag so narrow it maps to a single note or single index (that meaning belongs in \`${mapping.refs}\`).`,
         `\`${mapping.aliases}\` — alternative titles used by search.`,
         `\`${mapping.created_at}\` / \`${mapping.updated_at}\` — timestamps in \`${mapping.date_format}\`; maintained automatically by CLI writes and \`ipa formatter apply\`. Never edit them by hand.`
       ].join("\n")

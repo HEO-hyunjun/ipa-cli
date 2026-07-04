@@ -1603,7 +1603,7 @@ test("harness prompt surfaces render field and folder names from the config mapp
   const config = await readFile(configPath, "utf8");
   await writeFile(
     configPath,
-    `${config.trimEnd()}\nmapping:\n  fields:\n    refs: link\n    created_at: created\n    updated_at: modified\n  folders:\n    inbox: "10 Intake"\n`,
+    `${config.trimEnd()}\nmapping:\n  fields:\n    refs: link\n    tags: keywords\n    created_at: created\n    updated_at: modified\n  folders:\n    inbox: "10 Intake"\n`,
     "utf8"
   );
 
@@ -1614,8 +1614,19 @@ test("harness prompt surfaces render field and folder names from the config mapp
   const skill = await readFile(join(home, ".claude", "skills", "ipa", "SKILL.md"), "utf8");
   assert.match(skill, /--field link --add "Index Note" --apply/);
   assert.match(skill, /`created`\/`modified`/);
+  assert.match(skill, /`link`\/`keywords`\) at capture time/);
   assert.doesNotMatch(skill, /--field ref --add/);
   assert.doesNotMatch(skill, /date_created/);
+
+  // Then: the review skill and convention doc use the mapped tags field.
+  const reviewSkill = await readFile(join(vault, ".claude", "skills", "ipa-review", "SKILL.md"), "utf8");
+  assert.match(reviewSkill, /--field keywords --add/);
+  const conventionDoc = await conventionShow(vault);
+  assert.match(conventionDoc.markdown, /`keywords` — flat keyword list/);
+
+  // Then: the config skill tells agents to re-render the harness after mapping edits.
+  const configSkill = await readFile(join(vault, ".claude", "skills", "ipa-config", "SKILL.md"), "utf8");
+  assert.match(configSkill, /ipa harness update <target>/);
 
   // Then: the vault-local block carries the mapped folder names.
   const localPrompt = await readFile(join(vault, "CLAUDE.md"), "utf8");
