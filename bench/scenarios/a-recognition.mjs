@@ -23,7 +23,8 @@ export default [
       "이 볼트 방식에서 index랑 tag의 역할 차이를 설명해줘.",
     ],
     turns: [{ user: "$PROMPT", expect: { used_command: "convention", md_changed_max: 0 } }],
-    budget: { maxCostUsd: 0.44, maxIpaCalls: 5 }, goldenPath: 1 },
+    // budget = 폭주 감지용 상한(관측 정상치 ~2배): opus 5-6콜/$0.28-0.44 관측 → convention + 예시 1개 여유.
+    budget: { maxCostUsd: 0.8, maxIpaCalls: 8 }, goldenPath: 1 },
 
   { ...base, id: "a4-implicit-topic", holdout: true,
     prompts: [

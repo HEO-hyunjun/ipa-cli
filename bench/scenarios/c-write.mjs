@@ -73,5 +73,6 @@ export default [
         formatter_pending_empty: true,
       } },
     ],
-    budget: { maxCostUsd: 1.65, maxIpaCalls: 22 }, goldenPath: 8 },
+    // budget = 폭주 감지용 상한(관측 정상치 ~2배): opus 24콜/sonnet 17콜, ~9노트 per-note view+validate는 정상. opus ~$0.94 관측.
+    budget: { maxCostUsd: 1.8, maxIpaCalls: 30 }, goldenPath: 8 },
 ];
