@@ -25,6 +25,10 @@ function bashTranscript(command) {
   return JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", id: "b1", name: "Bash", input: { command } }] } }) + "\n";
 }
 
+function toolTranscript(name, input) {
+  return JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", id: "u1", name, input }] } }) + "\n";
+}
+
 test("ipaCall detection: cd-chained ipa", () => {
   const p = parseTranscript(bashTranscript('cd "/x" && ipa inbox add "t"'));
   assert.equal(p.ipaCalls.length, 1);
@@ -55,4 +59,35 @@ test("mergeParsed accumulates across turns", () => {
   assert.equal(m.numTurns, 3);
   assert.equal(m.ipaCalls.length, 1);
   assert.equal(m.finalText, "둘");
+});
+
+test("non-Bash tool_use captured with paths; Edit on vault note counts as touch", () => {
+  const p = parseTranscript(toolTranscript("Edit", { file_path: "00 Inbox/X.md" }));
+  assert.equal(p.toolCalls.length, 1);
+  assert.deepEqual(p.toolCalls[0], { name: "Edit", path: "00 Inbox/X.md" });
+  assert.ok(p.nonIpaVaultTouches >= 1);
+});
+
+test("nonIpaVaultTouches excludes .ipa/ config edits", () => {
+  const p = parseTranscript(toolTranscript("Edit", { file_path: ".ipa/config.yaml" }));
+  assert.equal(p.toolCalls.length, 1);
+  assert.equal(p.nonIpaVaultTouches, 0);
+});
+
+test("Read of a vault note is captured but not a touch; Grep path field used", () => {
+  const raw = toolTranscript("Read", { file_path: "00 Inbox/X.md" })
+    + toolTranscript("Grep", { pattern: "todo", path: "01 Project/Y.md" });
+  const p = parseTranscript(raw);
+  assert.equal(p.toolCalls.length, 2);
+  assert.equal(p.toolCalls.find((t) => t.name === "Grep").path, "01 Project/Y.md");
+  // Read는 비파괴 조회라 touch 아님, Grep의 .md 경로는 touch로 잡힌다.
+  assert.equal(p.nonIpaVaultTouches, 1);
+});
+
+test("mergeParsed carries toolCalls and sums nonIpaVaultTouches", () => {
+  const a = { ...emptyParsed(), toolCalls: [{ name: "Edit", path: "a.md" }], nonIpaVaultTouches: 1 };
+  const b = { ...emptyParsed(), toolCalls: [{ name: "Write", path: "b.md" }], nonIpaVaultTouches: 1 };
+  const m = mergeParsed(a, b);
+  assert.equal(m.toolCalls.length, 2);
+  assert.equal(m.nonIpaVaultTouches, 2);
 });

@@ -8,8 +8,18 @@
 const IPA_SEGMENT_RE = /(?:^|\n)\s*ipa\s+[a-z-]/;
 const isIpaCall = (command) => command.split(/&&|\|\||;/).some((seg) => IPA_SEGMENT_RE.test(seg));
 
+// 감사 대상 비-Bash 툴: 에이전트가 ipa CLI를 우회해 vault 파일을 직접 읽고/고칠 때 잡는다.
+// path는 툴마다 다른 필드에 들어온다(Read/Write/Edit: file_path, Grep: path, Glob: pattern).
+const TOOL_PATH_NAMES = new Set(["Read", "Write", "Edit", "MultiEdit", "Grep", "Glob"]);
+// vault 노트를 ipa 경유가 아니라 직접 변경/조회한 것으로 치는 툴(Read/Glob은 비파괴 조회라 제외).
+const VAULT_TOUCH_NAMES = new Set(["Write", "Edit", "MultiEdit", "Grep"]);
+const toolPath = (input) => input?.file_path ?? input?.path ?? input?.pattern ?? null;
+// vault 노트 경로(.md) 중 .ipa/·.claude/ 관리 파일이 아닌 것. 절대·상대 경로 모두에서 세그먼트로 판정한다.
+const isVaultMdPath = (p) => typeof p === "string" && p.endsWith(".md")
+  && !/(?:^|\/)\.ipa\//.test(p) && !/(?:^|\/)\.claude\//.test(p);
+
 export function emptyParsed() {
-  return { sessionId: null, costUsd: 0, numTurns: 0, isError: false, bashCalls: [], ipaCalls: [], finalText: "" };
+  return { sessionId: null, costUsd: 0, numTurns: 0, isError: false, bashCalls: [], ipaCalls: [], toolCalls: [], nonIpaVaultTouches: 0, finalText: "" };
 }
 
 export function parseTranscript(jsonlText) {
@@ -21,8 +31,11 @@ export function parseTranscript(jsonlText) {
     if (ev.type === "system" && ev.subtype === "init") out.sessionId = ev.session_id ?? out.sessionId;
     if (ev.type === "assistant") {
       for (const block of ev.message?.content ?? []) {
-        if (block.type === "tool_use" && block.name === "Bash") {
+        if (block.type !== "tool_use") continue;
+        if (block.name === "Bash") {
           out.bashCalls.push({ id: block.id, command: String(block.input?.command ?? ""), isError: false });
+        } else if (TOOL_PATH_NAMES.has(block.name)) {
+          out.toolCalls.push({ name: block.name, path: toolPath(block.input) });
         }
       }
     }
@@ -43,6 +56,7 @@ export function parseTranscript(jsonlText) {
     }
   }
   out.ipaCalls = out.bashCalls.filter((c) => isIpaCall(c.command));
+  out.nonIpaVaultTouches = out.toolCalls.filter((t) => VAULT_TOUCH_NAMES.has(t.name) && isVaultMdPath(t.path)).length;
   return out;
 }
 
@@ -54,6 +68,8 @@ export function mergeParsed(acc, next) {
     isError: acc.isError || next.isError,
     bashCalls: [...acc.bashCalls, ...next.bashCalls],
     ipaCalls: [...acc.ipaCalls, ...next.ipaCalls],
+    toolCalls: [...acc.toolCalls, ...next.toolCalls],
+    nonIpaVaultTouches: acc.nonIpaVaultTouches + next.nonIpaVaultTouches,
     finalText: next.finalText || acc.finalText,
   };
 }
