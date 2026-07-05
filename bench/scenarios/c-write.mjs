@@ -15,6 +15,10 @@ export default [
       notes_added: { folder: "00 Inbox", min: 1 },
       formatter_pending_empty: true,
       validator_clean_changed: true,
+      // 하네스 훅 라이브 가드: call-counter PostToolUse(Bash) 훅은 ipa 호출 시 vault에
+      // .ipa/harness/call-counter.json을 쓴다(색인 제외 dotdir라 snapshot에 잡힌다). 이 파일이
+      // 생기지 않으면 훅이 세션에 주입되지 않은 것 — 훅이 실제로 돌 때만 발화하는 e2e 회귀 가드다.
+      file_added: "\\.ipa/harness/call-counter\\.json",
     } }],
     // 폭주 상한 = ~2×효율관측(opus 6콜 → 12). 100노트 볼트에서 capture 뒤 note-scoped 루프(validator→
     // formatter plan→apply→validator)가 정당하게 ~10콜을 쓴다(sonnet). 이전 9는 그 정당 작업을 1콜 차로 잘랐다.

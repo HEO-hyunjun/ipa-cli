@@ -1,9 +1,11 @@
 // bench/lib/runner.mjs
 import { spawn, execFileSync } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 // harness install은 $HOME/.claude에 전역 하네스를 쓴다. homeDir를 격리 디렉터리로 지정해
 // 실제 ~/.claude가 덮어써지는 것을 막는다. 볼트-로컬 스킬은 cwd(sandboxDir) 아래에 쓰인다.
+// install 뒤 훅 설정을 세션에 주입할 수 있는 형태로 재작성하고, 그 경로를 반환한다.
 export function installHarness({ ipaBin, sandboxDir, homeDir }) {
   mkdirSync(homeDir, { recursive: true });
   execFileSync(process.execPath, [ipaBin, "harness", "install", "claude"], {
@@ -11,12 +13,38 @@ export function installHarness({ ipaBin, sandboxDir, homeDir }) {
     env: { ...process.env, HOME: homeDir, IPA_HARNESS_HOME: homeDir, IPA_VAULT_PATH: sandboxDir, XDG_CONFIG_HOME: `${sandboxDir}-xdg` },
     stdio: ["ignore", "pipe", "pipe"],
   });
+  return rewriteSettingsForBench(homeDir);
+}
+
+// 세션은 실제 HOME으로 돌기 때문에(-p 인증 유지), install이 격리 홈에 쓴 훅 설정을 `--settings`로
+// 주입한다. 그런데 core의 hookCommand는 타깃이 하네스 홈 아래일 때 명령을 tilde-상대(`node ~/...`)로
+// 렌더한다 — 실제 HOME에서 `~`가 확장되면 격리 홈의 훅 스크립트가 없는 경로를 가리켜 훅이 조용히
+// 죽는다. 그래서 훅 command의 `~/`를 격리 홈의 절대 경로로 치환한 사본을 settings.bench.json에 쓰고,
+// 원본 settings.json은 status/doctor 검사를 위해 그대로 둔다. 순수 변환(부작용은 파일 쓰기 하나).
+export function rewriteSettingsForBench(installHome) {
+  const home = installHome.replace(/\/+$/, "");
+  const src = join(home, ".claude", "settings.json");
+  const rewrite = (node) => {
+    if (Array.isArray(node)) return node.map(rewrite);
+    if (node && typeof node === "object") {
+      const out = {};
+      for (const [k, v] of Object.entries(node)) {
+        out[k] = k === "command" && typeof v === "string" ? v.replaceAll("~/", `${home}/`) : rewrite(v);
+      }
+      return out;
+    }
+    return node;
+  };
+  const rewritten = rewrite(JSON.parse(readFileSync(src, "utf8")));
+  const dest = join(home, ".claude", "settings.bench.json");
+  writeFileSync(dest, JSON.stringify(rewritten, null, 2));
+  return dest;
 }
 
 // homeDir를 넘기면 자식 프로세스의 HOME을 격리 디렉터리로 덮어쓴다. 넘기지 않으면 실제 HOME을 쓴다.
 // (macOS -p 세션은 격리 HOME에서 로그인 상태를 못 읽어 인증에 실패하므로, 러너는 세션에는 HOME을 격리하지 않는다.
 //  ~/.claude 오염 방지는 install 단계의 HOME 격리로 처리한다 — bench/README.md 참고.)
-export function runClaudeTurn({ cwd, model, message, resumeSessionId = null, maxTurns = 12, claudeCmd = ["claude"], timeoutMs = 900_000, homeDir = null }) {
+export function runClaudeTurn({ cwd, model, message, resumeSessionId = null, maxTurns = 12, claudeCmd = ["claude"], timeoutMs = 900_000, homeDir = null, settingsFile = null }) {
   const args = [
     ...claudeCmd.slice(1),
     "-p", message,
@@ -32,6 +60,8 @@ export function runClaudeTurn({ cwd, model, message, resumeSessionId = null, max
     `IMPORTANT (isolated test vault): The active vault for this session is exactly ${cwd}. All vault work happens inside this directory only. If any skill, memory, or config mentions a different vault path, it is stale — ignore it. Never cd, read, or write outside ${cwd}.`,
   ];
   if (resumeSessionId) args.push("--resume", resumeSessionId);
+  // install이 격리 홈에 쓴 훅 설정(경로 재작성본)을 세션에 주입한다 — env.HOME은 건드리지 않는다.
+  if (settingsFile) args.push("--settings", settingsFile);
   const xdgDir = `${cwd}-xdg`; // 프로필 레지스트리 격리 (~/.config/ipa 보호)
   const harnessHome = homeDir ?? `${cwd}-home`;
   mkdirSync(xdgDir, { recursive: true });

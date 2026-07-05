@@ -97,7 +97,9 @@ async function runOne({ scenario, model }, args, runDir) {
   const caseDir = join(runDir, `${scenario.id}__${model}`);
   mkdirSync(caseDir, { recursive: true });
   const claudeCmd = args.dryRun ? [process.execPath, FAKE_CLAUDE] : ["claude"];
-  if (scenario.harness && !args.dryRun) installHarness({ ipaBin: IPA_BIN, sandboxDir: sandbox, homeDir: installHome });
+  // 훅 설정을 세션에 주입할 --settings 경로. install했을 때만 값이 있고, 없으면 훅 미주입.
+  let settingsFile = null;
+  if (scenario.harness && !args.dryRun) settingsFile = installHarness({ ipaBin: IPA_BIN, sandboxDir: sandbox, homeDir: installHome });
 
   const before = snapshot(sandbox);
   const promptIndex = args.promptIndex ?? new Date().getUTCDate() % scenario.prompts.length;
@@ -111,7 +113,7 @@ async function runOne({ scenario, model }, args, runDir) {
     const message = turn.user.replace("$PROMPT", prompt);
     const raw = await runClaudeTurn({
       cwd: sandbox, model, message, maxTurns: scenario.maxTurns,
-      resumeSessionId: acc.sessionId, claudeCmd,
+      resumeSessionId: acc.sessionId, claudeCmd, settingsFile,
     });
     writeFileSync(join(caseDir, `turn-${turnNo}.jsonl`), raw);
     acc = mergeParsed(acc, parseTranscript(raw));
@@ -126,7 +128,7 @@ async function runOne({ scenario, model }, args, runDir) {
         turnNo += 1;
         const raw2 = await runClaudeTurn({
           cwd: sandbox, model, message: reply, maxTurns: scenario.maxTurns,
-          resumeSessionId: acc.sessionId, claudeCmd,
+          resumeSessionId: acc.sessionId, claudeCmd, settingsFile,
         });
         writeFileSync(join(caseDir, `turn-${turnNo}.jsonl`), raw2);
         acc = mergeParsed(acc, parseTranscript(raw2));
