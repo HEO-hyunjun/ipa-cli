@@ -70,6 +70,8 @@ export function evaluateExpect(expect, ctx) {
         push(key, diff.added.some((p) => new RegExp(value).test(p)), value); break;
       case "file_modified":
         push(key, diff.modified.some((p) => new RegExp(value).test(p)), value); break;
+      case "file_removed":
+        push(key, diff.removed.some((p) => new RegExp(value).test(p)), value); break;
       case "md_changed_max": {
         const n = changedMd(diff).length;
         push(key, n <= value, `${n} md changed (max ${value})`); break;

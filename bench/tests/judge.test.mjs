@@ -62,6 +62,12 @@ test("changedMd excludes .claude/ harness skills written by harness install", ()
   assert.ok(allPass(rs), JSON.stringify(rs)); // .claude/* 3개는 세지 않고 실제 노트 1개만 카운트
 });
 
+test("file_removed matches a deleted path (rename drops the old title)", () => {
+  const diff = { added: ["01 Project/커피/☕ 새.md"], removed: ["01 Project/커피/🔖 옛.md"], modified: [] };
+  assert.ok(allPass(evaluateExpect({ file_removed: "🔖 옛\\.md" }, baseCtx({ diff }))));
+  assert.ok(!allPass(evaluateExpect({ file_removed: "없는파일" }, baseCtx({ diff }))));
+});
+
 test("notes_moved_max counts basename pairs across removed/added", () => {
   const diff = {
     removed: ["00 Inbox/Alpha.md", "00 Inbox/Beta.md"],

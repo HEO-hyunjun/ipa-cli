@@ -7,9 +7,9 @@ import { loadScenarios } from "../lib/schema.mjs";
 
 const DIR = join(resolve(dirname(fileURLToPath(import.meta.url)), ".."), "scenarios");
 
-test("catalog: 21 scenarios, 9 multi, 6 smoke, 2 holdout, groups A-F covered", async () => {
+test("catalog: 22 scenarios, 9 multi, 6 smoke, 2 holdout, groups A-F covered", async () => {
   const all = await loadScenarios(DIR);
-  assert.equal(all.length, 21);
+  assert.equal(all.length, 22);
   assert.equal(all.filter((s) => s.mode === "multi").length, 9);
   assert.equal(all.filter((s) => s.smoke).length, 6);
   assert.equal(all.filter((s) => s.holdout).length, 2);
