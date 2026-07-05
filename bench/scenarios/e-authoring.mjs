@@ -21,11 +21,16 @@ export default [
     ],
     turns: [
       { user: "$PROMPT", expect: { used_command: "tune|search" } },
-      // 실제 tune 작업을 했는지를 서브커맨드로 판정한다 — label/testset/eval/analyze/optimize/apply/use
-      // 중 하나. 산출물 파일(labels.jsonl/results/)은 경로가 좁고(볼트가 이미 results를 제공하면
-      // modify라 add에 안 걸림) tune 경로마다 달라 취약하므로, `tune --help`만 본 게 아니라는 증거로
-      // 실작업 서브커맨드 사용을 요구한다. (search 자동 생성 로그는 tune 작업 증거로 치지 않는다.)
-      { user: "응, 그 방법으로 진행해줘.", expect: { used_command: "tune (label|testset|eval|analyze|optimize|apply|use)" } },
+      // 랭킹 개선은 두 경로가 co-equal이다 — 에이전트 프롬프트가 "검색 플러그인 OR ipa-tune
+      // 워크플로"를 대등하게 제시하므로 어느 쪽이든 정답이다. (1) 실제 tune 서브커맨드
+      // (label/testset/eval/analyze/optimize/apply/use 중 하나 = `tune --help`만 본 게 아니라는
+      // 증거), 또는 (2) .ipa/plugins/search/*.js 검색 부스트 플러그인 저술. any_of로 둘 중 하나만
+      // 만족하면 통과한다. (산출물 파일 labels.jsonl/results/는 경로가 좁고 볼트마다 달라 취약해
+      // 판정 근거로 쓰지 않는다.)
+      { user: "응, 그 방법으로 진행해줘.", expect: { any_of: [
+        { used_command: "tune (label|testset|eval|analyze|optimize|apply|use)" },
+        { file_added: "\\.ipa/plugins/search/.*\\.js" },
+      ] } },
     ],
     budget: { maxCostUsd: 3.85, maxIpaCalls: 28 }, goldenPath: 6 },
 ];

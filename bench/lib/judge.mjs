@@ -140,6 +140,18 @@ export function evaluateExpect(expect, ctx) {
         push(key, new RegExp(value).test(parsed.finalText), value); break;
       case "final_answer_not_regex":
         push(key, !new RegExp(value).test(parsed.finalText), value); break;
+      case "any_of": {
+        // value: 서브 expect 객체 배열 — judge는 키를 AND로 보므로 OR가 필요할 때 쓴다.
+        // 각 서브 expect를 재귀 평가해, 하위 항목이 모두 통과하는 분기가 하나라도 있으면 통과.
+        const branches = (Array.isArray(value) ? value : []).map((sub) => {
+          const rows = evaluateExpect(sub, ctx);
+          return { ok: rows.length > 0 && rows.every((r) => r.pass), rows };
+        });
+        const detail = branches
+          .map((b, i) => `[${i}] ${b.ok ? "pass" : (b.rows.filter((r) => !r.pass).map((r) => r.name).join("+") || "empty")}`)
+          .join(" | ");
+        push(key, branches.some((b) => b.ok), detail); break;
+      }
       default:
         push(key, false, "unknown assertion key");
     }

@@ -121,6 +121,30 @@ test("formatter_pending_empty skips titles that don't resolve as notes", () => {
   assert.match(rs[0].detail, /1 skipped: not indexed/);
 });
 
+test("any_of passes when at least one sub-expect fully passes (OR over AND keys)", () => {
+  const parsed = { ...emptyParsed(), ipaCalls: [{ id: "1", command: 'ipa tune optimize', isError: false }] };
+  const diff = { added: [".ipa/plugins/search/boost.js"], removed: [], modified: [] };
+  // 한 분기만 통과해도 전체 통과: tune 서브커맨드 분기.
+  assert.ok(allPass(evaluateExpect({ any_of: [
+    { used_command: "tune (optimize|apply)" },
+    { file_added: "\\.ipa/plugins/search/.*\\.js" },
+  ] }, baseCtx({ parsed, diff: { added: [], removed: [], modified: [] } }))));
+  // 다른 분기만 통과해도 전체 통과: search 플러그인 authoring 분기.
+  assert.ok(allPass(evaluateExpect({ any_of: [
+    { used_command: "tune (optimize|apply)" },
+    { file_added: "\\.ipa/plugins/search/.*\\.js" },
+  ] }, baseCtx({ diff }))));
+  // 두 분기 모두 실패하면 전체 실패.
+  assert.ok(!allPass(evaluateExpect({ any_of: [
+    { used_command: "tune (optimize|apply)" },
+    { file_added: "\\.ipa/plugins/search/.*\\.js" },
+  ] }, baseCtx())));
+  // 한 분기 안의 여러 키는 AND — 하나라도 어긋나면 그 분기는 미통과.
+  assert.ok(!allPass(evaluateExpect({ any_of: [
+    { used_command: "tune (optimize|apply)", file_added: "없는파일" },
+  ] }, baseCtx({ parsed }))));
+});
+
 test("unknown assertion key fails loudly", () => {
   const rs = evaluateExpect({ no_ipa_callz: true }, baseCtx());
   assert.equal(rs[0].pass, false);
