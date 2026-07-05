@@ -1,7 +1,8 @@
 // bench/scenarios/f-migration.mjs
-// maxTurns 28: 끝까지 수행 원칙(위 D 참조) — 마이그레이션/온보딩은 볼트 진단+다단계 설정이라 관측 17턴을
-// 넘겨 base 16을 초과했다(f18/f20/f21 correct=true인데 VOID였음). 넉넉히 두고 효율은 ipa 예산이 판정.
-const base = { group: "F", mode: "multi", smoke: false, holdout: false, models: ["sonnet", "opus"], maxTurns: 28, responder: "approve" };
+// maxTurns 40: 끝까지 수행 원칙(위 D 참조) — 마이그레이션/온보딩은 볼트 진단+다단계 설정이고,
+// 훅-라이브 환경에선 Stop gate가 formatter 마무리를 강제해 턴이 더 든다(관측 f18 sonnet 35·opus 39턴이
+// 정당 작업인데 base 28을 넘겨 sonnet만 VOID였음). 넉넉히 두고 효율/폭주는 ipa 예산이 판정.
+const base = { group: "F", mode: "multi", smoke: false, holdout: false, models: ["sonnet", "opus"], maxTurns: 40, responder: "approve" };
 export default [
   { ...base, id: "f18-preipa-bootstrap", persona: "pre-ipa", harness: false,
     prompts: [

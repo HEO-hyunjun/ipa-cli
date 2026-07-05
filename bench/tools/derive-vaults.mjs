@@ -11,6 +11,40 @@ const VAULTS = join(REPO, "bench", "vaults");
 const IPA_BIN = join(REPO, "packages", "cli", "dist", "main.js");
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
+// Bench vault policy gate (mechanism-in-CLI, policy-in-vault): the active twin of
+// core's DISABLED _example-unapplied-mutation-gate.js. Warns — without blocking —
+// when this session previewed an ipa mutation (move/rename/cascade/link dry-run)
+// but never ran its --apply. Neutral wording, no vault-specific content. Installed
+// into canonical (and inherited by messy) so harness=true sandboxes load it.
+const GATE_UNAPPLIED_MUTATION = `// @ts-check
+// Bench vault policy: warn (without blocking) when this session previewed an ipa
+// mutation (move/rename/cascade/link dry-run) but never ran its --apply/apply.
+// ctx.session.pending_mutations is command-name granularity only — it names the
+// previewed command(s), not the target note. block:false keeps this advisory: the
+// Stop gate surfaces the message to the agent without holding the response. Flip
+// block to true to hard-block a session that ends on an unapplied plan.
+/** @type {import("../types/ipa-plugin").Gate} */
+const gate = {
+  name: "unapplied-mutation-gate",
+  check(ctx) {
+    const pending = ctx.session.pending_mutations ?? [];
+    if (!pending.length) return null;
+    const commands = [...new Set(pending.map((item) => item.command))].join(", ");
+    return {
+      block: false,
+      message: \`\${pending.length} mutation plan(s) produced this session were never applied (e.g. move/rename/cascade dry-run without --apply): \${commands}. Run the corresponding --apply, or confirm the plan was intentionally left unapplied.\`
+    };
+  }
+};
+export default gate;
+`;
+
+function installBenchGate(dst) {
+  const gatesDir = join(dst, ".ipa", "plugins", "gates");
+  mkdirSync(gatesDir, { recursive: true });
+  writeFileSync(join(gatesDir, "unapplied-mutation-gate.js"), GATE_UNAPPLIED_MUTATION);
+}
+
 function* mdFiles(dir) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     if (entry.name.startsWith(".")) continue;
@@ -69,6 +103,7 @@ function buildCanonical() {
   cpSync(src, dst, { recursive: true });
   rmSync(join(dst, "99 Fixtures"), { recursive: true, force: true }); // 의도적 위반 픽스처 제외
   rmSync(join(dst, ".ipa", "plugins"), { recursive: true, force: true }); // divergent 전용 규칙 제거
+  installBenchGate(dst); // 벤치 볼트 정책: 미적용 변형 경고 게이트(비차단) 설치 — messy가 상속
   rmSync(join(dst, ".ipa", "tune", "logs"), { recursive: true, force: true }); // 개인 절대경로 담긴 검색 로그 제거
   rmSync(join(dst, "90 Settings", "Profile Fixtures"), { recursive: true, force: true }); // 개인 경로 담긴 내부 프로필 픽스처 제외
   for (const file of mdFiles(dst)) writeFileSync(file, transformFrontmatter(readFileSync(file, "utf8")));

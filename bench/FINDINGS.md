@@ -81,5 +81,29 @@ g31이 correctness=false로 뜬 건 ipa 결함이 아니다. 샌드박스 픽스
   구사(b6 과탐색만 예외). sonnet은 복잡 워크플로(triage/rule-auth/relate/move)에서 콜이 많고 이따금 flaky.
   이건 프롬프트로 더 밀어붙일 여지(수렴 유도)이자, 벤치가 모델별 효용을 정직하게 드러낸다는 증거다.
 
+## F9 — F8의 "모델 편차"는 절반이 하네스 결함이었다: 훅 e2e 미검증 + 7개 구조 구멍 [수정 완료]
+F8을 "모델 편차라 못 고침"으로 닫으려다 심층 재감사한 결과, **벤치 60세션 전부에서 하네스 훅이 한 번도
+발화하지 않았음**을 발견했다(runner가 훅을 격리 홈에 설치하는데 `claude -p`는 인증 때문에 실제 $HOME으로
+실행 → 설치 훅이 죽은 채). 즉 벤치는 CLI+프롬프트만 검증했고 훅 레이어는 미검증이었다. 훅을 살리고
+관련 7개 구조 구멍을 메우자 F8의 "모델 편차" 상당수가 실제로 고쳐졌다 — 못 고치는 게 아니라 하네스가
+꺼져 있었다.
+- **고친 구멍(G1~G7):** 벤치 훅 활성화(`claude -p --settings`, tilde 경로 재작성), mutation dry-run
+  ledger(gate가 "plan without apply"를 볼 수 있는 없던 메커니즘) + GateContext.pending_mutations,
+  gate 플러그인 에러/warn을 Stop 훅이 버리던 것 노출(fail-safe), OpenCode gate 패리티, harness doctor의
+  플러그인 로드 검증, call-counter 임계값 config화, 효율 지침을 Skill-only→항상-켜짐 프롬프트로.
+- **훅-라이브 재측정 결과(opus+sonnet 52→53/54):** b6[opus] 23→4·7, b7[sonnet] 16→6(G7 문구를
+  "digest를 view에 추가"에서 "자식 열기 전 digest + 증거 충분하면 수렴"으로 교정), d15[sonnet] VOID→10,
+  e16[sonnet] 24→12, g30[sonnet] correct=false→true. F8이 "opus만 통과"라던 것 대부분이 sonnet도 통과로.
+- **G7 부작용 교정:** "digest 먼저" 문구가 read 시나리오(b7)에서 view를 다 한 뒤 digest를 얹게 만들던
+  회귀를 수렴 문구로 제거. 순서 원칙 — 문구 수정을 ceiling 상향보다 먼저 해 digest-얹기를 상한에 각인하지 않음.
+- **f18(preipa 온보딩):** 훅-라이브에서 Stop gate가 마무리를 강제해 턴이 늘어(sonnet 35·opus 39) base 28
+  초과 → f maxTurns 28→40. 정당 작업의 헤드룸, 억지 green 아님.
+- **unapplied-mutation warn gate를 벤치 볼트 정책으로 활성화**(derive-vaults.mjs 소스). core엔 비활성으로
+  두고 우리 소유 볼트에서 켠 것 = "policy in the vault" 실천. 이번 run은 에이전트들이 plan을 다 apply해서
+  (바람직) 자연 트리거가 없었으나, 메커니즘은 core unit 테스트로 e2e 검증됨 + plugin list/doctor로 로드 확인.
+- **진짜 잔여(게임 안 함):** g31[sonnet] correct=false — opus는 통과(23콜). sonnet이 컨벤션("root만 이동")을
+  읽고도 요청 없는 rename+타입 승격을 수행해 기대 파일명이 빗나감. 감사가 "메커니즘으로 못 잡는 순수 모델
+  편차"로 확정(에이전트가 자기 컨텍스트 내 지시를 무시하는 케이스). 이건 하네스가 아니라 모델 한계다.
+
 ---
 (라이브 실행이 추가 findings를 계속 append한다.)
