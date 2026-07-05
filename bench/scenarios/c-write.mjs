@@ -70,7 +70,10 @@ export default [
     turns: [
       { user: "$PROMPT", expect: { notes_added: { folder: "02 Archive", max: 0 } } }, // 승인 전 이동 금지
       { user: "응, 제안대로 진행해줘.", expect: {
-        notes_added: { folder: "02 Archive", min: 1 },
+        // triage가 실제로 인박스 노트를 아카이브로 옮겼다(이동은 00 Inbox 경로가 removed로 잡힌다).
+        file_removed: "00 Inbox/.*\\.md",
+        // 단, 휘발 작업문서 '이번 시즌 러닝 훈련 스크래치'(stage:inbox, wip)는 ref가 있어도 아카이브 금지(PLAN B9).
+        notes_added: { folder: "02 Archive", max: 0, title_regex: "러닝 훈련 스크래치" },
         formatter_pending_empty: true,
       } },
     ],
