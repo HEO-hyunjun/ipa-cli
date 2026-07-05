@@ -46,6 +46,23 @@ test("ipaCall detection: plain non-ipa command", () => {
   assert.equal(p.ipaCalls.length, 0);
 });
 
+test("truncated: result subtype error_max_turns marks the run truncated", () => {
+  const raw = JSON.stringify({ type: "result", subtype: "error_max_turns", session_id: "s", total_cost_usd: 0.02, num_turns: 12, is_error: true, result: "" }) + "\n";
+  const p = parseTranscript(raw);
+  assert.equal(p.truncated, true);
+});
+
+test("truncated: normal success result is not truncated", () => {
+  const p = parseTranscript(readFileSync(FIXTURE, "utf8"));
+  assert.equal(p.truncated, false);
+});
+
+test("truncated: propagates through mergeParsed", () => {
+  const a = { ...emptyParsed(), truncated: false };
+  const b = { ...emptyParsed(), truncated: true };
+  assert.equal(mergeParsed(a, b).truncated, true);
+});
+
 test("parseTranscript survives garbage lines", () => {
   const p = parseTranscript('not-json\n{"type":"result","total_cost_usd":0.01,"num_turns":1,"is_error":false,"result":"ok","session_id":"s"}\n');
   assert.equal(p.costUsd, 0.01);

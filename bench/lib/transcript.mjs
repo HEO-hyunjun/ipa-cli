@@ -19,7 +19,7 @@ const isVaultMdPath = (p) => typeof p === "string" && p.endsWith(".md")
   && !/(?:^|\/)\.ipa\//.test(p) && !/(?:^|\/)\.claude\//.test(p);
 
 export function emptyParsed() {
-  return { sessionId: null, costUsd: 0, numTurns: 0, isError: false, bashCalls: [], ipaCalls: [], toolCalls: [], nonIpaVaultTouches: 0, finalText: "" };
+  return { sessionId: null, costUsd: 0, numTurns: 0, isError: false, truncated: false, bashCalls: [], ipaCalls: [], toolCalls: [], nonIpaVaultTouches: 0, finalText: "" };
 }
 
 export function parseTranscript(jsonlText) {
@@ -52,6 +52,10 @@ export function parseTranscript(jsonlText) {
       out.costUsd = ev.total_cost_usd ?? 0;
       out.numTurns = ev.num_turns ?? 0;
       out.isError = Boolean(ev.is_error);
+      // max-turns/에러로 절단된 종료는 성공으로 치지 않는다. Claude Code result 이벤트는
+      // 정상 종료 시 subtype "success", 절단 시 "error_max_turns"(또는 다른 error_* subtype)로
+      // 오고 is_error도 세운다. subtype이 success가 아니거나 is_error면 절단으로 본다.
+      out.truncated = Boolean(ev.subtype && ev.subtype !== "success") || Boolean(ev.is_error);
       out.finalText = typeof ev.result === "string" ? ev.result : "";
     }
   }
@@ -66,6 +70,7 @@ export function mergeParsed(acc, next) {
     costUsd: acc.costUsd + next.costUsd,
     numTurns: acc.numTurns + next.numTurns,
     isError: acc.isError || next.isError,
+    truncated: acc.truncated || next.truncated,
     bashCalls: [...acc.bashCalls, ...next.bashCalls],
     ipaCalls: [...acc.ipaCalls, ...next.ipaCalls],
     toolCalls: [...acc.toolCalls, ...next.toolCalls],

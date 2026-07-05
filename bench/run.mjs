@@ -121,13 +121,21 @@ async function runOne({ scenario, model }, args, runDir) {
   assertions.push({ turn: turnNo, name: "cost_within_budget", pass: acc.costUsd <= scenario.budget.maxCostUsd, detail: `$${acc.costUsd.toFixed(3)} / $${scenario.budget.maxCostUsd}` });
   assertions.push({ turn: turnNo, name: "ipa_calls_within_budget", pass: acc.ipaCalls.length <= scenario.budget.maxIpaCalls, detail: `${acc.ipaCalls.length} / ${scenario.budget.maxIpaCalls}` });
 
+  // max-turns/에러로 절단된 런은 VOID: 성공으로 통과시키지 말고 human-review로 격리한다.
+  // (절단된 폭주가 싸게 통과하는 거짓양성 차단 — 절단은 시나리오 판정 대상이 아니다.)
+  const completion = acc.truncated ? "void" : "completed";
+  if (acc.truncated) assertions.push({ turn: turnNo, name: "completion", pass: false, detail: "VOID: hit max-turns / error — needs human review" });
+
   const summary = {
     id: scenario.id, model, promptIndex,
     pass: assertions.every((a) => a.pass),
+    completion,
     assertions,
     costUsd: acc.costUsd, numTurns: acc.numTurns,
     ipaCalls: acc.ipaCalls.length,
     ipaErrorCalls: acc.ipaCalls.filter((c) => c.isError).length,
+    nonIpaVaultTouches: acc.nonIpaVaultTouches,
+    truncated: acc.truncated,
     goldenPath: scenario.goldenPath,
     stepRatio: scenario.goldenPath ? Number((acc.ipaCalls.length / scenario.goldenPath).toFixed(2)) : null,
     sandbox: args.keepSandbox ? sandbox : null,
