@@ -117,6 +117,23 @@ Apply refuses to run while the checkout has uncommitted changes or has
 diverged from upstream. After a CLI update, run `ipa harness status`; if it
 reports outdated components, refresh them with `ipa harness update <target>`.
 
+### Obsidian plugin
+
+`ipa obsidian` deploys the built Obsidian plugin bundle into the active vault's
+`.obsidian/plugins/ipa-obsidian/`. `install` creates the plugin folder and copies
+the built bundle (enable it in Obsidian afterwards); `sync` refreshes an existing
+install with the current build and does nothing if the vault has no install.
+
+```sh
+ipa obsidian install   # first-time deploy into the active vault
+ipa obsidian sync      # refresh an existing install with the current build
+```
+
+Only release assets are copied (`main.js`, `manifest.json`, `styles.css`,
+`versions.json`); the plugin's `data.json` settings are never touched.
+`ipa update --apply` rebuilds the bundle and runs the sync automatically when the
+active vault already carries an install.
+
 ## Quickstart
 
 ```sh
