@@ -34,7 +34,7 @@ const FAKE_CLAUDE = join(REPO, "bench", "tests", "fixtures", "fake-claude.mjs");
 const WARN_LOW = 2;
 
 function parseArgs(argv) {
-  const args = { scenario: [], model: null, smoke: false, full: false, holdout: false,
+  const args = { scenario: [], model: null, sonnetOnly: false, smoke: false, full: false, holdout: false,
     dryRun: false, updateBaseline: false, promptIndex: null, keepSandbox: false, maxWorkers: 5 };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -44,6 +44,7 @@ function parseArgs(argv) {
     else if (a === "--dry-run") args.dryRun = true;
     else if (a === "--update-baseline") args.updateBaseline = true;
     else if (a === "--keep-sandbox") args.keepSandbox = true;
+    else if (a === "--sonnet-only") args.sonnetOnly = true;
     else if (a === "--scenario") args.scenario.push(argv[++i]);
     else if (a === "--model") args.model = argv[++i];
     else if (a === "--prompt-index") args.promptIndex = Number(argv[++i]);
@@ -54,6 +55,9 @@ function parseArgs(argv) {
     throw new Error("one of --smoke | --full | --scenario <id> is required");
   if (!Number.isInteger(args.maxWorkers) || args.maxWorkers < 1)
     throw new Error("--max-workers must be a positive integer");
+  // 이터레이션용 저비용 서브셋: s.models=[sonnet,opus]인 시나리오도 sonnet만 돌린다.
+  // (--model sonnet과 동치인 편의 플래그. 명시적 --model이 있으면 그쪽을 존중한다.)
+  if (args.sonnetOnly && !args.model) args.model = "sonnet";
   return args;
 }
 

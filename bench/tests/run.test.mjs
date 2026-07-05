@@ -66,3 +66,25 @@ test("run.mjs --max-workers 2 executes a multi-scenario matrix concurrently (dry
     rmSync(scenDir, { recursive: true, force: true });
   }
 });
+
+test("run.mjs --sonnet-only collapses a both-models scenario to sonnet (dry-run)", () => {
+  const scenDir = mkdtempSync(join(tmpdir(), "ipa-bench-sonnet-"));
+  writeFileSync(join(scenDir, "zz-sonnet-probe.mjs"), `export default [{
+    id: "a94-sonnet-only", group: "A", persona: "empty", mode: "single",
+    smoke: false, holdout: false, harness: false, models: ["sonnet", "opus"],
+    prompts: ["프로브"], turns: [{ user: "$PROMPT", expect: { ipa_used: true } }],
+    responder: null, budget: { maxCostUsd: 1, maxIpaCalls: 10 }, goldenPath: null, maxTurns: 4 }];`);
+  mkdirSync(join(REPO, "bench", "vaults", "empty"), { recursive: true });
+  writeFileSync(join(REPO, "bench", "vaults", "empty", ".gitkeep"), "");
+  try {
+    execFileSync(process.execPath,
+      [join(REPO, "bench", "run.mjs"), "--dry-run", "--sonnet-only", "--scenario", "a94-sonnet-only"],
+      { encoding: "utf8", cwd: REPO, env: { ...process.env, IPA_BENCH_SCENARIOS_DIR: scenDir } });
+    const runsDir = join(REPO, "bench", "results", "runs");
+    const latest = readdirSync(runsDir).sort().at(-1);
+    const runSummary = JSON.parse(readFileSync(join(runsDir, latest, "run-summary.json"), "utf8"));
+    assert.deepEqual(runSummary.rows.map((r) => r.model), ["sonnet"]);
+  } finally {
+    rmSync(scenDir, { recursive: true, force: true });
+  }
+});
