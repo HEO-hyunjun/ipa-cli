@@ -2,8 +2,8 @@
 {"id":"a1-unrelated-coding","model":"sonnet","pass":true,"costUsd":0.12233759999999999,"ipaCalls":0}
 {"id":"a2-nonvault-file","model":"opus","pass":true,"costUsd":0.231996,"ipaCalls":0}
 {"id":"a2-nonvault-file","model":"sonnet","pass":true,"costUsd":0.14366730000000003,"ipaCalls":0}
-{"id":"a3-ipa-concept","model":"opus","pass":false,"costUsd":0.435094,"ipaCalls":6}
-{"id":"a3-ipa-concept","model":"sonnet","pass":true,"costUsd":0.2814921,"ipaCalls":5}
+{"id":"a3-ipa-concept","model":"opus","pass":true,"costUsd":0.440983,"ipaCalls":5}
+{"id":"a3-ipa-concept","model":"sonnet","pass":true,"costUsd":0.3577245,"ipaCalls":2}
 {"id":"b5-single-note","model":"opus","pass":true,"costUsd":0.2821445,"ipaCalls":3}
 {"id":"b5-single-note","model":"sonnet","pass":true,"costUsd":0.2086149,"ipaCalls":2}
 {"id":"b6-multi-note-synthesis","model":"opus","pass":true,"costUsd":0.495529,"ipaCalls":4}
@@ -16,8 +16,10 @@
 {"id":"c10-edit-note-section","model":"sonnet","pass":true,"costUsd":0.33744840000000004,"ipaCalls":5}
 {"id":"c11-frontmatter-only","model":"opus","pass":true,"costUsd":0.583966,"ipaCalls":10}
 {"id":"c11-frontmatter-only","model":"sonnet","pass":true,"costUsd":0.37407300000000004,"ipaCalls":7}
-{"id":"c12-inbox-triage","model":"opus","pass":false,"costUsd":1.470286,"ipaCalls":24}
-{"id":"c12-inbox-triage","model":"sonnet","pass":true,"costUsd":0.8134733999999999,"ipaCalls":17}
+{"id":"c12-inbox-triage","model":"opus","pass":true,"costUsd":1.5041265,"ipaCalls":19}
+{"id":"c12-inbox-triage","model":"sonnet","pass":true,"costUsd":1.0330620000000001,"ipaCalls":32}
+{"id":"c13-rename-index","model":"opus","pass":true,"costUsd":0.6400190000000001,"ipaCalls":10}
+{"id":"c13-rename-index","model":"sonnet","pass":true,"costUsd":0.34565189999999996,"ipaCalls":9}
 {"id":"c9-inbox-capture","model":"opus","pass":true,"costUsd":0.4777845,"ipaCalls":5}
 {"id":"c9-inbox-capture","model":"sonnet","pass":true,"costUsd":0.3613092,"ipaCalls":6}
 {"id":"d13-divergent-mapping","model":"opus","pass":true,"costUsd":0.424411,"ipaCalls":5}
@@ -28,8 +30,8 @@
 {"id":"d15-vault-rule-compliance","model":"sonnet","pass":true,"costUsd":0.5156691,"ipaCalls":7}
 {"id":"e16-author-rule","model":"opus","pass":true,"costUsd":0.8367435000000001,"ipaCalls":7}
 {"id":"e16-author-rule","model":"sonnet","pass":true,"costUsd":0.5974046999999999,"ipaCalls":10}
-{"id":"e17-search-personalization","model":"opus","pass":true,"costUsd":1.55212,"ipaCalls":15}
-{"id":"e17-search-personalization","model":"sonnet","pass":true,"costUsd":1.3288644,"ipaCalls":28}
+{"id":"e17-search-personalization","model":"opus","pass":true,"costUsd":1.9470945,"ipaCalls":18}
+{"id":"e17-search-personalization","model":"sonnet","pass":true,"costUsd":0.7288074,"ipaCalls":17}
 {"id":"f18-preipa-bootstrap","model":"opus","pass":true,"costUsd":1.5340105000000002,"ipaCalls":7}
 {"id":"f18-preipa-bootstrap","model":"sonnet","pass":true,"costUsd":1.4479349999999998,"ipaCalls":12}
 {"id":"f20-empty-coldstart","model":"opus","pass":true,"costUsd":1.08815,"ipaCalls":16}
