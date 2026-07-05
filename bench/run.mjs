@@ -1,4 +1,17 @@
 // bench/run.mjs
+//
+// 평가 모델 (2-축 + VOID). 단일 boolean pass가 정답과 비용을 융합하던 걸 축으로 분리한다.
+// summary.verdict = { correctness, efficiency, completion }:
+//   - correctness: turn.expect 어서션(흐름/파일/내용)이 전부 통과했는가. 예산·completion 제외.
+//   - efficiency: 콜 수 기준(모델 무관). 앵커는 goldenPath(사람이 추적한 최소 정답 시퀀스),
+//     폭주 상한은 per-scenario budget.maxIpaCalls(정당 관측 분포로 손 저작한 값).
+//       ok   = ipaCalls ≤ goldenPath×WARN_LOW
+//       warn = 그 위 ~ 상한 이내 ("정답인데 서툼" — 개선기회 리포트, fail 아님)
+//       over = 상한 초과 (폭주)
+//     goldenPath가 없으면 측정 불가 → ok(상한 게이트는 여전히 적용).
+//   - completion: max-turns/에러로 절단된 런은 void(성공 취급 금지, human-review 격리).
+// USD 비용은 관측치일 뿐 게이트가 아니다 — sonnet/opus 5× 가격차로 단일 임계 불가.
+// 종합 pass(baseline 게이트) = correctness AND 콜상한 AND efficiency!=over AND completion=completed.
 import { mkdirSync, writeFileSync, rmSync, appendFileSync, existsSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -123,11 +136,13 @@ async function runOne({ scenario, model }, args, runDir) {
   // correctness 축 = turn.expect 어서션(흐름/파일/내용)만. 예산·completion 축은 아래에서 별도.
   const correctness = assertions.every((a) => a.pass);
 
-  // 예산 축: ipa 콜 상한(maxIpaCalls)은 폭주 하드 게이트, USD는 관측치로 기록.
+  // 예산 축: ipa 콜 상한(maxIpaCalls)은 폭주 하드 게이트, USD는 관측치(게이트 아님).
+  // cost_within_budget은 가시성 위해 어서션으로 남기되 종합 pass엔 넣지 않는다 —
+  // sonnet/opus 5× 가격차로 단일 USD 임계를 전 모델에 적용할 수 없다.
   const calls = acc.ipaCalls.length;
   const ceilingPass = calls <= scenario.budget.maxIpaCalls;
   const costPass = acc.costUsd <= scenario.budget.maxCostUsd;
-  assertions.push({ turn: turnNo, name: "cost_within_budget", pass: costPass, detail: `$${acc.costUsd.toFixed(3)} / $${scenario.budget.maxCostUsd}` });
+  assertions.push({ turn: turnNo, name: "cost_within_budget", pass: costPass, detail: `$${acc.costUsd.toFixed(3)} / $${scenario.budget.maxCostUsd} (observational)` });
   assertions.push({ turn: turnNo, name: "ipa_calls_within_budget", pass: ceilingPass, detail: `${calls} / ${scenario.budget.maxIpaCalls}` });
 
   // 효율 축: stepRatio = ipaCalls/goldenPath. goldenPath 없으면 측정 불가 → "ok".
@@ -145,9 +160,9 @@ async function runOne({ scenario, model }, args, runDir) {
   if (acc.truncated) assertions.push({ turn: turnNo, name: "completion", pass: false, detail: "VOID: hit max-turns / error — needs human review" });
 
   const verdict = { correctness, efficiency, completion };
-  // 종합 pass = 정답 AND 폭주상한 AND USD예산 AND 효율!=over AND completion=completed.
-  // (게이트 전체 AND — baseline.mjs가 읽는 boolean. cost는 ITEM 4에서 관측치로 분리한다.)
-  const pass = correctness && ceilingPass && costPass && efficiency !== "over" && completion === "completed";
+  // 종합 pass = 정답 AND 폭주상한(ipa콜) AND 효율!=over AND completion=completed.
+  // USD(costPass)는 관측치라 게이트에서 제외한다. baseline.mjs가 읽는 boolean.
+  const pass = correctness && ceilingPass && efficiency !== "over" && completion === "completed";
 
   const summary = {
     id: scenario.id, model, promptIndex,
