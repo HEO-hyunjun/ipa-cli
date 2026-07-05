@@ -21,10 +21,11 @@ export default [
     ],
     turns: [
       { user: "$PROMPT", expect: { used_command: "tune|search" } },
-      // labeling(labels.jsonl) 또는 옵티마이저 실행 산출물(results/) 둘 다 정답 경로다 — 볼트가
-      // testset을 제공하므로 labeling 없이 바로 `ipa tune`을 돌리는 것도 정당하다. search가 자동
-      // 생성하는 search-events.jsonl은 `\.ipa/tune/`에 매칭돼 무의미하므로 구체 경로로 못 박는다.
-      { user: "응, 그 방법으로 진행해줘.", expect: { used_command: "tune", file_added: "\\.ipa/tune/(logs/labels\\.jsonl|results/)" } },
+      // 실제 tune 작업을 했는지를 서브커맨드로 판정한다 — label/testset/eval/analyze/optimize/apply/use
+      // 중 하나. 산출물 파일(labels.jsonl/results/)은 경로가 좁고(볼트가 이미 results를 제공하면
+      // modify라 add에 안 걸림) tune 경로마다 달라 취약하므로, `tune --help`만 본 게 아니라는 증거로
+      // 실작업 서브커맨드 사용을 요구한다. (search 자동 생성 로그는 tune 작업 증거로 치지 않는다.)
+      { user: "응, 그 방법으로 진행해줘.", expect: { used_command: "tune (label|testset|eval|analyze|optimize|apply|use)" } },
     ],
     budget: { maxCostUsd: 3.85, maxIpaCalls: 28 }, goldenPath: 6 },
 ];
