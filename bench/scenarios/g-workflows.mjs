@@ -7,7 +7,7 @@
 // 메커니즘이 요점인 시나리오(링크/이동/리네임)엔 no_hand_edit 게이트를 걸어 CLI 우회 손편집을
 // 차단한다(mechanism-in-CLI). 픽스처 제목은 데이터라 하드코딩하되 폴더/필드명 규칙은 canonical
 // mapping(refs=ref/tags=tags/folders=00 Inbox·02 Archive)을 따른다.
-const base = { group: "G", persona: "canonical", mode: "single", smoke: false, holdout: false, harness: true, models: ["sonnet", "opus"], responder: null, maxTurns: 12 };
+const base = { group: "G", persona: "canonical", mode: "single", smoke: false, holdout: false, harness: true, models: ["sonnet", "opus"], responder: null, maxTurns: 20 };
 export default [
   // 겹침 점검 메커니즘(read-only). 새 노트를 만들기 전에 기존과 겹치는 게 있는지 확인하는 요청.
   // 정답 메커니즘은 cascade plan --note 또는 search/context로 근접 노트를 조회하는 것 — 판단(흡수할지
@@ -29,7 +29,7 @@ export default [
   // 배열을 주므로 checkVault 규칙이 인덱스별 자식(ref) 수를 셀 수 있다 — 저작 가능. 자식 21개
   // '🔖 레시피 모음'에 저작한 rule이 발화하는지 validator로 end-state 판정한다. 저작이 매끄럽지
   // 않으면 그게 커스터마이징 프레임워크의 개선 방향(core 흡수 아님).
-  { ...base, id: "g24-review-overfull", mode: "multi", responder: "approve", maxTurns: 16,
+  { ...base, id: "g24-review-overfull", mode: "multi", responder: "approve", maxTurns: 24,
     prompts: [
       "인덱스가 자식 20개 넘게 커지면 경고하는 규칙을 만들어줘.",
       "노트 인덱스가 너무 비대해지면 알려주는 볼트 규칙 세워줘.",
