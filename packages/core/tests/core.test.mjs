@@ -962,7 +962,13 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   assert.match(globalPrompt, /ipa <command> --help/);
   assert.match(globalPrompt, /ipa convention/);
   assert.match(globalPrompt, /skills\/ipa\/SKILL\.md/);
-  assert.doesNotMatch(globalPrompt, /IPA Command Selection/, "command selection must live in the skill only");
+  // G7: the always-on global block carries one efficiency pointer (digest-first,
+  // 2-3 full reads, then converge) so a session that skips the Skill still gets
+  // it. Distinct wording from the skill's fuller version, not copy-pasted into it.
+  assert.match(globalPrompt, /ipa digest/);
+  assert.match(globalPrompt, /before opening/);
+  assert.match(globalPrompt, /converge/);
+  assert.doesNotMatch(skill, /digesting ones you already read/, "the global efficiency bullet must not be copy-pasted into the skill's command selection");
   assert.doesNotMatch(globalPrompt, /ipa link suggest/, "global block must not duplicate the command catalog");
   assert.match(await readFile(join(home, ".codex", "hooks", "ipa-inbox-guard.mjs"), "utf8"), /shared IPA inbox creation guard/);
   const markdownNudge = await readFile(join(home, ".codex", "hooks", "ipa-md-write-nudge.mjs"), "utf8");
@@ -1879,6 +1885,12 @@ test("harness prompt surfaces render field and folder names from the config mapp
   const triageSkill = await readFile(join(vault, ".claude", "skills", "ipa-triage", "SKILL.md"), "utf8");
   assert.match(triageSkill, /--field link --add "Index Note" --apply/);
 
+  // G7: the always-on efficiency bullet survives a mapped-fixture render (it
+  // references no folder/field, so it stays mapping-safe).
+  const globalPrompt = await readFile(join(home, ".claude", "CLAUDE.md"), "utf8");
+  assert.match(globalPrompt, /ipa digest/);
+  assert.match(globalPrompt, /converge/);
+
   await harnessUninstall(vault, "claude", options);
 });
 
@@ -2234,8 +2246,64 @@ test("opencode plugin with hook:evidence composes formatter-gate and evidence ev
 
     // When: a session.idle event arrives. The formatter-gate handler must
     // still be callable in the same composed hook. With no pending formatter
-    // notes, runFormatterGate returns early without throwing.
+    // notes and no gate plugins, the session gate returns clean without throwing.
     await eventHook({ type: "session.idle" });
+
+    await harnessUninstall(vault, "opencode", options);
+  } finally {
+    if (previousVaultEnv === undefined) delete process.env.IPA_VAULT_PATH;
+    else process.env.IPA_VAULT_PATH = previousVaultEnv;
+  }
+});
+
+test("opencode session.idle runs vault gate plugins via the CLI and fails safe on plugin errors", async () => {
+  const vault = await fixtureVault();
+  const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
+  const options = { homeDir: home, profile: "ipa-test", components: { only: ["hook:formatter-gate"] } };
+  const opencodeHome = join(home, ".config", "opencode");
+  const previousVaultEnv = process.env.IPA_VAULT_PATH;
+  process.env.IPA_VAULT_PATH = vault;
+
+  try {
+    // Given: a vault gate plugin that blocks when Alpha was edited this session.
+    await mkdir(join(vault, ".ipa", "plugins", "gates"), { recursive: true });
+    await writeFile(
+      join(vault, ".ipa", "plugins", "gates", "block-gate.js"),
+      `export default { name: "block-gate", check(ctx) {
+  const edited = new Set(ctx.session.edits.map((e) => e.title));
+  return edited.has("Alpha") ? { block: true, message: "block-gate: finish the Alpha follow-up" } : null;
+} };\n`,
+      "utf8"
+    );
+    // Given: Alpha is a formatter-clean pending edit in this session, so only the
+    // gate plugin can block (not the builtin formatter check).
+    await formatVault(vault, true, { notes: ["Alpha"] });
+    const pendingPath = join(vault, ".ipa", "harness", "formatter-pending.json");
+    await mkdir(dirname(pendingPath), { recursive: true });
+    await writeFile(
+      pendingPath,
+      JSON.stringify({ version: 1, notes: [{ title: "Alpha", path: "00 Inbox/Alpha.md", session_id: null, updated_at: new Date().toISOString() }] }, null, 2) + "\n",
+      "utf8"
+    );
+
+    await harnessInstall(vault, "opencode", options);
+    const pluginPath = join(opencodeHome, "plugins", "ipa-harness.js");
+    const plugin = await (await import(pathToFileURL(pluginPath).href)).IPAHarnessPlugin();
+    const eventHook = plugin.hooks["event"];
+    assert.ok(typeof eventHook === "function", "formatter-gate registers the session.idle event hook");
+
+    // Then: the vault gate plugin now blocks on OpenCode (it was invisible before).
+    await assert.rejects(() => Promise.resolve(eventHook({ type: "session.idle" })), /block-gate/);
+
+    // When: the gate plugin throws instead — a broken gate must never block.
+    await rm(join(vault, ".ipa", "plugins", "gates", "block-gate.js"));
+    await writeFile(
+      join(vault, ".ipa", "plugins", "gates", "boom-gate.js"),
+      'export default { name: "boom-gate", check() { throw new Error("boom"); } };\n',
+      "utf8"
+    );
+    await rm(pendingPath, { force: true });
+    await assert.doesNotReject(() => Promise.resolve(eventHook({ type: "session.idle" })));
 
     await harnessUninstall(vault, "opencode", options);
   } finally {
@@ -2450,6 +2518,137 @@ test("call-counter hook counts ipa Bash calls per session and nudges at the thre
 
   await harnessUninstall(vault, "claude", options);
   assert.equal(existsSync(script), false);
+});
+
+test("call-counter thresholds come from vault config, baked into the generated script", async () => {
+  // Given: a vault that lowers the call-counter thresholds in config.
+  const vault = await fixtureVault();
+  await writeFile(
+    join(vault, ".ipa", "config.yaml"),
+    `${await readFile(join(vault, ".ipa", "config.yaml"), "utf8")}\nharness:\n  call_counter:\n    warn_at: 3\n    repeat_every: 2\n`,
+    "utf8"
+  );
+  const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
+  const options = { homeDir: home, profile: "ipa-test" };
+  await harnessInstall(vault, "claude", options);
+
+  // Then: the generated script bakes the configured constants, not the defaults.
+  const script = await readFile(join(home, ".claude", "hooks", "ipa-call-counter.mjs"), "utf8");
+  assert.match(script, /const WARN_AT = 3;/);
+  assert.match(script, /const REPEAT_EVERY = 2;/);
+
+  // Then: install and the outdated-check render the same constants — no false-positive drift.
+  const doctor = await harnessDoctor(vault, options);
+  assert.ok(
+    !(doctor.issues ?? []).some((issue) => issue.code === "harness.component_outdated" && /call-counter/.test(issue.message)),
+    JSON.stringify(doctor.issues)
+  );
+
+  await harnessUninstall(vault, "claude", options);
+
+  // And: a vault with no call_counter config keeps the 10/6 defaults.
+  const plain = await fixtureVault();
+  const plainHome = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
+  const plainOptions = { homeDir: plainHome, profile: "ipa-test" };
+  await harnessInstall(plain, "claude", plainOptions);
+  const plainScript = await readFile(join(plainHome, ".claude", "hooks", "ipa-call-counter.mjs"), "utf8");
+  assert.match(plainScript, /const WARN_AT = 10;/);
+  assert.match(plainScript, /const REPEAT_EVERY = 6;/);
+  await harnessUninstall(plain, "claude", plainOptions);
+});
+
+test("mutation-ledger hook records unapplied ipa dry-run mutations per session and clears on apply", async () => {
+  const vault = await fixtureVault();
+  const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
+  const options = { homeDir: home, profile: "ipa-test" };
+  await harnessInstall(vault, "claude", options);
+
+  const script = join(home, ".claude", "hooks", "ipa-mutation-ledger.mjs");
+  assert.equal(existsSync(script), true);
+  const ledgerPath = join(vault, ".ipa", "harness", "mutation-pending.json");
+  const hookEnv = { ...process.env, IPA_VAULT_PATH: vault };
+  const runHook = (command, sessionId = "sess-mut") => spawnSync(process.execPath, [script], {
+    input: JSON.stringify({ session_id: sessionId, tool_name: "Bash", tool_input: { command } }),
+    env: hookEnv,
+    encoding: "utf8"
+  });
+  const readLedger = async () => JSON.parse(await readFile(ledgerPath, "utf8")).mutations;
+
+  // Non-mutation ipa commands leave no trace.
+  runHook('ipa search "query"');
+  assert.equal(existsSync(ledgerPath), false);
+
+  // A dry-run mutation (no --apply) is recorded, silently.
+  const rename = runHook('ipa rename "Old" "New"');
+  assert.equal(rename.status, 0);
+  assert.equal(rename.stdout.trim(), "", "recording hook must stay silent on stdout");
+  let mutations = await readLedger();
+  assert.equal(mutations.length, 1);
+  assert.equal(mutations[0].command, "rename");
+  assert.equal(mutations[0].session_id, "sess-mut");
+
+  // A plan subcommand (link) is tracked under its family name.
+  runHook('ipa link plan --note "Alpha"');
+  assert.deepEqual(new Set((await readLedger()).map((m) => m.command)), new Set(["rename", "link"]));
+
+  // A different session's apply must not clear this session's entries.
+  runHook('ipa rename "Old" "New" --apply', "sess-other");
+  assert.deepEqual(new Set((await readLedger()).map((m) => m.command)), new Set(["rename", "link"]));
+
+  // Applying in the owning session clears just that command family.
+  runHook('ipa rename "Old" "New" --apply');
+  assert.deepEqual((await readLedger()).map((m) => m.command), ["link"]);
+
+  // link apply clears the link entry; the ledger file is removed when empty.
+  runHook('ipa link apply .ipa/plans/link.json');
+  assert.equal(existsSync(ledgerPath), false);
+
+  // A chained plan && apply in one bash line nets clean.
+  runHook('ipa cascade plan --note "Alpha" && ipa cascade apply --note "Alpha"');
+  assert.equal(existsSync(ledgerPath), false);
+
+  // A dry-run without its apply records the family.
+  runHook('ipa cascade plan --note "Alpha"');
+  assert.deepEqual((await readLedger()).map((m) => m.command), ["cascade"]);
+
+  // The claude settings registration uses the Bash matcher on PostToolUse.
+  const settings = JSON.parse(await readFile(join(home, ".claude", "settings.json"), "utf8"));
+  const ledgerGroups = (settings.hooks.PostToolUse ?? []).filter((group) =>
+    (group.hooks ?? []).some((hook) => hook.command.includes("ipa-mutation-ledger.mjs"))
+  );
+  assert.equal(ledgerGroups.length, 1);
+  assert.equal(ledgerGroups[0].matcher, "Bash");
+
+  await harnessUninstall(vault, "claude", options);
+  assert.equal(existsSync(script), false);
+});
+
+test("doctor reports the mutation-ledger hook script when it is missing", async () => {
+  const vault = await fixtureVault();
+  const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
+  const options = { homeDir: home, profile: "ipa-test" };
+  await harnessInstall(vault, "claude", options);
+  const script = join(home, ".claude", "hooks", "ipa-mutation-ledger.mjs");
+  assert.equal(existsSync(script), true);
+  await rm(script);
+  const report = await harnessDoctor(vault, options);
+  assert.ok(
+    report.issues.some((issue) => issue.code === "harness.global_mutation-ledger_hook_missing"),
+    JSON.stringify(report.issues.map((i) => i.code))
+  );
+  await harnessUninstall(vault, "claude", options);
+});
+
+test("scaffolded plugin types expose pending_mutations and the disabled example gate", async () => {
+  const vault = await fixtureVault();
+  await pluginInit(vault);
+  const types = await readFile(join(vault, ".ipa", "plugins", "types", "ipa-plugin.d.ts"), "utf8");
+  assert.match(types, /pending_mutations/);
+  assert.match(types, /GatePendingMutation/);
+  assert.ok(
+    existsSync(join(vault, ".ipa", "plugins", "gates", "_example-unapplied-mutation-gate.js")),
+    "the unapplied-mutation example gate ships disabled (underscore prefix)"
+  );
 });
 
 test("core-backed writes sync the mapped updated_at field automatically", async () => {
@@ -2853,6 +3052,115 @@ test("session gate clears a clean note whose ledger entry carries a foreign sess
   assert.equal(existsSync(pendingPath), true, "dirty foreign work must survive a gate in another session");
 });
 
+test("generated formatter-gate hook surfaces gate-plugin errors as a non-blocking warning", async () => {
+  const vault = await fixtureVault();
+  const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
+  const options = { homeDir: home, profile: "ipa-test" };
+  await harnessInstall(vault, "claude", options);
+
+  // Given: a gate plugin that throws — it must never block, but must not fail silently.
+  await mkdir(join(vault, ".ipa", "plugins", "gates"), { recursive: true });
+  await writeFile(
+    join(vault, ".ipa", "plugins", "gates", "boom-gate.js"),
+    'export default { name: "boom-gate", check() { throw new Error("gate exploded"); } };\n',
+    "utf8"
+  );
+
+  const formatterGate = join(home, ".claude", "hooks", "ipa-formatter-gate.mjs");
+  const hookEnv = { ...process.env, IPA_VAULT_PATH: vault };
+  const result = spawnSync(process.execPath, [formatterGate], { input: "{}", env: hookEnv, encoding: "utf8" });
+
+  // Then: exit 0 (a plugin error never blocks) and the error is surfaced via additionalContext.
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.hookSpecificOutput.hookEventName, "Stop");
+  assert.match(payload.hookSpecificOutput.additionalContext, /not blocking/);
+  assert.match(payload.hookSpecificOutput.additionalContext, /boom-gate/);
+  assert.match(payload.hookSpecificOutput.additionalContext, /gate exploded/);
+
+  await harnessUninstall(vault, "claude", options);
+});
+
+test("session gate exposes pending_mutations to gate plugins without clearing the ledger", async () => {
+  const vault = await fixtureVault();
+  await mkdir(join(vault, ".ipa", "plugins", "gates"), { recursive: true });
+  await writeFile(
+    join(vault, ".ipa", "plugins", "gates", "mutation-gate.js"),
+    `export default {
+  name: "mutation-gate",
+  check(ctx) {
+    const pending = ctx.session.pending_mutations ?? [];
+    if (!pending.length) return null;
+    return { block: true, message: "unapplied mutation(s): " + pending.map((m) => m.command).join(",") };
+  }
+};\n`,
+    "utf8"
+  );
+
+  const mutationPath = join(vault, ".ipa", "harness", "mutation-pending.json");
+  await mkdir(dirname(mutationPath), { recursive: true });
+  const seed = (entries) => writeFile(mutationPath, JSON.stringify({ version: 1, mutations: entries }, null, 2) + "\n", "utf8");
+  await seed([{ command: "rename", session_id: "sess-1", ts: new Date().toISOString() }]);
+
+  // Then: the owning session's gate sees the pending mutation and blocks.
+  const blocked = await harnessSessionGate(vault, { session: "sess-1" });
+  assert.equal(blocked.block, true);
+  assert.ok(blocked.blocks.some((item) => item.source === "mutation-gate" && /rename/.test(item.message)));
+  // Then: the gate never clears the mutation ledger (only --apply/TTL do).
+  assert.equal(existsSync(mutationPath), true, "gate must not clear the mutation ledger");
+
+  // Then: a foreign session does not see sess-1's pending mutation.
+  const other = await harnessSessionGate(vault, { session: "sess-2" });
+  assert.equal(other.block, false);
+  assert.equal(existsSync(mutationPath), true);
+
+  // Then: a null-session gate sees every entry (single-session harness fallback).
+  const all = await harnessSessionGate(vault, {});
+  assert.equal(all.block, true);
+
+  // And: pluginDryRun hands the same session shape, so the example gate is dry-runnable.
+  const dry = await pluginDryRun(vault, "gates", ".ipa/plugins/gates/mutation-gate.js", { mutations: ["move"] });
+  assert.equal(dry.result.block, true);
+  assert.match(dry.result.message, /move/);
+});
+
+test("session gate surfaces a non-blocking gate warning to the agent", async () => {
+  const vault = await fixtureVault();
+  const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
+  const options = { homeDir: home, profile: "ipa-test" };
+  await harnessInstall(vault, "claude", options);
+
+  // Given: a gate that returns {block:false, message} — an advisory warning, the
+  // shape of the shipped _example-unapplied-mutation-gate.js.
+  await mkdir(join(vault, ".ipa", "plugins", "gates"), { recursive: true });
+  await writeFile(
+    join(vault, ".ipa", "plugins", "gates", "warn-gate.js"),
+    'export default { name: "warn-gate", check() { return { block: false, message: "warn-me: advisory only" }; } };\n',
+    "utf8"
+  );
+
+  // Then: the result lands in warnings (not blocks) and never blocks the session.
+  const gated = await harnessSessionGate(vault, { session: "sess-warn" });
+  assert.equal(gated.block, false);
+  assert.ok(gated.warnings.some((item) => item.source === "warn-gate" && /warn-me/.test(item.message)));
+  assert.ok(!gated.blocks.some((item) => item.source === "warn-gate"), JSON.stringify(gated.blocks));
+
+  // Then: the generated Stop hook exits 0 and surfaces the warning via additionalContext.
+  const formatterGate = join(home, ".claude", "hooks", "ipa-formatter-gate.mjs");
+  const result = spawnSync(process.execPath, [formatterGate], {
+    input: "{}",
+    env: { ...process.env, IPA_VAULT_PATH: vault },
+    encoding: "utf8"
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.hookSpecificOutput.hookEventName, "Stop");
+  assert.match(payload.hookSpecificOutput.additionalContext, /not blocking/);
+  assert.match(payload.hookSpecificOutput.additionalContext, /warn-me/);
+
+  await harnessUninstall(vault, "claude", options);
+});
+
 test("obsidian plugin sync deploys the built bundle into the vault plugin folder", async () => {
   const vault = await fixtureVault();
   const repoRoot = await mkdtemp(join(tmpdir(), "ipa-obsidian-repo-"));
@@ -3203,6 +3511,33 @@ test("plugin doctor attributes issues to the failing plugin path", async () => {
   const broken = report.issues.find((issue) => issue.code === "plugin.load_failed");
   assert.ok(broken, JSON.stringify(report.issues));
   assert.match(broken.path ?? "", /broken\.js/);
+});
+
+test("harness doctor flags an invalid vault plugin as harness.plugin_invalid", async () => {
+  const vault = await fixtureVault();
+  const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
+  const options = { homeDir: home, profile: "ipa-test" };
+  await harnessInstall(vault, "claude", options);
+
+  // Given: a clean vault (only the disabled _example plugins) — no plugin issues.
+  const clean = await harnessDoctor(vault, options);
+  assert.ok(
+    !(clean.issues ?? []).some((issue) => issue.code === "harness.plugin_invalid"),
+    JSON.stringify(clean.issues)
+  );
+
+  // When: an enabled gate plugin is syntactically broken (the same class of file
+  // that feeds the session gate hooks).
+  await mkdir(join(vault, ".ipa", "plugins", "gates"), { recursive: true });
+  await writeFile(join(vault, ".ipa", "plugins", "gates", "broken.js"), "export default { name: 'x', check() {", "utf8");
+
+  // Then: harness doctor surfaces it (fed by plugin doctor) without crashing.
+  const report = await harnessDoctor(vault, options);
+  const invalid = (report.issues ?? []).filter((issue) => issue.code === "harness.plugin_invalid");
+  assert.ok(invalid.length >= 1, JSON.stringify(report.issues));
+  assert.match(invalid[0].message, /broken\.js/);
+
+  await harnessUninstall(vault, "claude", options);
 });
 
 test("harness doctor flags installed hook scripts that lost their hooks-config registration", async () => {

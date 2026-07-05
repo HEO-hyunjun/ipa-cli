@@ -5108,6 +5108,27 @@ const gate = {
 export default gate;
 `;
 
+const PLUGIN_GATE_UNAPPLIED_EXAMPLE = `// @ts-check
+// Example session gate: warns (without blocking) when this session previewed an
+// ipa mutation (link/cascade plan, rename/move/refactor dry-run) but never ran
+// its --apply/apply. ctx.session.pending_mutations is command-name granularity
+// only — it cannot say which target was previewed. Rename the file (drop the
+// leading underscore) to enable. This gate returns block:false, so it is
+// advisory; the Stop gate only holds the response on a blocking result, so flip
+// block to true if unapplied plans should hard-block the session end.
+/** @type {import("../types/ipa-plugin").Gate} */
+const gate = {
+  name: "example-unapplied-mutation-gate",
+  check(ctx) {
+    const pending = ctx.session.pending_mutations ?? [];
+    if (!pending.length) return null;
+    const commands = [...new Set(pending.map((item) => item.command))].join(", ");
+    return { block: false, message: \`example gate: previewed but never applied: \${commands}. Re-run with --apply (or ipa link/cascade apply) if the change was intended.\` };
+  }
+};
+export default gate;
+`;
+
 const PLUGIN_JSCONFIG = `{
   "compilerOptions": {
     "checkJs": true,
@@ -5299,7 +5320,9 @@ export type PostRank = (hits: RankedHit[], ctx: SearchContext & { threshold: num
 /**
  * Session gate plugins live in .ipa/plugins/gates/*.js and run when a harness
  * session tries to end (Stop hook -> \`ipa harness gate\`). ctx.session.edits
- * lists the notes this session created or edited. Return { block: true,
+ * lists the notes this session created or edited. ctx.session.pending_mutations
+ * lists ipa dry-run mutations (link/cascade plan, rename/move/refactor preview)
+ * this session ran without a following --apply/apply. Return { block: true,
  * message } to hold the final response until the condition is fixed; return
  * null/undefined/{ block: false } to pass. A gate that throws is reported but
  * never blocks. Enable/disable via \`gates.plugins\` in .ipa/config.yaml.
@@ -5310,15 +5333,34 @@ export interface GateSessionEdit {
   updated_at: string | null;
 }
 
+/**
+ * A recorded dry-run mutation that was not followed by an apply. Granularity is
+ * the command name only ("link", "cascade", "rename", "move", "refactor") — the
+ * ledger does not correlate a plan with the specific target note/args, so a gate
+ * can tell that *some* rename was previewed and not applied, not which one.
+ */
+export interface GatePendingMutation {
+  command: string;
+  ts: string | null;
+}
+
 export interface GateContext {
   vaultPath: string;
   config: Record<string, unknown>;
   mapping: Mapping;
   notes: Note[];
   lookup: (ref: string) => Note | null;
-  session: { id: string | null; edits: GateSessionEdit[] };
+  session: { id: string | null; edits: GateSessionEdit[]; pending_mutations: GatePendingMutation[] };
 }
 
+/**
+ * Returned by a gate's check(). block:true hard-blocks the session end and
+ * surfaces message to the agent as the blocking reason. block:false with a
+ * message is a non-blocking warning: it is surfaced to the agent at session end
+ * (Stop-hook additionalContext on claude/codex, console.warn on OpenCode) but
+ * never holds the response. Return null/undefined when the gate has nothing to
+ * say.
+ */
 export interface GateResult {
   block: boolean;
   message?: string;
@@ -5428,6 +5470,7 @@ export async function pluginInit(vaultPath, options = {}) {
     await writePluginScaffoldFile(vaultPath, `${root}/rules/_example-overfull-index.js`, PLUGIN_RULE_OVERFULL_INDEX_EXAMPLE, force, result);
     await writePluginScaffoldFile(vaultPath, `${root}/search/_example-heading-search.js`, PLUGIN_SEARCH_EXAMPLE, force, result);
     await writePluginScaffoldFile(vaultPath, `${root}/gates/_example-session-gate.js`, PLUGIN_GATE_EXAMPLE, force, result);
+    await writePluginScaffoldFile(vaultPath, `${root}/gates/_example-unapplied-mutation-gate.js`, PLUGIN_GATE_UNAPPLIED_EXAMPLE, force, result);
   }
   return result;
 }
@@ -5637,13 +5680,14 @@ export async function pluginDryRun(vaultPath, kind, pluginRelPath, options = {})
       if (!found) throw new Error(`note not found: ${title}`);
       return { title: found.id, path: found.relPath, updated_at: new Date().toISOString() };
     });
+    const pendingMutations = asList(options.mutations).map((command) => ({ command: String(command), ts: null }));
     const ctx = {
       vaultPath,
       config,
       mapping,
       notes,
       lookup: (ref) => findNote(notes, ref) ?? null,
-      session: { id: options.session ?? "dry-run", edits }
+      session: { id: options.session ?? "dry-run", edits, pending_mutations: pendingMutations }
     };
     const result = await gate.check(ctx);
     return { kind, plugin: pluginRelPath, gate: gate.name, edits: edits.map((item) => item.title), result: result ?? null };
@@ -6501,6 +6545,7 @@ const HARNESS_COMPONENTS = [
   "hook:guard",
   "hook:markdown-nudge",
   "hook:call-counter",
+  "hook:mutation-ledger",
   "hook:formatter-gate",
   "hook:vault-ref",
   "hook:evidence"
@@ -6511,6 +6556,7 @@ const HARNESS_HOOK_COMPONENT_TO_SCRIPT = {
   "hook:guard": "ipa-inbox-guard.mjs",
   "hook:markdown-nudge": "ipa-md-write-nudge.mjs",
   "hook:call-counter": "ipa-call-counter.mjs",
+  "hook:mutation-ledger": "ipa-mutation-ledger.mjs",
   "hook:formatter-gate": "ipa-formatter-gate.mjs",
   "hook:vault-ref": "ipa-vault-ref-nudge.mjs",
   "hook:evidence": "ipa-prompt-evidence.mjs"
@@ -6521,6 +6567,7 @@ const HARNESS_HOOK_COMPONENT_TO_EVENT = {
   "hook:guard": "PreToolUse",
   "hook:markdown-nudge": "PostToolUse",
   "hook:call-counter": "PostToolUse",
+  "hook:mutation-ledger": "PostToolUse",
   "hook:formatter-gate": "Stop",
   "hook:vault-ref": "UserPromptSubmit",
   "hook:evidence": "UserPromptSubmit"
@@ -6531,6 +6578,7 @@ const HARNESS_HOOK_COMPONENT_TO_MATCHER = {
   "hook:guard": "Write|Edit|MultiEdit",
   "hook:markdown-nudge": "Write|Edit|MultiEdit",
   "hook:call-counter": "Bash",
+  "hook:mutation-ledger": "Bash",
   "hook:formatter-gate": null,
   "hook:vault-ref": null,
   "hook:evidence": null
@@ -6541,15 +6589,17 @@ const HARNESS_HOOK_COMPONENT_TO_PLUGIN_MARKER = {
   "hook:guard": 'hooks["tool.execute.before"]',
   "hook:markdown-nudge": 'hooks["tool.execute.after"]',
   "hook:call-counter": "callCounterHandler",
-  "hook:formatter-gate": "runFormatterGate",
+  "hook:formatter-gate": "runSessionGate",
   "hook:evidence": "evidenceHandler"
 };
 
 function componentsValidForTarget(name) {
-  // The Bash call counter and the vault path-reference nudge are claude/codex
-  // hooks; the opencode plugin has no equivalent handlers yet. The permissions
-  // component registers a Claude Code allow rule, so it only applies to claude.
-  if (name === "opencode") return HARNESS_COMPONENTS.filter((component) => component !== "hook:call-counter" && component !== "hook:vault-ref" && component !== "permissions");
+  // The Bash call counter, the Bash mutation ledger, and the vault
+  // path-reference nudge are claude/codex hooks; the opencode plugin has no
+  // equivalent handlers yet (mutation-ledger on OpenCode is a documented
+  // follow-up). The permissions component registers a Claude Code allow rule,
+  // so it only applies to claude.
+  if (name === "opencode") return HARNESS_COMPONENTS.filter((component) => component !== "hook:call-counter" && component !== "hook:mutation-ledger" && component !== "hook:vault-ref" && component !== "permissions");
   if (name === "claude") return HARNESS_COMPONENTS.filter((component) => component !== "opencode-plugin");
   return HARNESS_COMPONENTS.filter((component) => component !== "opencode-plugin" && component !== "permissions");
 }
@@ -6681,6 +6731,7 @@ This ${tool} environment has the IPA CLI installed for the user's IPA note vault
 
 - When a request touches the vault, vault notes, or the user's prior work/decisions, answer from vault evidence: drive the work through \`ipa\` commands from the first turn instead of answering from memory or reading vault files directly.
 - Entry points: \`ipa search "keyword"\` (discovery; several quoted queries in one call: \`ipa search "A" "B"\`), \`ipa view "Note Title"\` (read), \`ipa context "keyword" --size medium --format markdown\` (broad/history bootstrap). Full workflow: the \`ipa\` skill at \`${skillPath}\`; exact syntax: \`ipa <command> --help\`.
+- On an index or root note, run \`ipa digest\` before opening any child, then read at most 2-3 in full — and once you already have enough evidence, converge on the answer instead of opening more notes or digesting ones you already read.
 - IPA concepts and this vault's operating rules: \`ipa convention\`.
 - Create new vault notes only through \`ipa inbox add\` — a guard hook blocks new markdown outside the inbox.
 - After editing vault markdown, finish the note-scoped loop: \`ipa validator --note ...\`, \`ipa formatter plan --note ...\`, \`ipa formatter apply --note ...\`. A Stop gate blocks final responses while formatter patches remain.`;
@@ -7085,6 +7136,7 @@ const IPA_MANAGED_HOOK_SCRIPTS = [
   "ipa-user-prompt-nudge.mjs",
   "ipa-md-write-nudge.mjs",
   "ipa-call-counter.mjs",
+  "ipa-mutation-ledger.mjs",
   "ipa-formatter-gate.mjs",
   "ipa-vault-ref-nudge.mjs",
   "ipa-prompt-evidence.mjs"
@@ -7670,7 +7722,26 @@ process.stdout.write(JSON.stringify({
 `;
 }
 
+// Read the call-counter thresholds from vault config so install and the
+// outdated-check re-render the exact same baked constants (a mismatch would make
+// the outdated diff false-positive every time).
+function callCounterOptions(config) {
+  return {
+    warnAt: config?.harness?.call_counter?.warn_at ?? 10,
+    repeatEvery: config?.harness?.call_counter?.repeat_every ?? 6
+  };
+}
+
 function callCounterScript(vaultPath, options = {}) {
+  // Thresholds are baked at generation time (not parsed from YAML at runtime) so
+  // the generated script stays self-contained; a config change surfaces as
+  // harness.component_outdated and is remediated by `ipa harness update`, like
+  // every other baked value. Coerce to a positive integer so an invalid config
+  // value can never emit a non-numeric literal into the generated script.
+  const warnAtRaw = Number(options.callCounter?.warnAt);
+  const repeatEveryRaw = Number(options.callCounter?.repeatEvery);
+  const warnAt = Number.isFinite(warnAtRaw) && warnAtRaw > 0 ? Math.floor(warnAtRaw) : 10;
+  const repeatEvery = Number.isFinite(repeatEveryRaw) && repeatEveryRaw > 0 ? Math.floor(repeatEveryRaw) : 6;
   return `#!/usr/bin/env node
 // ${HARNESS_MARKER}: nudge convergence when a session runs many ipa calls.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -7680,8 +7751,8 @@ import { spawnSync } from "node:child_process";
 
 const vaultPath = ${vaultResolverSnippet(vaultPath, options)};
 const statePath = join(vaultPath, ".ipa", "harness", "call-counter.json");
-const WARN_AT = 10;
-const REPEAT_EVERY = 6;
+const WARN_AT = ${warnAt};
+const REPEAT_EVERY = ${repeatEvery};
 const TTL_MS = 48 * 60 * 60 * 1000;
 
 function inputJson() {
@@ -7749,9 +7820,8 @@ if (count < WARN_AT || (count - WARN_AT) % REPEAT_EVERY !== 0) process.exit(0);
 
 const message = [
   \`[IPA CLI] This session has run \${count} ipa calls.\`,
-  "Check that exploration is converging: prefer \`ipa digest\` and search snippets over opening more notes,",
-  "read at most 2-3 notes in full, and start composing the answer from evidence already gathered.",
-  "If coverage is genuinely incomplete, state what was not checked instead of continuing to search."
+  "Exploration should be converging now: you likely have enough evidence, so compose the answer from the notes you have already read — do not open more or add a late \`ipa digest\` pass over notes you already read.",
+  "If coverage is genuinely incomplete, name the single missing note or keyword, check only that, and state what was not checked instead of continuing to explore."
 ].join("\\n");
 
 process.stdout.write(JSON.stringify({
@@ -7760,6 +7830,116 @@ process.stdout.write(JSON.stringify({
     additionalContext: message
   }
 }) + "\\n");
+`;
+}
+
+// PostToolUse (Bash) hook: record ipa dry-run mutations that were never
+// followed by an --apply/apply sighting, so a session-end gate plugin can warn
+// about unapplied plans. Recording only — silent on stdout. The ledger is a
+// mechanism (a fact the gate can read); whether to warn/block on it is vault
+// policy carried by a gate plugin.
+function mutationLedgerScript(vaultPath, options = {}) {
+  return `#!/usr/bin/env node
+// ${HARNESS_MARKER}: track ipa dry-run mutations that were never applied.
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
+import { spawnSync } from "node:child_process";
+
+const vaultPath = ${vaultResolverSnippet(vaultPath, options)};
+const statePath = join(vaultPath, ".ipa", "harness", "mutation-pending.json");
+const TTL_MS = 48 * 60 * 60 * 1000;
+
+function inputJson() {
+  try {
+    return JSON.parse(readFileSync(0, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+function firstString(values) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return null;
+}
+
+const input = inputJson();
+const toolInput = input.tool_input ?? input.toolInput ?? input.input ?? {};
+const command = firstString([toolInput.command, input.command]);
+if (!command || !/(^|[\\s;|&(])ipa\\s/.test(command)) process.exit(0);
+
+const sessionId = firstString([
+  input.session_id,
+  input.sessionId,
+  input.conversation_id,
+  input.conversationId,
+  input.transcript_path,
+  input.transcriptPath,
+  process.env.IPA_SESSION_ID,
+  process.env.CODEX_SESSION_ID,
+  process.env.CLAUDE_SESSION_ID,
+  process.env.TERM_SESSION_ID
+]) ?? "unknown";
+
+// Split the bash line on shell separators so each ipa invocation is judged on
+// its own — a chained \`ipa link plan ... && ipa link apply ...\` records then
+// clears within one line. \`link\`/\`cascade\` resolve via their \`apply\`
+// subcommand; \`rename\`/\`move\`/\`refactor\` resolve via --apply. This is
+// command-name granularity only: no per-note or per-target correlation.
+function classify(segment) {
+  if (!/(^|[\\s(])ipa\\s/.test(segment)) return null;
+  if (/(^|[\\s(])ipa\\s+link\\s+apply\\b/.test(segment)) return { command: "link", action: "apply" };
+  if (/(^|[\\s(])ipa\\s+link\\s+plan\\b/.test(segment)) return { command: "link", action: "pending" };
+  if (/(^|[\\s(])ipa\\s+cascade\\s+apply\\b/.test(segment)) return { command: "cascade", action: "apply" };
+  if (/(^|[\\s(])ipa\\s+cascade\\s+plan\\b/.test(segment)) return { command: "cascade", action: "pending" };
+  const family = segment.match(/(^|[\\s(])ipa\\s+(rename|move|refactor)\\b/);
+  if (family) {
+    return { command: family[2], action: /(^|\\s)--apply\\b/.test(segment) ? "apply" : "pending" };
+  }
+  return null;
+}
+
+const actions = command
+  .split(/[;&|\\n()]+/)
+  .map((segment) => classify(segment))
+  .filter(Boolean);
+if (!actions.length) process.exit(0);
+
+let entries = [];
+if (existsSync(statePath)) {
+  try {
+    const parsed = JSON.parse(readFileSync(statePath, "utf8"));
+    if (parsed && Array.isArray(parsed.mutations)) entries = parsed.mutations;
+  } catch {
+    // corrupt state — start over
+  }
+}
+const cutoff = Date.now() - TTL_MS;
+entries = entries.filter((item) => {
+  const stamp = Date.parse(item?.ts ?? "");
+  return Number.isNaN(stamp) || stamp >= cutoff;
+});
+
+for (const action of actions) {
+  if (action.action === "apply") {
+    entries = entries.filter((item) => !(item.command === action.command && item.session_id === sessionId));
+  } else {
+    entries.push({ command: action.command, session_id: sessionId, ts: new Date().toISOString() });
+  }
+}
+
+try {
+  if (entries.length) {
+    mkdirSync(dirname(statePath), { recursive: true });
+    writeFileSync(statePath, JSON.stringify({ version: 1, mutations: entries }, null, 2) + "\\n", "utf8");
+  } else if (existsSync(statePath)) {
+    unlinkSync(statePath);
+  }
+} catch {
+  // recording is best-effort
+}
 `;
 }
 
@@ -7851,6 +8031,28 @@ if (parsed && parsed.block) {
   const messages = (parsed.blocks ?? []).map((item) => item.message).filter(Boolean);
   block(["[IPA CLI] Session gate blocked final response.", ...messages].join("\\n\\n"));
 }
+
+// A gate plugin that threw is reported by \`ipa harness gate\` in parsed.errors,
+// and a gate returning {block:false, message} is reported in parsed.warnings.
+// Neither blocks (fail safe). Surface both as a single non-blocking
+// additionalContext so a broken or advisory gate does not fail 100% silently.
+const notices = [];
+if (parsed && Array.isArray(parsed.errors) && parsed.errors.length) {
+  notices.push("[IPA CLI] Session gate plugin error(s) (not blocking):");
+  for (const item of parsed.errors) notices.push(\`- \${item.source || "gate"}: \${item.message || "gate plugin error"}\`);
+}
+if (parsed && Array.isArray(parsed.warnings) && parsed.warnings.length) {
+  notices.push("[IPA CLI] Session gate warning(s) (not blocking):");
+  for (const item of parsed.warnings) notices.push(\`- \${item.source || "gate"}: \${item.message || "gate warning"}\`);
+}
+if (notices.length) {
+  process.stdout.write(JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: "Stop",
+      additionalContext: notices.join("\\n")
+    }
+  }) + "\\n");
+}
 `;
 }
 
@@ -7937,13 +8139,6 @@ function writePending(pending) {
   writeFileSync(pendingPath, JSON.stringify(pending, null, 2) + "\\n", "utf8");
 }
 
-function clearPending(remaining) {
-  if (!remaining.length) {
-    try { unlinkSync(pendingPath); return; } catch {}
-  }
-  try { writeFileSync(pendingPath, JSON.stringify({ version: 1, notes: remaining }, null, 2) + "\\n", "utf8"); } catch {}
-}
-
 function toVaultRelative(filePath, cwd) {
   const absolute = resolve(cwd || process.cwd(), filePath);
   const rel = relative(vaultPath, absolute);
@@ -8002,48 +8197,34 @@ function extractFilePath(output) {
   return firstString([args.filePath, args.file_path, args.path, output?.filePath, output?.file_path, output?.path]);
 }
 
-function runFormatterGate(block) {
-  const pending = readPending();
+// Session gate on OpenCode: spawn the CLI as the single source of truth so
+// vault-owned gate plugins (and the builtin formatter check) run here exactly as
+// they do on the claude/codex Stop hook. Blocking results throw (the OpenCode
+// way to hold the response); gate-plugin errors are logged, never blocking. Any
+// spawn/parse failure fails safe (does not block).
+function runSessionGate(block) {
   const sessionId = sessionIdFrom({});
-  const owned = sessionId
-    ? pending.notes.filter((item) => !item.session_id || item.session_id === sessionId)
-    : pending.notes;
-  const notes = owned.filter((item) => typeof item.title === "string" && item.title.trim()).map((item) => item.title.trim());
-  const uniqueNotes = [...new Set(notes)];
-  if (!uniqueNotes.length) return;
-  const plan = spawnSync("ipa", ["--vault", vaultPath, "--json", "formatter", "plan", "--note", ...uniqueNotes], { encoding: "utf8", timeout: 15000 });
-  const noteArgs = uniqueNotes.map((value) => JSON.stringify(String(value))).join(" ");
-  const commands = [\`ipa validator --note \${noteArgs}\`, \`ipa formatter plan --note \${noteArgs}\`, \`ipa formatter apply --note \${noteArgs}\`].join("\\n");
-  if (plan.status !== 0) {
-    block([
-      "[IPA CLI] Formatter gate could not verify pending vault Markdown edits.",
-      plan.stderr.trim() || plan.stdout.trim() || "formatter plan failed",
-      "Run:",
-      commands
-    ].join("\\n"));
-    return;
-  }
+  const args = ["--vault", vaultPath, "--json", "harness", "gate"];
+  if (sessionId) args.push("--session", sessionId);
+  const result = spawnSync("ipa", args, { encoding: "utf8", timeout: 30000 });
   let parsed = null;
-  try { parsed = JSON.parse(plan.stdout); } catch {
-    block([
-      "[IPA CLI] Formatter gate could not parse formatter plan output.",
-      "Run:",
-      commands
-    ].join("\\n"));
+  try { parsed = JSON.parse(result.stdout); } catch { parsed = null; }
+  if (!parsed) return;
+  if (parsed.block) {
+    const messages = (parsed.blocks ?? []).map((item) => item.message).filter(Boolean);
+    block(["[IPA CLI] Session gate blocked final response.", ...messages].join("\\n\\n"));
     return;
   }
-  const patchCount = Number(parsed?.summary?.patches ?? parsed?.patches?.length ?? 0);
-  if (patchCount > 0) {
-    block([
-      \`[IPA CLI] Formatter gate blocked final response: \${patchCount} formatter patch(es) remain for edited vault note(s).\`,
-      "Run:",
-      commands,
-      "Do not stop at formatter plan; run formatter apply after reviewing the plan."
-    ].join("\\n"));
-    return;
+  if (Array.isArray(parsed.errors) && parsed.errors.length) {
+    for (const item of parsed.errors) {
+      console.warn(\`[IPA CLI] session gate plugin error (not blocking): \${item.source || "gate"}: \${item.message || "gate plugin error"}\`);
+    }
   }
-  const ownedSet = new Set(owned);
-  clearPending(pending.notes.filter((item) => !ownedSet.has(item)));
+  if (Array.isArray(parsed.warnings) && parsed.warnings.length) {
+    for (const item of parsed.warnings) {
+      console.warn(\`[IPA CLI] session gate warning (not blocking): \${item.source || "gate"}: \${item.message || "gate warning"}\`);
+    }
+  }
 }
 
 export const IPAHarnessPlugin = async () => {
@@ -8096,7 +8277,7 @@ export const IPAHarnessPlugin = async () => {
   hooks["event"] = async (ctx) => {
     const type = ctx?.type ?? ctx?.event ?? ctx?.name;
     if (type === "session.idle") {
-      runFormatterGate((message) => {
+      runSessionGate((message) => {
         throw new Error(message);
       });
     }
@@ -8164,6 +8345,7 @@ function harnessHookScriptContent(component, vaultPath, spec, mapping, options =
     case "hook:evidence": return promptEvidenceScript(vaultPath, { ...options, agent: spec.name });
     case "hook:markdown-nudge": return markdownWriteNudgeScript(vaultPath, mapping, options);
     case "hook:call-counter": return callCounterScript(vaultPath, options);
+    case "hook:mutation-ledger": return mutationLedgerScript(vaultPath, options);
     case "hook:formatter-gate": return formatterGateScript(vaultPath, options);
     default: return null;
   }
@@ -8254,6 +8436,7 @@ async function installGlobalHarness(vaultPath, spec, mapping, options = {}) {
   const promptPath = join(spec.hooksDir, "ipa-prompt-evidence.mjs");
   const writeNudgePath = join(spec.hooksDir, "ipa-md-write-nudge.mjs");
   const callCounterPath = join(spec.hooksDir, "ipa-call-counter.mjs");
+  const mutationLedgerPath = join(spec.hooksDir, "ipa-mutation-ledger.mjs");
   const formatterGatePath = join(spec.hooksDir, "ipa-formatter-gate.mjs");
   const vaultRefPath = join(spec.hooksDir, "ipa-vault-ref-nudge.mjs");
 
@@ -8293,6 +8476,9 @@ async function installGlobalHarness(vaultPath, spec, mapping, options = {}) {
       if (componentSelected(selected, "hook:call-counter")) {
         addHookCommand(config, "PostToolUse", "Bash", hookCommand(callCounterPath, spec), null, 5);
       }
+      if (componentSelected(selected, "hook:mutation-ledger")) {
+        addHookCommand(config, "PostToolUse", "Bash", hookCommand(mutationLedgerPath, spec), null, 5);
+      }
       if (componentSelected(selected, "hook:vault-ref")) {
         addHookCommand(config, "UserPromptSubmit", null, hookCommand(vaultRefPath, spec), null, 5);
       }
@@ -8321,6 +8507,7 @@ async function uninstallGlobalHarness(spec) {
     join(spec.hooksDir, "ipa-prompt-evidence.mjs"),
     join(spec.hooksDir, "ipa-md-write-nudge.mjs"),
     join(spec.hooksDir, "ipa-call-counter.mjs"),
+    join(spec.hooksDir, "ipa-mutation-ledger.mjs"),
     join(spec.hooksDir, "ipa-formatter-gate.mjs"),
     join(spec.hooksDir, "ipa-vault-ref-nudge.mjs")
   ];
@@ -8437,7 +8624,8 @@ function componentPresence(spec, vaultPath, selected) {
 
 export async function harnessStatus(vaultPath, options = {}) {
   const index = await readHarnessIndex(vaultPath);
-  const { mapping } = await readVaultConfig(vaultPath);
+  const { config, mapping } = await readVaultConfig(vaultPath);
+  options = { ...options, callCounter: callCounterOptions(config) };
   const global = {};
   const outdatedByTarget = {};
   let aggregateSelected = [];
@@ -8498,7 +8686,8 @@ export async function harnessInstall(vaultPath, target = "codex", options = {}) 
   const spec = harnessTargetSpec(target, options);
   const name = spec.name;
   const { selected, omitted } = resolveHarnessComponents(name, options);
-  const { mapping } = await readVaultConfig(vaultPath);
+  const { config, mapping } = await readVaultConfig(vaultPath);
+  options = { ...options, callCounter: callCounterOptions(config) };
   const pluginInitResult = componentSelected(selected, "plugin-scaffold")
     ? await pluginInit(vaultPath, { examples: true })
     : { created: [], skipped: [] };
@@ -8658,6 +8847,7 @@ export async function harnessSessionGate(vaultPath, options = {}) {
     .filter(Boolean))];
   const blocks = [];
   const errors = [];
+  const warnings = [];
   if (ownedTitles.length) {
     const plan = await formatVault(vaultPath, false, { notes: ownedTitles, ruleApply: true });
     if (plan.summary.patches > 0) {
@@ -8681,6 +8871,27 @@ export async function harnessSessionGate(vaultPath, options = {}) {
   if (gatePlugins.length) {
     const { config, mapping } = await readVaultConfig(vaultPath);
     const notes = await loadNotes(vaultPath, mapping);
+    // Mutation ledger: ipa dry-run mutations recorded by the mutation-ledger hook
+    // that were never followed by an --apply/apply sighting. Unlike formatter
+    // pending, the gate never clears these — only an --apply sighting or the 48h
+    // TTL does, so a warning survives across gate runs until the plan is applied.
+    const mutationPath = join(vaultPath, ".ipa", "harness", "mutation-pending.json");
+    let mutationEntries = [];
+    if (existsSync(mutationPath)) {
+      try {
+        const parsed = JSON.parse(await readFile(mutationPath, "utf8"));
+        mutationEntries = Array.isArray(parsed.mutations) ? parsed.mutations : [];
+      } catch {
+        mutationEntries = [];
+      }
+    }
+    const ownedMutations = (sessionId
+      ? mutationEntries.filter((item) => !item.session_id || item.session_id === sessionId)
+      : mutationEntries)
+      .filter((item) => {
+        const ts = Date.parse(item?.ts ?? "");
+        return Number.isNaN(ts) || ts >= cutoff;
+      });
     const ctx = {
       vaultPath,
       config,
@@ -8689,7 +8900,8 @@ export async function harnessSessionGate(vaultPath, options = {}) {
       lookup: (ref) => findNote(notes, ref) ?? null,
       session: {
         id: sessionId,
-        edits: owned.map((item) => ({ title: item.title, path: item.path ?? null, updated_at: item.updated_at ?? null }))
+        edits: owned.map((item) => ({ title: item.title, path: item.path ?? null, updated_at: item.updated_at ?? null })),
+        pending_mutations: ownedMutations.map((item) => ({ command: item.command, ts: item.ts ?? null }))
       }
     };
     for (const gate of gatePlugins) {
@@ -8697,6 +8909,12 @@ export async function harnessSessionGate(vaultPath, options = {}) {
         const result = await gate.check(ctx);
         if (result && result.block) {
           blocks.push({ source: gate.name, message: String(result.message ?? `gate ${gate.name} blocked the session`) });
+        } else if (result) {
+          // A non-blocking gate result (block falsy) carrying a message/warn is
+          // an advisory warning: surface it to the agent without holding the
+          // response, so a block:false gate is not silently dropped.
+          const warn = [result.message, result.warn].find((value) => typeof value === "string" && value.trim());
+          if (warn) warnings.push({ source: gate.name, message: warn });
         }
       } catch (error) {
         errors.push({ source: gate.name, message: error.message });
@@ -8740,6 +8958,7 @@ export async function harnessSessionGate(vaultPath, options = {}) {
     notes: ownedTitles,
     gates: gatePlugins.map((gate) => gate.name),
     blocks,
+    warnings,
     errors
   };
 }
@@ -8806,13 +9025,30 @@ async function listHarnessFragments(vaultPath) {
 
 export async function harnessDoctor(vaultPath, options = {}) {
   const index = await readHarnessIndex(vaultPath);
-  const { mapping } = await readVaultConfig(vaultPath);
+  const { config, mapping } = await readVaultConfig(vaultPath);
+  options = { ...options, callCounter: callCounterOptions(config) };
   const issues = [];
   const knownFragments = new Set(harnessFragmentNames());
   for (const fragment of await listHarnessFragments(vaultPath)) {
     if (!knownFragments.has(fragment)) {
       issues.push({ severity: "warn", code: "harness.fragment_unknown", message: `fragment .ipa/harness/fragments/${fragment}.md matches no harness artifact; expected one of: ${[...knownFragments].join(", ")}` });
     }
+  }
+  // Plugin validity is vault-scoped (not per-target): a syntactically broken
+  // rule/search/gate plugin feeds the same hooks harness doctor certifies, so
+  // fold plugin doctor's findings in here. Fail-safe: a crashing plugin doctor
+  // must never crash harness doctor.
+  try {
+    const pluginReport = await pluginDoctor(vaultPath);
+    for (const issue of pluginReport.issues ?? []) {
+      issues.push({
+        severity: issue.severity ?? "error",
+        code: "harness.plugin_invalid",
+        message: `${issue.path ? `${issue.path}: ` : ""}${issue.message ?? "plugin is invalid"}`
+      });
+    }
+  } catch {
+    // swallow — doctor must not crash on a broken plugin loader
   }
   for (const [target, entry] of Object.entries(index.targets ?? {})) {
     const spec = harnessTargetSpec(target, options);
