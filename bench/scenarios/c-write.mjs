@@ -59,7 +59,8 @@ export default [
       file_removed: "🔖 브루잉 레시피\\.md",            // 옛 제목 노트 제거
       file_contains: { path: "01 Project/커피/🔖 원두 노트.md", regex: "커피 추출법" }, // 인바운드 링크 재배선
     } }],
-    budget: { maxCostUsd: 0.6, maxIpaCalls: 6 }, goldenPath: 3 },
+    // budget = 폭주 감지용 상한: 관측 8~9콜(검색→확인→rename preview→apply→검증)의 여유 위. correctness는 rename/재배선으로 판정한다.
+    budget: { maxCostUsd: 1.2, maxIpaCalls: 15 }, goldenPath: 3 },
 
   { ...base, id: "c12-inbox-triage", mode: "multi", smoke: true, responder: "approve",
     prompts: [
@@ -73,6 +74,8 @@ export default [
         formatter_pending_empty: true,
       } },
     ],
-    // budget = 폭주 감지용 상한(관측 정상치 ~2배): opus 24콜/sonnet 17콜, ~9노트 per-note view+validate는 정상. opus ~$0.94 관측.
-    budget: { maxCostUsd: 1.8, maxIpaCalls: 30 }, goldenPath: 8 },
+    // budget = 폭주 감지용 상한. triage는 인박스 크기·꼼꼼함에 따라 호출 편차가 크다(관측 sonnet 17~41,
+    // opus 19~24). 41콜도 9노트 per-note cascade+move의 정당한 작업(루프 아님)이라 임계를 그 위로 둔다.
+    // 모델 간 효율 차이는 pass/fail이 아니라 stepRatio 지표로 본다.
+    budget: { maxCostUsd: 2.5, maxIpaCalls: 50 }, goldenPath: 8 },
 ];
