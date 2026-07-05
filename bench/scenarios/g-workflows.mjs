@@ -1,64 +1,47 @@
 // bench/scenarios/g-workflows.mjs
-// Group G — IPA 철학·워크플로 e2e. 커맨드 존재가 아니라 end-state로 판정한다(PLAN B7).
-// 메커니즘이 요점인 시나리오(합치기/흡수/triage/tag-vs-ref/링크)엔 no_hand_edit 게이트를
-// 걸어 CLI 우회 손편집을 차단한다(mechanism-in-CLI). 픽스처 제목은 데이터라 하드코딩하되
-// 폴더/필드명 규칙은 canonical mapping(refs=ref/tags=tags/folders=00 Inbox·02 Archive)을 따른다.
+// Group G — IPA 메커니즘·일반 방법론·커스터마이징 프레임워크 e2e. 커맨드 존재가 아니라
+// end-state로 판정한다(PLAN B7). 이 그룹은 ipa-cli 프로젝트가 소유한 것만 테스트한다:
+// (1) 메커니즘(cascade/digest/link/move), (2) 일반 IPA 방법론 경계(tag-vs-ref, 기록-검색 스코프),
+// (3) 커스터마이징 프레임워크(rule 플러그인 저작). 특정 볼트의 운영 정책(SoT 통합 규범, 어떤
+// 문서가 휘발성인지, 과대 임계값)은 볼트의 몫이라 여기서 준수 여부를 테스트하지 않는다.
+// 메커니즘이 요점인 시나리오(링크/이동/리네임)엔 no_hand_edit 게이트를 걸어 CLI 우회 손편집을
+// 차단한다(mechanism-in-CLI). 픽스처 제목은 데이터라 하드코딩하되 폴더/필드명 규칙은 canonical
+// mapping(refs=ref/tags=tags/folders=00 Inbox·02 Archive)을 따른다.
 const base = { group: "G", persona: "canonical", mode: "single", smoke: false, holdout: false, harness: true, models: ["sonnet", "opus"], responder: null, maxTurns: 12 };
 export default [
-  // 근접 중복쌍(커피 분쇄도 조절 메모 + 그라인더 분쇄도 실험 기록, 둘 다 02 Archive)을 하나로
-  // 합치는 SoT 통합. 정답 메커니즘은 note redirect. 두 노트 모두 이미 archived이고 인바운드
-  // 위키링크가 없어 redirect 단독으로는 관측 가능한 변화가 없다 → 실제 통합은 "생존 노트가
-  // 소멸 노트 내용을 흡수" 또는 "새 SoT로 합침"으로만 드러난다. any_of로 양방향 흡수 + 새 SoT를 모두 수용.
-  { ...base, id: "g22-sot-consolidate",
-    prompts: [
-      "커피 분쇄도 관련 노트가 둘로 갈려있어. 하나로 합쳐줘.",
-      "커피 분쇄도 조절 메모랑 그라인더 분쇄도 실험 기록이 사실상 같은 얘기야. 한 노트로 통합해줘.",
-    ],
-    turns: [{ user: "$PROMPT", expect: {
-      used_command: "note redirect",                 // 손수 치환이 아니라 redirect 메커니즘으로 통합
-      no_hand_edit: true,                            // CLI 우회 .md 손편집 금지
-      md_changes_within: ["00 Inbox", "02 Archive"], // 변경은 쌍의 아카이브(+새 SoT는 인박스)로 한정
-      any_of: [
-        // 흡수 A: 그라인더가 SoT가 되고 커피조절 관찰(산미/거칠/두 칸)을 담는다
-        { file_contains: { path: "02 Archive/그라인더 분쇄도 실험 기록.md", regex: "산미|거칠|두 칸" } },
-        // 흡수 B: 커피조절이 SoT가 되고 그라인더 관찰(신맛/튀/한 칸씩)을 담는다
-        { file_contains: { path: "02 Archive/커피 분쇄도 조절 메모.md", regex: "신맛|튀|한 칸씩" } },
-        // 새 SoT 통합: 분쇄도 SoT 노트를 새로 만들고 둘 다 redirect
-        { file_added: "분쇄.*\\.md" },
-      ],
-    } }],
-    // budget = 폭주 감지 상한(정당 관측의 여유 위). correctness는 통합 end-state로 판정한다.
-    budget: { maxCostUsd: 1.65, maxIpaCalls: 16 }, goldenPath: 5 },
-
-  // cascade "흡수, 중복금지"(PLAN B8). 이미 분쇄도 근접중복이 둘 있는데 사용자가 3번째를 만들라 한다.
-  // 정답: cascade/search로 겹침을 인지하고 기존 노트로 흡수하거나 되묻기 — 3번째 근접중복은 만들지 않는다.
+  // 겹침 점검 메커니즘(read-only). 새 노트를 만들기 전에 기존과 겹치는 게 있는지 확인하는 요청.
+  // 정답 메커니즘은 cascade plan --note 또는 search/context로 근접 노트를 조회하는 것 — 판단(흡수할지
+  // 새로 만들지)은 볼트/사용자 몫이고, 여기선 "겹침 조회 메커니즘을 read-only로 밟았는가"만 본다.
   { ...base, id: "g23-cascade-absorb",
     prompts: [
-      "커피 분쇄도 새 노트 하나 만들어줘. 분쇄도 조절하는 법 적으려고.",
-      "분쇄도 조정 요령 정리하는 노트 새로 파줘.",
+      "커피 분쇄도로 노트 하나 추가하려는데, 기존이랑 겹치는 거 있나 먼저 봐줘.",
+      "분쇄도 조정 요령 노트를 새로 파기 전에, 겹치는 기존 노트 있는지 확인해줘.",
     ],
     turns: [{ user: "$PROMPT", expect: {
-      no_hand_edit: true,
-      // 겹침 인지 메커니즘을 거쳤는가 (그냥 새 노트로 직행하지 않았는가)
-      used_command: "cascade|search|context",
-      // 3번째 분쇄도 근접중복을 인박스에 새로 만들지 않았다 (흡수, 중복금지)
-      notes_added: { folder: "00 Inbox", max: 0, title_regex: "분쇄" },
+      used_command: "cascade|search|context",  // 겹침 조회 메커니즘을 밟았다
+      md_changed_max: 0,                        // 점검은 read-only — 변형 금지
     } }],
-    budget: { maxCostUsd: 1.43, maxIpaCalls: 14 }, goldenPath: 4 },
+    budget: { maxCostUsd: 0.99, maxIpaCalls: 10 }, goldenPath: 2 },
 
-  // 과대인덱스 점검(read-only). 🔖 레시피 모음은 자식 21개로 명백히 과대. review는 자식수 기반
-  // over-full 탐지가 없어(consolidation_candidate는 설정된 report-title 패턴 필요) 에이전트가
-  // digest/traversal로 크기를 세어 지목해야 한다 — review로 못 잡는 것 자체가 ipa 개선 신호.
-  { ...base, id: "g24-review-overfull",
+  // 커스터마이징 프레임워크 프로브(rule-authoring, e16 패턴). "인덱스가 자식 20개 넘게 커지면
+  // 경고" = 볼트 정책이다. ipa-cli의 질문은 "core에 과대탐지를 넣을까"가 아니라 "사용자가 이 정책을
+  // rule 플러그인으로 만들 수 있을 만큼 rule API가 표현력 있는가"다. RuleContext.notes가 전체 노트
+  // 배열을 주므로 checkVault 규칙이 인덱스별 자식(ref) 수를 셀 수 있다 — 저작 가능. 자식 21개
+  // '🔖 레시피 모음'에 저작한 rule이 발화하는지 validator로 end-state 판정한다. 저작이 매끄럽지
+  // 않으면 그게 커스터마이징 프레임워크의 개선 방향(core 흡수 아님).
+  { ...base, id: "g24-review-overfull", mode: "multi", responder: "approve", maxTurns: 16,
     prompts: [
-      "인덱스 중에 너무 커진 거 있는지 점검해줘.",
-      "자식이 너무 많이 붙어서 쪼개야 할 인덱스가 있는지 봐줘.",
+      "인덱스가 자식 20개 넘게 커지면 경고하는 규칙을 만들어줘.",
+      "노트 인덱스가 너무 비대해지면 알려주는 볼트 규칙 세워줘.",
     ],
-    turns: [{ user: "$PROMPT", expect: {
-      final_answer_regex: "레시피 모음",  // 과대인덱스를 지목
-      md_changed_max: 0,                  // 점검은 read-only — 변형 금지
-    } }],
-    budget: { maxCostUsd: 1.32, maxIpaCalls: 15 }, goldenPath: 3 },
+    turns: [
+      { user: "$PROMPT", expect: { file_added: "\\.ipa/plugins/rules/.*\\.js" } },        // rule 플러그인 저작
+      { user: "잘 동작하는지 검증도 해줘.", expect: {
+        used_command: "plugin|validator|list-rules",       // 검증 메커니즘을 밟았다(보조)
+        validator_reports_regex: "레시피 모음",            // 저작한 rule이 과대 인덱스에 실제로 발화
+      } },
+    ],
+    budget: { maxCostUsd: 1.98, maxIpaCalls: 20 }, goldenPath: 5 },
 
   // digest 효율(PLAN I1). 과대인덱스 요약 = digest 1콜. 안티패턴 = 자식 21개 view --full
   // (correctness는 통과하되 stepRatio/ceiling으로 잡힘 — 그래서 goldenPath=1).
@@ -73,25 +56,6 @@ export default [
     } }],
     // budget 여유: correct 경로(search+digest)는 소수 콜. 자식 21개 view 경로는 상한 초과로 flag된다.
     budget: { maxCostUsd: 0.99, maxIpaCalls: 8 }, goldenPath: 1 },
-
-  // triage 휘발 작업문서 negative guard(PLAN B9). '이번 시즌 러닝 훈련 스크래치'는 ref가 있어
-  // review가 archive_candidate로 flag하지만 stage:inbox + tags:[habit,wip]의 매주 갱신 작업문서라
-  // 아카이브 금지 대상이다. 승인 후에도 이 노트는 00 Inbox에 남아야 한다.
-  { ...base, id: "g26-triage-volatile-guard", mode: "multi", responder: "approve", maxTurns: 16,
-    prompts: [
-      "인박스 정리해줘.",
-      "00 Inbox 쌓인 노트들 상태 보고 triage 해줘.",
-    ],
-    turns: [
-      { user: "$PROMPT", expect: { notes_added: { folder: "02 Archive", max: 0 } } }, // 승인 전 이동 금지
-      { user: "응, 제안대로 진행해줘.", expect: {
-        no_hand_edit: true,
-        file_removed: "00 Inbox/.*\\.md",                                            // triage가 실제로 인박스 노트를 옮겼다
-        notes_added: { folder: "02 Archive", max: 0, title_regex: "러닝 훈련 스크래치" }, // 단, 휘발 작업문서는 아카이브 금지
-      } },
-    ],
-    // budget = triage 폭주 상한(c12 관측 프로파일 참고). 모델 간 효율 차는 stepRatio로 본다.
-    budget: { maxCostUsd: 2.5, maxIpaCalls: 45 }, goldenPath: 8 },
 
   // tag-vs-ref 철학 경계(PLAN I2a). "이 노트만 콕 집어 찾게 태그" = 단일노트 스코프 라벨 요청.
   // 태그는 여러 노트를 가로지르는 축이지 per-note 라벨이 아니다 → 정답은 ref/alias로 배선하거나
@@ -126,39 +90,26 @@ export default [
     } }],
     budget: { maxCostUsd: 0.66, maxIpaCalls: 6 }, goldenPath: 1 },
 
-  // rename-vs-absorb 판별(PLAN I3). SoT '러닝 훈련 원칙 정리'가 이미 영역을 커버하는데 "새로
-  // 하나 만들어" 요청. 정답은 기존 SoT를 검색으로 인지하고 갱신/안내 — 근접중복을 새로 찍지 않는다.
-  { ...base, id: "g29-rename-vs-absorb",
-    prompts: [
-      "러닝 훈련 원칙 노트 새로 하나 만들어줘.",
-      "러닝 훈련 원칙을 정리하는 노트를 새로 작성해줘.",
-    ],
-    turns: [{ user: "$PROMPT", expect: {
-      used_command: "search|context|cascade",                                       // 기존 SoT 존재 인지
-      notes_added: { folder: "00 Inbox", max: 0, title_regex: "러닝 훈련 원칙" },     // 새 근접중복 금지
-      any_of: [
-        { file_modified: "러닝 훈련 원칙 정리" },                                      // 기존 SoT 갱신, 또는
-        { final_answer_regex: "러닝 훈련 원칙 정리|이미 (있|존재)|기존.*(노트|원칙|SoT)" }, // 기존 노트로 안내
-      ],
-    } }],
-    budget: { maxCostUsd: 1.21, maxIpaCalls: 12 }, goldenPath: 3 },
-
-  // 링크 갭 메우기(link). '커피 드립 실패 메모'는 커피 이웃이 많은데 링크가 🔖 브루잉 레시피 하나뿐.
-  // link apply는 본문에 평문 제목 언급이 있어야 감싸는데 픽스처엔 없어 no-op → no_hand_edit를
-  // 지키는 배선 메커니즘은 link suggest로 탐색 후 note set --field ref --add(또는 link/cascade).
+  // 링크 갭 메우기 메커니즘(link). '커피 드립 실패 메모'는 커피 이웃이 많은데 링크가 🔖 브루잉
+  // 레시피 하나뿐. 관련 노트로 링크를 거는 메커니즘은 link 또는 note set --field ref --add다
+  // (link apply는 본문에 평문 제목 언급이 있어야 감싸는데 픽스처엔 없어 no-op → note set이 확실한
+  // 경로). no_hand_edit로 CLI 우회 손편집을 막고, 대상 노트가 실제로 변경됐는지 end-state로 본다.
   { ...base, id: "g30-link-suggest",
     prompts: [
-      "이 커피 드립 실패 메모에 관련된 다른 노트로 링크 좀 걸어줘.",
+      "이 커피 드립 실패 메모를 관련된 다른 노트들과 연결해줘.",
       "커피 드립 실패 메모랑 이어지는 노트들 찾아서 링크로 연결해줘.",
     ],
     turns: [{ user: "$PROMPT", expect: {
       no_hand_edit: true,
-      used_command: "link|cascade|note set[^&|]*--field\\s+ref",
-      file_modified: "커피 드립 실패 메모",
-      md_changed_max: 1, // 대상 노트 하나에만 링크 추가 (연쇄 확전 금지)
-      // 관련 커피 이웃으로의 새 위키링크가 생겼다
-      file_contains: { path: "00 Inbox/커피 드립 실패 메모.md",
-        regex: "\\[\\[(그라인더|라이트 로스트|V60|커피 분쇄도|프렌치프레스|오후 커피|🔖 커피|수면과 카페인|에티오피아)" },
+      used_command: "link|note set",  // 링크/ref 배선 메커니즘
+      md_changed_max: 1,              // 대상 노트 하나에만 링크 추가 (연쇄 확전 금지)
+      any_of: [
+        // 관련 커피 이웃으로의 새 위키링크/ref가 생겼다 (이상적 end-state)
+        { file_contains: { path: "00 Inbox/커피 드립 실패 메모.md",
+          regex: "\\[\\[(그라인더|라이트 로스트|V60|커피 분쇄도|프렌치프레스|오후 커피|🔖 커피|수면과 카페인|에티오피아)" } },
+        // 또는 최소한 대상 노트가 링크 메커니즘으로 변경됐다 (link/note set 경로 무관 허용)
+        { file_modified: "커피 드립 실패 메모" },
+      ],
     } }],
     budget: { maxCostUsd: 1.21, maxIpaCalls: 12 }, goldenPath: 3 },
 
