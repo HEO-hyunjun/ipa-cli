@@ -54,6 +54,8 @@ test("CLI help and key smoke commands run through ipa-test profile", async () =>
   const help = run(env, ["--help"]);
   assert.match(help, /Usage: ipa/);
   assert.match(help, /Core commands:/);
+  assert.match(help, /convention/);
+  assert.match(help, /doctor/);
   assert.match(help, /list-channels \/ list-rules \/ list-refactors/);
   const tuneHelp = run(env, ["tune", "--help"]);
   assert.match(tuneHelp, /Usage: ipa \[OPTIONS\] tune/);
@@ -75,7 +77,9 @@ test("CLI help and key smoke commands run through ipa-test profile", async () =>
   assert.match(refactorHelp, /`refactor` is vault-wide/);
   assert.match(refactorHelp, /ipa list-refactors/);
   const reviewHelp = run(env, ["review", "--help"]);
-  assert.match(reviewHelp, /--content/);
+  assert.match(reviewHelp, /all\|convention\|inbox\|duplicates\|tags\|sot/);
+  assert.doesNotMatch(reviewHelp, /indexes/);
+  assert.doesNotMatch(reviewHelp, /--content/);
   const contractHelp = run(env, ["contract", "--help"]);
   assert.match(contractHelp, /export-fixtures --target DIR/);
   const noteHelp = run(env, ["note", "--help"]);
@@ -386,6 +390,9 @@ test("harness help lists opencode target, selector options, and default install"
   assert.match(help, /--without <component\.\.\.>/);
   assert.match(help, /all components except hook:evidence/i);
   assert.match(help, /hook:evidence \(opt-in\)/);
+  assert.match(help, /hook:call-counter/);
+  assert.match(help, /hook:vault-ref/);
+  assert.match(help, /gate \(hook-invoked\)/);
 });
 
 test("harness install accepts component selectors for opencode and codex", async () => {

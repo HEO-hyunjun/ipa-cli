@@ -84,6 +84,7 @@ const COMMAND_GROUPS = [
     rows: [
       ["search", "Search notes with active weights and plugins"],
       ["view", "Show note overview, section, or full content"],
+      ["convention", "Show IPA concepts rendered through the active vault config, or run validator checks"],
       ["digest", "Summarize index notes and their children in one call"],
       ["cascade", "Plan/apply the ripple of a new note: refs, links, overlap candidates"],
       ["traversal", "Walk refs, backlinks, siblings, and roots"],
@@ -101,7 +102,7 @@ const COMMAND_GROUPS = [
       ["move", "Move a note and update links"],
       ["inbox", "Add or triage inbox notes"],
       ["link", "Suggest, plan, and apply wikilinks"],
-      ["review", "Audit inbox, indexes, tags, and duplicates"]
+      ["review", "Audit convention, inbox, tags, duplicates, and SoT"]
     ]
   },
   {
@@ -111,6 +112,7 @@ const COMMAND_GROUPS = [
       ["engine", "Inspect and run search engine channels"],
       ["tune", "Evaluate and run the tpe-lite optimizer"],
       ["cache", "Rebuild, inspect, and diagnose vault cache"],
+      ["doctor", "Run basic vault setup checks"],
       ["plugin", "Scaffold, list, validate, and dry-run vault plugins"],
       ["contract", "Validate runtime contract fixtures"],
       ["harness", "Install, uninstall, update, and inspect AI harness hooks"],
@@ -233,7 +235,7 @@ const COMMAND_HELP = {
     ]
   }),
   harness: formatDetailedHelp({
-    usage: "ipa [OPTIONS] harness status|init|install|uninstall|update|doctor|guard",
+    usage: "ipa [OPTIONS] harness status|init|install|uninstall|update|doctor|guard|gate (hook-invoked)",
     summary: "Install and inspect AI harness skills, hooks, vault prompt blocks, and plugin scaffold.",
     commands: [
       ["ipa harness status", "Show installed target state and outdated components"],
@@ -262,7 +264,7 @@ const COMMAND_HELP = {
     ],
     notes: [
       "Without --only, init/install applies the default install for the target (all components except hook:evidence).",
-      "Components: skill, prompt, local-prompt, local-skills, plugin-scaffold, opencode-plugin, permissions (claude; adds a Bash(ipa *) allow rule to ~/.claude/settings.json), hook:session-env, hook:guard, hook:markdown-nudge, hook:formatter-gate, hook:evidence (opt-in)."
+      "Components: skill, prompt, local-prompt, local-skills, plugin-scaffold, opencode-plugin, permissions (claude; adds a Bash(ipa *) allow rule to ~/.claude/settings.json), hook:session-env, hook:guard, hook:markdown-nudge, hook:formatter-gate, hook:call-counter, hook:vault-ref, hook:evidence (opt-in)."
     ]
   }),
   inbox: formatDetailedHelp({
@@ -400,7 +402,7 @@ const COMMAND_HELP = {
     ]
   }),
   review: formatDetailedHelp({
-    usage: "ipa [OPTIONS] review [all|inbox|indexes|tags|duplicates] [--suggest-refactor]",
+    usage: "ipa [OPTIONS] review [all|convention|inbox|duplicates|tags|sot] [--suggest-refactor]",
     summary: "Audit vault structure and surface cleanup/refactor candidates.",
     examples: [
       ["ipa review all", "Run all read-only audits"],
@@ -408,8 +410,7 @@ const COMMAND_HELP = {
       ["ipa review all --suggest-refactor", "Include refactor suggestions"]
     ],
     options: [
-      ["--suggest-refactor", "Attach refactor command suggestions where possible"],
-      ["--content", "Include content-level checks"]
+      ["--suggest-refactor", "Attach refactor command suggestions where possible"]
     ]
   }),
   search: formatDetailedHelp({
@@ -2014,11 +2015,9 @@ function buildProgram() {
   setHelp(program.command("review"), "review")
     .argument("[scope]", "Review scope", "all")
     .option("--suggest-refactor", "Include refactor suggestions")
-    .option("--content", "Include content-level checks")
     .action(async (scope, options) => {
       await withVault(globalOptions(program), async (vault) => print(await reviewVault(vault, scope, {
-        suggestRefactor: Boolean(options.suggestRefactor),
-        content: Boolean(options.content)
+        suggestRefactor: Boolean(options.suggestRefactor)
       }), jsonOutput(program)));
     });
 
