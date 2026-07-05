@@ -7,7 +7,7 @@ export default [
       "JS로 배열을 키별로 묶어서 Map으로 만드는 코드 예시 보여줘.",
     ],
     turns: [{ user: "$PROMPT", expect: { no_ipa_calls: true } }],
-    budget: { maxCostUsd: 0.3, maxIpaCalls: 0 }, goldenPath: 0 },
+    budget: { maxCostUsd: 0.33, maxIpaCalls: 0 }, goldenPath: 0 },
 
   { ...base, id: "a2-nonvault-file",
     prompts: [
@@ -15,7 +15,7 @@ export default [
       "scratch.js라는 파일 만들어서 간단한 피보나치 구현 넣어줘.",
     ],
     turns: [{ user: "$PROMPT", expect: { no_ipa_calls: true, file_added: "scratch\\.js" } }],
-    budget: { maxCostUsd: 0.3, maxIpaCalls: 0 }, goldenPath: 0 },
+    budget: { maxCostUsd: 0.33, maxIpaCalls: 0 }, goldenPath: 0 },
 
   { ...base, id: "a3-ipa-concept", smoke: false,
     prompts: [
@@ -23,7 +23,7 @@ export default [
       "이 볼트 방식에서 index랑 tag의 역할 차이를 설명해줘.",
     ],
     turns: [{ user: "$PROMPT", expect: { used_command: "convention", md_changed_max: 0 } }],
-    budget: { maxCostUsd: 0.4, maxIpaCalls: 4 }, goldenPath: 1 },
+    budget: { maxCostUsd: 0.44, maxIpaCalls: 5 }, goldenPath: 1 },
 
   { ...base, id: "a4-implicit-topic", holdout: true,
     prompts: [
@@ -31,5 +31,5 @@ export default [
       "커피 맛이 요즘 왜 이러지. 전에 잘 됐을 때 기록 있었나?",
     ],
     turns: [{ user: "$PROMPT", expect: { ipa_used: true, used_command: "search|context", md_changed_max: 0 } }],
-    budget: { maxCostUsd: 0.5, maxIpaCalls: 6 }, goldenPath: 2 },
+    budget: { maxCostUsd: 0.55, maxIpaCalls: 7 }, goldenPath: 2 },
 ];

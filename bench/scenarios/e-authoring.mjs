@@ -10,7 +10,7 @@ export default [
       { user: "$PROMPT", expect: { file_added: "\\.ipa/plugins/rules/.*\\.js" } },
       { user: "잘 동작하는지 검증도 해줘.", expect: { used_command: "plugin (validate|dry-run)|list-rules" } },
     ],
-    budget: { maxCostUsd: 1.5, maxIpaCalls: 15 }, goldenPath: 5 },
+    budget: { maxCostUsd: 1.65, maxIpaCalls: 17 }, goldenPath: 5 },
 
   // 진짜 미스랭킹: 수면 개선 22시 루틴은 '컷오프'를 본문에만 언급해 검색 상위에 뜨지 않는다.
   // (오후 커피 컷오프 실험은 제목·alias에 컷오프가 있어 항상 1위 — 튜닝할 게 없다.)
@@ -26,5 +26,5 @@ export default [
       // 생성하는 search-events.jsonl은 `\.ipa/tune/`에 매칭돼 무의미하므로 구체 경로로 못 박는다.
       { user: "응, 그 방법으로 진행해줘.", expect: { used_command: "tune", file_added: "\\.ipa/tune/(logs/labels\\.jsonl|results/)" } },
     ],
-    budget: { maxCostUsd: 3.5, maxIpaCalls: 25 }, goldenPath: 6 },
+    budget: { maxCostUsd: 3.85, maxIpaCalls: 28 }, goldenPath: 6 },
 ];

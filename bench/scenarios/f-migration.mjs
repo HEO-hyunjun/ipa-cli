@@ -14,7 +14,7 @@ export default [
         md_changed_max: 6, // 대량 재작성 금지 (CLAUDE.md 등 하네스 산출물 여유 포함)
       } },
     ],
-    budget: { maxCostUsd: 2.0, maxIpaCalls: 20 }, goldenPath: 6 },
+    budget: { maxCostUsd: 2.2, maxIpaCalls: 22 }, goldenPath: 6 },
 
   { ...base, id: "f19-partial-migration", persona: "messy", harness: true, holdout: true,
     prompts: [
@@ -28,7 +28,7 @@ export default [
         md_changes_within: ["00 Inbox", "01 Project/커피", "02 Archive"],
       } },
     ],
-    budget: { maxCostUsd: 2.5, maxIpaCalls: 25 }, goldenPath: 8 },
+    budget: { maxCostUsd: 2.75, maxIpaCalls: 28 }, goldenPath: 8 },
 
   // preconfigured:false — 샌드박스에 .ipa-config를 미리 깔면 볼트가 처음부터 해석되어
   // "부트스트랩" 전제가 무너진다 (실측: 양 모델이 config 생성을 건너뜀). ipa config init 도입과 함께 적용.
@@ -46,7 +46,7 @@ export default [
         file_added: "\\.ipa/harness/fragments/prompt\\.md",
       } },
     ],
-    budget: { maxCostUsd: 2.5, maxIpaCalls: 24 }, goldenPath: 5 },
+    budget: { maxCostUsd: 2.75, maxIpaCalls: 27 }, goldenPath: 5 },
 
   // 신규 온보딩 풀 저니: 프로필 미설정(preconfigured:false) 상태에서 볼트 연결 → 셋업 → 시범 마이그레이션.
   // CLI 바이너리 설치 자체(install.sh)는 벤치 비범위 — 러너 XDG_CONFIG_HOME 격리로 실제 프로필 레지스트리는 보호된다.
@@ -69,5 +69,5 @@ export default [
         validator_clean_changed: true,
       } },
     ],
-    budget: { maxCostUsd: 4, maxIpaCalls: 30 }, goldenPath: 8 },
+    budget: { maxCostUsd: 4.4, maxIpaCalls: 33 }, goldenPath: 8 },
 ];

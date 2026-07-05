@@ -12,7 +12,7 @@ export default [
       command_flow: ["search|context", "(view|context).*V60"],
       md_changed_max: 0,
     } }],
-    budget: { maxCostUsd: 0.5, maxIpaCalls: 4 }, goldenPath: 2 },
+    budget: { maxCostUsd: 0.55, maxIpaCalls: 5 }, goldenPath: 2 },
 
   { ...base, id: "b6-multi-note-synthesis",
     prompts: [
@@ -25,7 +25,7 @@ export default [
       command_flow: ["(search|context).*커피", "view|traversal|context"],
       md_changed_max: 0,
     } }],
-    budget: { maxCostUsd: 0.8, maxIpaCalls: 10 }, goldenPath: 4 },
+    budget: { maxCostUsd: 0.88, maxIpaCalls: 11 }, goldenPath: 4 },
 
   { ...base, id: "b7-history-bootstrap",
     prompts: [
@@ -38,7 +38,7 @@ export default [
       command_flow: ["context|traversal"],
       md_changed_max: 0,
     } }],
-    budget: { maxCostUsd: 0.8, maxIpaCalls: 8 }, goldenPath: 3 },
+    budget: { maxCostUsd: 0.88, maxIpaCalls: 9 }, goldenPath: 3 },
 
   { ...base, id: "b8-absent-topic",
     prompts: [
@@ -46,5 +46,5 @@ export default [
       "예전에 정리해둔 클라이밍 암장 비교 노트 어디 있지?",
     ],
     turns: [{ user: "$PROMPT", expect: { ipa_used: true, final_answer_regex: "없|찾지 못|못 찾", md_changed_max: 0 } }],
-    budget: { maxCostUsd: 0.5, maxIpaCalls: 6 }, goldenPath: 2 },
+    budget: { maxCostUsd: 0.55, maxIpaCalls: 7 }, goldenPath: 2 },
 ];

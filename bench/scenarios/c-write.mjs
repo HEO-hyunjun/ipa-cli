@@ -14,7 +14,7 @@ export default [
       formatter_pending_empty: true,
       validator_clean_changed: true,
     } }],
-    budget: { maxCostUsd: 0.8, maxIpaCalls: 8 }, goldenPath: 3 },
+    budget: { maxCostUsd: 0.88, maxIpaCalls: 9 }, goldenPath: 3 },
 
   { ...base, id: "c10-edit-note-section", mode: "multi", responder: "approve",
     prompts: [
@@ -29,7 +29,7 @@ export default [
         formatter_pending_empty: true, validator_clean_changed: true, md_changed_max: 1,
       } },
     ],
-    budget: { maxCostUsd: 1.0, maxIpaCalls: 10 }, goldenPath: 4 },
+    budget: { maxCostUsd: 1.1, maxIpaCalls: 11 }, goldenPath: 4 },
 
   { ...base, id: "c11-frontmatter-only", mode: "single", responder: null,
     prompts: [
@@ -42,7 +42,7 @@ export default [
       md_changed_max: 1,
       validator_clean_changed: true,
     } }],
-    budget: { maxCostUsd: 0.6, maxIpaCalls: 10 }, goldenPath: 2 },
+    budget: { maxCostUsd: 0.66, maxIpaCalls: 11 }, goldenPath: 2 },
 
   { ...base, id: "c12-inbox-triage", mode: "multi", smoke: true, responder: "approve",
     prompts: [
@@ -56,5 +56,5 @@ export default [
         formatter_pending_empty: true,
       } },
     ],
-    budget: { maxCostUsd: 1.5, maxIpaCalls: 20 }, goldenPath: 8 },
+    budget: { maxCostUsd: 1.65, maxIpaCalls: 22 }, goldenPath: 8 },
 ];

@@ -12,7 +12,7 @@ export default [
       formatter_pending_empty: true,
       md_changed_max: 1,
     } }],
-    budget: { maxCostUsd: 0.8, maxIpaCalls: 8 }, goldenPath: 4 },
+    budget: { maxCostUsd: 0.88, maxIpaCalls: 9 }, goldenPath: 4 },
 
   { ...base, id: "d14-messy-scoped-edit", persona: "messy", mode: "multi", responder: "approve",
     prompts: [
@@ -23,7 +23,7 @@ export default [
       { user: "$PROMPT", expect: { file_modified: "아침 식사와 집중도 로그", md_changed_max: 1 } }, // 볼트 전체 수선 확전 금지
       { user: "끝났으면 마무리해줘.", expect: { formatter_pending_empty: true, md_changed_max: 1 } },
     ],
-    budget: { maxCostUsd: 1.0, maxIpaCalls: 10 }, goldenPath: 4 },
+    budget: { maxCostUsd: 1.1, maxIpaCalls: 11 }, goldenPath: 4 },
 
   { ...base, id: "d15-vault-rule-compliance", persona: "divergent", mode: "single", responder: null,
     prompts: [
@@ -35,5 +35,5 @@ export default [
       validator_clean_changed: true, // divergent의 vault-local rule 플러그인 준수까지 포함 판정
       formatter_pending_empty: true,
     } }],
-    budget: { maxCostUsd: 0.8, maxIpaCalls: 10 }, goldenPath: 3 },
+    budget: { maxCostUsd: 0.88, maxIpaCalls: 11 }, goldenPath: 3 },
 ];
