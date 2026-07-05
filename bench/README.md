@@ -26,6 +26,8 @@ npm run bench -- --full --max-workers 8  # 매트릭스 동시 실행 (기본 5)
 - 실제 `claude` CLI와 API 비용을 사용한다. `--full`은 세션 30+개 규모.
 - 토큰/비용 델타로 의사결정할 때는 해당 시나리오를 2~3회 반복 실행해 비교한다.
   단일 실행은 pass/fail 판정 전용.
+- `budget`(maxCostUsd/maxIpaCalls)은 폭주 감지용 상한(관측 정상치의 ~2배)이다. 모델 간 per-call
+  효율 차이는 pass/fail이 아니라 지표(`summary.stepRatio`, baseline `cost_up` 경고)로 추적한다.
 
 ### HOME 격리와 잔여 리스크
 
