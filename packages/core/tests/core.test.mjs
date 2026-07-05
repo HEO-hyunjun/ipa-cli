@@ -1020,6 +1020,10 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   const consultSkill = await readFile(join(vault, ".agents", "skills", "ipa-consult", "SKILL.md"), "utf8");
   assert.match(consultSkill, /name: ipa-consult/);
   assert.match(consultSkill, /ipa convention/);
+  // Convergence nudge: convention is authoritative for concept Q&A — answer from
+  // it directly, one example note at most, and do not survey the whole vault.
+  assert.match(consultSkill, /authoritative source for definitional and concept questions/);
+  assert.match(consultSkill, /do not survey the whole vault/);
   assert.match(consultSkill, /Friction Counseling/);
   assert.match(consultSkill, /Apply fixes, move notes, or edit config in this skill/);
   // Operating rules go through the fragment, never a hand-edited managed block.

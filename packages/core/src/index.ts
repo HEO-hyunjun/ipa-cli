@@ -6866,7 +6866,7 @@ The source of truth for IPA philosophy is the Design Intent section of \`ipa con
 
 ## Mode 1 — Concept Q&A ("what is an index", "refs vs tags")
 
-Answer from \`ipa convention\` using this vault's real field/folder names, explain the design intent behind the rule, and illustrate with an actual note found via \`ipa search\`.
+\`ipa convention\` is the authoritative source for definitional and concept questions — answer directly from it, using this vault's real field/folder names and explaining the design intent behind the rule. Illustrate with at most one related note found via \`ipa search\`; do not survey the whole vault (\`ipa digest\`, \`ipa review all\`, repeated search/view) to settle a question \`ipa convention\` already answers.
 
 ## Mode 2 — Friction Counseling ("X is inconvenient", "how do I organize Y")
 
