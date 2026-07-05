@@ -1,5 +1,12 @@
 // bench/lib/transcript.mjs
-const IPA_CALL_RE = /(?:^|[;&|(]\s*)\s*ipa\s+[a-z-]/;
+// ipa 호출 감지: bash 명령을 셸 구분자(&&, ||, ;)로 세그먼트 분할한 뒤, 각 세그먼트가
+// 줄머리에서 `ipa <subcommand>`로 시작하는지 본다. `(^|\n)`로 heredoc 종료 뒤 새 줄에서
+// 이어지는 `ipa ...`(예: `cat > f <<'EOF' ... EOF\nipa inbox add`)까지 잡는다 —
+// 이 형태는 앞이 셸 구분자가 아니라 `EOF\n`이라 예전 구분자-only 정규식이 놓쳤다.
+// 트레이드오프: heredoc 본문에 `ipa search ...`처럼 실제 명령 형태의 줄이 있으면 오탐할 수
+// 있으나, 실제 `&& ipa <sub>` 체이닝을 놓치지 않는 쪽을 우선한다.
+const IPA_SEGMENT_RE = /(?:^|\n)\s*ipa\s+[a-z-]/;
+const isIpaCall = (command) => command.split(/&&|\|\||;/).some((seg) => IPA_SEGMENT_RE.test(seg));
 
 export function emptyParsed() {
   return { sessionId: null, costUsd: 0, numTurns: 0, isError: false, bashCalls: [], ipaCalls: [], finalText: "" };
@@ -35,7 +42,7 @@ export function parseTranscript(jsonlText) {
       out.finalText = typeof ev.result === "string" ? ev.result : "";
     }
   }
-  out.ipaCalls = out.bashCalls.filter((c) => IPA_CALL_RE.test(c.command.trim()));
+  out.ipaCalls = out.bashCalls.filter((c) => isIpaCall(c.command));
   return out;
 }
 

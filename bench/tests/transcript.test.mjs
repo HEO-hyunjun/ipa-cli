@@ -21,6 +21,27 @@ test("parseTranscript extracts session, cost, calls", () => {
   assert.equal(p.finalText, "정리했습니다.");
 });
 
+function bashTranscript(command) {
+  return JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", id: "b1", name: "Bash", input: { command } }] } }) + "\n";
+}
+
+test("ipaCall detection: cd-chained ipa", () => {
+  const p = parseTranscript(bashTranscript('cd "/x" && ipa inbox add "t"'));
+  assert.equal(p.ipaCalls.length, 1);
+  assert.match(p.ipaCalls[0].command, /inbox add/);
+});
+
+test("ipaCall detection: heredoc body then chained ipa", () => {
+  const p = parseTranscript(bashTranscript("mkdir -p .tmp && cat > .tmp/x << 'EOF'\n> [!abstract]\n내용\nEOF\nipa inbox add \"t\""));
+  assert.equal(p.ipaCalls.length, 1);
+  assert.match(p.ipaCalls[0].command, /inbox add/);
+});
+
+test("ipaCall detection: plain non-ipa command", () => {
+  const p = parseTranscript(bashTranscript("ls -la"));
+  assert.equal(p.ipaCalls.length, 0);
+});
+
 test("parseTranscript survives garbage lines", () => {
   const p = parseTranscript('not-json\n{"type":"result","total_cost_usd":0.01,"num_turns":1,"is_error":false,"result":"ok","session_id":"s"}\n');
   assert.equal(p.costUsd, 0.01);
