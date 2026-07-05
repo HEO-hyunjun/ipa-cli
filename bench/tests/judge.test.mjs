@@ -170,6 +170,21 @@ test("validator_clean_changed runs real CLI against mini-vault copy", () => {
   assert.ok(rs[0].pass, rs[0].detail); // mini-vault Alpha 수정은 error 이슈가 없어야 한다
 });
 
+test("validator_reports_regex matches a rule-plugin issue in whole-vault validator", () => {
+  const sb = createSandbox(MINI_VAULT, "judge");
+  // 사용자가 저작할 법한 rule 플러그인(과대 인덱스 경고 등)이 whole-vault validator에서 발화하는지
+  // 확인하는 primitive. 여기선 마커 이슈를 무조건 내는 checkVault 규칙을 떨어뜨려 로딩+발화+grep 경로만 검증한다.
+  const ruleDir = join(sb, ".ipa", "plugins", "rules");
+  mkdirSync(ruleDir, { recursive: true });
+  writeFileSync(join(ruleDir, "marker.js"),
+    'export const rule = { code: "test.marker", severity: "warning", checkVault() { return [{ message: "레시피 모음 has 21 children (over-full)" }]; } };\n');
+  const ctx = baseCtx({ sandboxDir: sb });
+  assert.ok(allPass(evaluateExpect({ validator_reports_regex: "레시피 모음" }, ctx)), "authored rule should fire and name the index");
+  const rs = evaluateExpect({ validator_reports_regex: "존재하지 않는 인덱스" }, ctx);
+  assert.equal(rs.length, 1);
+  assert.ok(!rs[0].pass, rs[0].detail); // 발화하지 않는 이슈 문자열은 실패
+});
+
 test("validator_clean_changed skips titles that don't resolve as notes", () => {
   const sb = createSandbox(MINI_VAULT, "judge");
   const alpha = join(sb, "00 Inbox", "Alpha.md");

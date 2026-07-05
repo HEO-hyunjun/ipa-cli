@@ -140,6 +140,23 @@ export function evaluateExpect(expect, ctx) {
         const clean = `clean (${titles.length - skipped.length} notes${skipped.length ? `, ${skipped.length} skipped: not indexed` : ""})`;
         push(key, errors.length === 0, errors.slice(0, 5).join(" | ") || clean); break;
       }
+      case "validator_reports_regex": {
+        // 볼트 전체 validator를 돌려(에이전트가 저작한 rule 플러그인 포함) 이슈가 regex에 걸리는지
+        // 확인한다. validator_clean_changed와 달리 특정 이슈의 *존재*를 요구한다 — 저작한 rule이
+        // 실제로 발화하는지 end-state로 판정한다(rule-authoring 프로브에서 사용).
+        const re = new RegExp(value);
+        try {
+          const out = execFileSync(process.execPath,
+            [ipaBin, "--vault", sandboxDir, "validator", "--json"],
+            { encoding: "utf8", cwd: sandboxDir, stdio: ["ignore", "pipe", "pipe"] });
+          const issues = JSON.parse(out).issues ?? [];
+          const hit = issues.some((i) => re.test(`${i.message ?? ""} ${i.note ?? ""} ${i.code ?? ""}`));
+          push(key, hit, hit ? `matched issue ~ /${value}/` : `${issues.length} issues, none ~ /${value}/`);
+        } catch (e) {
+          push(key, false, `validator failed: ${String(e).slice(0, 200)}`);
+        }
+        break;
+      }
       case "final_answer_regex":
         push(key, new RegExp(value).test(parsed.finalText), value); break;
       case "final_answer_not_regex":
