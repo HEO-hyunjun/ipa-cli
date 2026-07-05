@@ -8640,9 +8640,30 @@ export async function harnessSessionGate(vaultPath, options = {}) {
       }
     }
   }
-  if (!blocks.length && owned.length) {
+  if (!blocks.length) {
+    // Owned entries are formatter-clean here (a dirty owned note blocks above), so
+    // they leave the ledger. Foreign entries (a different non-null session_id) are
+    // re-checked against the formatter and dropped when clean too — ownership must
+    // not strand a clean note until the 48h TTL, or a multi-turn --resume that
+    // rotates the session id would let it resurface and wrongly gate a later turn.
+    // Only genuinely pending foreign work is kept.
     const ownedSet = new Set(owned);
-    const remaining = entries.filter((item) => !ownedSet.has(item));
+    const foreign = entries.filter((item) => !ownedSet.has(item));
+    const foreignTitles = [...new Set(foreign
+      .map((item) => typeof item.title === "string" ? item.title.trim() : "")
+      .filter(Boolean))];
+    let foreignDirty = new Set(foreignTitles);
+    if (foreignTitles.length) {
+      try {
+        const plan = await formatVault(vaultPath, false, { notes: foreignTitles, ruleApply: true });
+        foreignDirty = new Set(plan.patches.map((patch) => patch.note));
+      } catch {
+        // Fail-safe: if the foreign notes can't be verified, keep them rather than
+        // risk dropping real pending work.
+      }
+    }
+    const remaining = foreign.filter((item) =>
+      foreignDirty.has(typeof item.title === "string" ? item.title.trim() : ""));
     if (remaining.length) {
       await writeFile(pendingPath, JSON.stringify({ version: 1, notes: remaining }, null, 2) + "\n", "utf8");
     } else if (existsSync(pendingPath)) {

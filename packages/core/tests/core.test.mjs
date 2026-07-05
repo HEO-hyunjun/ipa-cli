@@ -2752,6 +2752,36 @@ test("session gate combines formatter pending with vault-owned gate plugins", as
   assert.ok(withBroken.errors.some((item) => item.source === "broken"));
 });
 
+test("session gate clears a clean note whose ledger entry carries a foreign session_id", async () => {
+  const vault = await fixtureVault();
+  const pendingPath = join(vault, ".ipa", "harness", "formatter-pending.json");
+  await mkdir(dirname(pendingPath), { recursive: true });
+
+  // Given: Alpha is formatter-clean, but its ledger entry was recorded under a
+  // different session (a multi-turn --resume rotates the id between the
+  // write-nudge and the Stop gate).
+  await formatVault(vault, true, { notes: ["Alpha"] });
+  const seed = (notes) => writeFile(pendingPath, JSON.stringify({ version: 1, notes }, null, 2) + "\n", "utf8");
+  await seed([{ title: "Alpha", path: "00 Inbox/Alpha.md", session_id: "sess-writer", updated_at: new Date().toISOString() }]);
+
+  // Then: a gate in another session clears the clean entry instead of stranding it
+  // to the 48h TTL (before the fix a mismatched session_id kept it forever).
+  const cleared = await harnessSessionGate(vault, { session: "sess-gate" });
+  assert.equal(cleared.block, false, JSON.stringify(cleared.blocks));
+  assert.equal(existsSync(pendingPath), false, "clean note must not be stranded by a foreign session_id");
+
+  // But: a genuinely pending foreign note is kept — ownership never drops real work.
+  await writeFile(
+    join(vault, "00 Inbox", "Needs Format.md"),
+    `---\ndate_modified: 2026/05/10 (Sun) 00:00:00\nref: ["[[🔖 Topic Index]]"]\ntags: [format]\n---\n# Needs Format\n\nBody\n`,
+    "utf8"
+  );
+  await seed([{ title: "Needs Format", path: "00 Inbox/Needs Format.md", session_id: "sess-writer", updated_at: new Date().toISOString() }]);
+  const kept = await harnessSessionGate(vault, { session: "sess-gate" });
+  assert.equal(kept.block, false);
+  assert.equal(existsSync(pendingPath), true, "dirty foreign work must survive a gate in another session");
+});
+
 test("obsidian plugin sync deploys the built bundle into the vault plugin folder", async () => {
   const vault = await fixtureVault();
   const repoRoot = await mkdtemp(join(tmpdir(), "ipa-obsidian-repo-"));
