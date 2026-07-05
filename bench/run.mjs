@@ -17,6 +17,9 @@ const VAULTS_DIR = join(REPO, "bench", "vaults");
 const RESULTS_DIR = join(REPO, "bench", "results");
 const FAKE_CLAUDE = join(REPO, "bench", "tests", "fixtures", "fake-claude.mjs");
 
+// 효율 WARN 밴드 하한 배수: ipaCalls ≤ goldenPath×WARN_LOW이면 "ok", 그 위 ~ 상한 사이는 "warn".
+const WARN_LOW = 2;
+
 function parseArgs(argv) {
   const args = { scenario: [], model: null, smoke: false, full: false, holdout: false,
     dryRun: false, updateBaseline: false, promptIndex: null, keepSandbox: false, maxWorkers: 5 };
@@ -117,27 +120,47 @@ async function runOne({ scenario, model }, args, runDir) {
     for (const r of results) assertions.push({ turn: turnNo, ...r });
   }
 
-  // 예산 자동 어서션
-  assertions.push({ turn: turnNo, name: "cost_within_budget", pass: acc.costUsd <= scenario.budget.maxCostUsd, detail: `$${acc.costUsd.toFixed(3)} / $${scenario.budget.maxCostUsd}` });
-  assertions.push({ turn: turnNo, name: "ipa_calls_within_budget", pass: acc.ipaCalls.length <= scenario.budget.maxIpaCalls, detail: `${acc.ipaCalls.length} / ${scenario.budget.maxIpaCalls}` });
+  // correctness 축 = turn.expect 어서션(흐름/파일/내용)만. 예산·completion 축은 아래에서 별도.
+  const correctness = assertions.every((a) => a.pass);
 
-  // max-turns/에러로 절단된 런은 VOID: 성공으로 통과시키지 말고 human-review로 격리한다.
-  // (절단된 폭주가 싸게 통과하는 거짓양성 차단 — 절단은 시나리오 판정 대상이 아니다.)
+  // 예산 축: ipa 콜 상한(maxIpaCalls)은 폭주 하드 게이트, USD는 관측치로 기록.
+  const calls = acc.ipaCalls.length;
+  const ceilingPass = calls <= scenario.budget.maxIpaCalls;
+  const costPass = acc.costUsd <= scenario.budget.maxCostUsd;
+  assertions.push({ turn: turnNo, name: "cost_within_budget", pass: costPass, detail: `$${acc.costUsd.toFixed(3)} / $${scenario.budget.maxCostUsd}` });
+  assertions.push({ turn: turnNo, name: "ipa_calls_within_budget", pass: ceilingPass, detail: `${calls} / ${scenario.budget.maxIpaCalls}` });
+
+  // 효율 축: stepRatio = ipaCalls/goldenPath. goldenPath 없으면 측정 불가 → "ok".
+  //   ok   = goldenPath×WARN_LOW 이내(정답 최소 시퀀스에 근접)
+  //   warn = 그 위 ~ 상한 이내("정답인데 서툼" — 개선기회, fail 아님)
+  //   over = 상한(maxIpaCalls) 초과(폭주)
+  let efficiency;
+  if (!scenario.goldenPath) efficiency = "ok";
+  else if (calls > scenario.budget.maxIpaCalls) efficiency = "over";
+  else if (calls <= scenario.goldenPath * WARN_LOW) efficiency = "ok";
+  else efficiency = "warn";
+
+  // completion 축: max-turns/에러로 절단된 런은 VOID(성공 취급 금지, human-review로 격리).
   const completion = acc.truncated ? "void" : "completed";
   if (acc.truncated) assertions.push({ turn: turnNo, name: "completion", pass: false, detail: "VOID: hit max-turns / error — needs human review" });
 
+  const verdict = { correctness, efficiency, completion };
+  // 종합 pass = 정답 AND 폭주상한 AND USD예산 AND 효율!=over AND completion=completed.
+  // (게이트 전체 AND — baseline.mjs가 읽는 boolean. cost는 ITEM 4에서 관측치로 분리한다.)
+  const pass = correctness && ceilingPass && costPass && efficiency !== "over" && completion === "completed";
+
   const summary = {
     id: scenario.id, model, promptIndex,
-    pass: assertions.every((a) => a.pass),
-    completion,
+    pass,
+    verdict,
     assertions,
     costUsd: acc.costUsd, numTurns: acc.numTurns,
-    ipaCalls: acc.ipaCalls.length,
+    ipaCalls: calls,
     ipaErrorCalls: acc.ipaCalls.filter((c) => c.isError).length,
     nonIpaVaultTouches: acc.nonIpaVaultTouches,
     truncated: acc.truncated,
     goldenPath: scenario.goldenPath,
-    stepRatio: scenario.goldenPath ? Number((acc.ipaCalls.length / scenario.goldenPath).toFixed(2)) : null,
+    stepRatio: scenario.goldenPath ? Number((calls / scenario.goldenPath).toFixed(2)) : null,
     sandbox: args.keepSandbox ? sandbox : null,
   };
   writeFileSync(join(caseDir, "summary.json"), JSON.stringify(summary, null, 2));
@@ -166,7 +189,9 @@ async function main() {
     const head = `${item.scenario.id} [${item.model}]`;
     try {
       const summary = await runOne(item, args, runDir);
-      console.log(summary.pass ? `PASS ${head} ($${summary.costUsd.toFixed(3)}, ipa ${summary.ipaCalls})` : `FAIL ${head}`);
+      const v = summary.verdict;
+      const vtag = `correct=${v.correctness} eff=${v.efficiency} compl=${v.completion}`;
+      console.log(summary.pass ? `PASS ${head} ($${summary.costUsd.toFixed(3)}, ipa ${summary.ipaCalls}) [${vtag}]` : `FAIL ${head} [${vtag}]`);
       for (const a of summary.assertions.filter((x) => !x.pass)) console.log(`    ✗ ${a.name}: ${a.detail}`);
       return summary;
     } catch (e) {

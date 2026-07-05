@@ -28,7 +28,13 @@ test("run.mjs --dry-run executes one scenario end-to-end with fake claude", () =
     assert.match(out, /a9-dryrun-probe/);
     const runsDir = join(REPO, "bench", "results", "runs");
     const latest = readdirSync(runsDir).sort().at(-1);
-    assert.ok(existsSync(join(runsDir, latest, "a9-dryrun-probe__sonnet", "summary.json")));
+    const summaryPath = join(runsDir, latest, "a9-dryrun-probe__sonnet", "summary.json");
+    assert.ok(existsSync(summaryPath));
+    const summary = JSON.parse(readFileSync(summaryPath, "utf8"));
+    assert.ok(summary.verdict, "summary.verdict present");
+    assert.deepEqual(Object.keys(summary.verdict).sort(), ["completion", "correctness", "efficiency"]);
+    assert.equal(summary.verdict.completion, "completed");
+    assert.equal(typeof summary.verdict.correctness, "boolean");
   } finally {
     rmSync(scenDir, { recursive: true, force: true });
   }
