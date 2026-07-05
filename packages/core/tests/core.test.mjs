@@ -29,6 +29,7 @@ import {
   listSearchChannels,
   pluginDoctor,
   pluginDryRun,
+  pluginInit,
   readVaultConfig,
   refactorVault,
   replaceInNote,
@@ -928,6 +929,24 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   assert.match(skill, /## Scripted Edits/);
   assert.match(skill, /ipa note replace "Note Title"/);
   assert.match(skill, /ipa note set "Note Title" --field ref --add "Index Note" --apply/);
+  // Command Selection leads the "relate notes" answer with the write path and
+  // demotes link suggest/traversal to read-only discovery (bench g30).
+  assert.match(skill, /Relate a note to an index \(make it belong\): `ipa note set "Note" --field ref --add "Index Note" --apply`/);
+  assert.match(skill, /only wikify a title already present verbatim in the note body/);
+  assert.match(skill, /Read-only discovery only:/);
+  // Counting an index's children routes to digest/traversal, not view|grep loops.
+  assert.match(skill, /Count or list an index's children\/backlinks:/);
+  assert.match(skill, /ipa traversal --down "Index Note"/);
+  // context --by-note distinction rides on the existing context line.
+  assert.match(skill, /ipa context --by-note "Note Title"/);
+  // Archive→project reactivation move with folder-independent link framing.
+  assert.match(skill, /Reactivate an archived topic[^\n]*ipa move "Note" "01 Project" --apply/);
+  assert.match(skill, /inbound wikilinks keep resolving/);
+  // Generalized "preview is not the deliverable" mutation cue in Safe Writes.
+  assert.match(skill, /a preview or plan is not the deliverable — re-run the same command with `--apply`/);
+  // Stale-search troubleshooting pointer (kept out of the hot command list).
+  assert.match(skill, /ipa cache doctor/);
+  assert.match(skill, /ipa cache rebuild/);
   // The global skill is the unified entry point: it routes focused work to the
   // vault-local helper skills and falls back to CLI guidance outside the vault.
   assert.match(skill, /## Skill Routing/);
@@ -985,6 +1004,22 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   assert.match(ruleSkill, /name: ipa-rule/);
   assert.match(ruleSkill, /Use this skill whenever the user mentions IPA rules/);
   assert.match(ruleSkill, /ipa plugin validate/);
+  // P4: the rule skill teaches the plugin data model and dry-run idioms.
+  assert.match(ruleSkill, /read it to learn the field shapes before writing check logic/);
+  assert.match(ruleSkill, /checkNote\(note, ctx\)/);
+  // P5: the primary idiom is checkNote + the graph helpers, not a manual filter.
+  assert.match(ruleSkill, /ctx\.childCount\(note\)/);
+  assert.match(ruleSkill, /ctx\.backlinkCount\(note\)/);
+  assert.match(ruleSkill, /pointing at it through `ref`/);
+  assert.match(ruleSkill, /`checkVault\(ctx\)` \/ `scope: "vault"`/);
+  assert.match(ruleSkill, /exercised by `ipa validator`, not by dry-run/);
+  assert.match(ruleSkill, /ipa plugin list/);
+  assert.match(ruleSkill, /ipa plugin doctor/);
+  assert.doesNotMatch(ruleSkill, /there is no pointer/);
+  // The verbose manual-count framing that made an agent reach for checkVault +
+  // loop on dry-run must stay gone.
+  assert.doesNotMatch(ruleSkill, /count `ctx\.notes`/);
+  assert.doesNotMatch(ruleSkill, /which is note-scoped and requires/);
   const configSkill = await readFile(join(vault, ".agents", "skills", "ipa-config", "SKILL.md"), "utf8");
   assert.match(configSkill, /Use this skill whenever the user asks about ipa config init/);
   assert.match(configSkill, /ipa config init/);
@@ -1017,6 +1052,13 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   assert.match(reviewSkill, /ipa review all --suggest-refactor/);
   assert.match(reviewSkill, /ipa refactor ref-replace/);
   assert.match(reviewSkill, /Apply any fix without user approval/);
+  // P7: phantom narrowing flags are gone; the recipe list is the real set.
+  assert.doesNotMatch(reviewSkill, /--scope-ref|--filter/);
+  assert.match(reviewSkill, /also supports `ref-add`, `ref-remove`, `tag-remove`, and `tag-add`/);
+  // P8(b): the review-all comment names the real scopes and the sot config key.
+  assert.match(reviewSkill, /# convention, inbox, duplicates, tags, sot/);
+  assert.match(reviewSkill, /review\.sot\.title_patterns/);
+  assert.doesNotMatch(reviewSkill, /tags, indexes, duplicates, inbox issues/);
   const consultSkill = await readFile(join(vault, ".agents", "skills", "ipa-consult", "SKILL.md"), "utf8");
   assert.match(consultSkill, /name: ipa-consult/);
   assert.match(consultSkill, /ipa convention/);
@@ -1786,7 +1828,7 @@ test("harness prompt surfaces render field and folder names from the config mapp
   const config = await readFile(configPath, "utf8");
   await writeFile(
     configPath,
-    `${config.trimEnd()}\nmapping:\n  fields:\n    refs: link\n    tags: keywords\n    created_at: created\n    updated_at: modified\n  folders:\n    inbox: "10 Intake"\n`,
+    `${config.trimEnd()}\nmapping:\n  fields:\n    refs: link\n    tags: keywords\n    created_at: created\n    updated_at: modified\n  folders:\n    inbox: "10 Intake"\n    project: "20 Active"\n`,
     "utf8"
   );
 
@@ -1796,6 +1838,10 @@ test("harness prompt surfaces render field and folder names from the config mapp
   // Then: the skill teaches the vault's real field names, not IPA defaults.
   const skill = await readFile(join(home, ".claude", "skills", "ipa", "SKILL.md"), "utf8");
   assert.match(skill, /--field link --add "Index Note" --apply/);
+  // P1: the "relate notes" write path leads and renders the mapped refs field.
+  assert.match(skill, /Relate a note to an index \(make it belong\): `ipa note set "Note" --field link --add "Index Note" --apply`/);
+  // P9: the reactivation move line renders the mapped project folder.
+  assert.match(skill, /Reactivate an archived topic[^\n]*ipa move "Note" "20 Active" --apply/);
   assert.match(skill, /`created`\/`modified`/);
   assert.match(skill, /`link`\/`keywords`\) at capture time/);
   // The rename router row names the mapped refs field for the inbound rewire.
@@ -1806,6 +1852,10 @@ test("harness prompt surfaces render field and folder names from the config mapp
   // Then: the review skill and convention doc use the mapped tags field.
   const reviewSkill = await readFile(join(vault, ".claude", "skills", "ipa-review", "SKILL.md"), "utf8");
   assert.match(reviewSkill, /--field keywords --add/);
+  // P4: the rule skill's cross-note counting idiom renders the mapped refs field.
+  const ruleSkill = await readFile(join(vault, ".claude", "skills", "ipa-rule", "SKILL.md"), "utf8");
+  assert.match(ruleSkill, /pointing at it through `link`/);
+  assert.doesNotMatch(ruleSkill, /pointing at it through `ref`/);
   const conventionDoc = await conventionShow(vault);
   assert.match(conventionDoc.markdown, /`keywords` — flat keyword list/);
 
@@ -2575,6 +2625,23 @@ test("review sot is config-gated and flags report-style pileups under one index"
   assert.ok(candidate.notes.length >= 4);
 });
 
+test("review sot hints when title_patterns is unconfigured; review all stays quiet", async () => {
+  const vault = await fixtureVault();
+  // P8: an explicit `review sot` on a vault without title_patterns nudges the
+  // user to configure the scope, but `review all` must not emit that hint.
+  const sot = await reviewVault(vault, "sot");
+  assert.ok(
+    sot.issues.some((item) => item.code === "review.sot.unconfigured"),
+    "review sot must hint when review.sot.title_patterns is unset"
+  );
+  const all = await reviewVault(vault, "all");
+  assert.equal(
+    all.issues.filter((item) => item.code === "review.sot.unconfigured").length,
+    0,
+    "review all must stay quiet on an unconfigured default vault"
+  );
+});
+
 test("formatter apply keeps plan clean afterwards even when non-date patches move mtime", async () => {
   const vault = await fixtureVault();
   // Note with a spacing violation the obsidian rules would fix — but the
@@ -3317,6 +3384,48 @@ export default {
   const result = await pluginDryRun(vault, "rules", ".ipa/plugins/rules/config-probe.js", { note: "Alpha" });
   assert.equal(result.issues.length, 1);
   assert.equal(result.issues[0].message, "config-present");
+});
+
+test("scaffolded plugin type contract documents the graph helpers", async () => {
+  const vault = await fixtureVault();
+  const init = await pluginInit(vault, { examples: true });
+  assert.ok(init.created.includes(".ipa/plugins/rules/_example-overfull-index.js"));
+  const contract = await readFile(join(vault, ".ipa", "plugins", "types", "ipa-plugin.d.ts"), "utf8");
+  assert.match(contract, /childCount: \(note: Note\) => number;/);
+  assert.match(contract, /backlinkCount: \(note: Note\) => number;/);
+});
+
+test("shipped over-full index example rule fires via ctx.childCount", async () => {
+  const vault = await fixtureVault();
+  await pluginInit(vault, { examples: true });
+  const rulePath = ".ipa/plugins/rules/_example-overfull-index.js";
+
+  // Build a fresh index with 21 children (> the example's MAX_CHILDREN of 20).
+  await writeFile(
+    join(vault, "01 Project", "🔖 Big Index.md"),
+    `---\ndate_created: 2026/05/10 (Sun) 00:00:00\ndate_modified: 2026/05/10 (Sun) 00:00:00\nref:\n  - "[[🏷️ Topic Root]]"\ntags:\n  - index\ntype: index\n---\n# Big Index\n`,
+    "utf8"
+  );
+  for (let i = 0; i < 21; i++) {
+    await writeFile(
+      join(vault, "00 Inbox", `Child ${i}.md`),
+      `---\ndate_created: 2026/05/10 (Sun) 00:00:00\ndate_modified: 2026/05/10 (Sun) 00:00:00\nref:\n  - "[[🔖 Big Index]]"\ntags:\n  - note\ntype: note\n---\n# Child ${i}\n`,
+      "utf8"
+    );
+  }
+
+  const overFull = await pluginDryRun(vault, "rules", rulePath, { note: "🔖 Big Index" });
+  assert.equal(overFull.issues.length, 1, JSON.stringify(overFull.issues));
+  assert.equal(overFull.issues[0].code, "vault.index.over_full");
+  assert.match(overFull.issues[0].message, /21 children/);
+
+  // The fixture's own index has 2 children — under threshold, so silent.
+  const underThreshold = await pluginDryRun(vault, "rules", rulePath, { note: "🔖 Topic Index" });
+  assert.equal(underThreshold.issues.length, 0, JSON.stringify(underThreshold.issues));
+
+  // A plain note is never an index, so the rule ignores it.
+  const nonIndex = await pluginDryRun(vault, "rules", rulePath, { note: "Alpha" });
+  assert.equal(nonIndex.issues.length, 0, JSON.stringify(nonIndex.issues));
 });
 
 test("validateVault --note scoping filters issues to the requested notes", async () => {

@@ -2856,6 +2856,18 @@ function countChildren(note, notes) {
   return notes.filter((candidate) => hasNoteName(candidate.refs, note.id)).length;
 }
 
+// Graph helpers surfaced on every rule context (validate / dry-run / formatter
+// fix). A checkNote/checkVault rule counts an index's children or a note's
+// inbound references without reimplementing the title-normalized matching (NFC
+// + case-insensitive + emoji/whitespace) that countChildren/countBacklinks
+// already apply, so CLI and the Obsidian host inherit identical semantics.
+function ruleGraphContext(notes) {
+  return {
+    childCount: (note) => countChildren(note, notes),
+    backlinkCount: (note) => countBacklinks(note, notes)
+  };
+}
+
 function formatTagDistribution(note, notes) {
   if (!note.tags.length) return [];
   const sorted = note.tags
@@ -3597,6 +3609,7 @@ export async function validateVault(vaultPath, notes = null, options = {}) {
     mapping,
     notes,
     vaultPath,
+    ...ruleGraphContext(notes),
     excludedTitles: await loadExcludedMarkdownTitles(vaultPath, mapping),
     markdownTitles: await loadActiveMarkdownTitles(vaultPath, mapping),
     attachmentTitles: await loadAttachmentTitles(vaultPath, mapping)
@@ -3822,6 +3835,7 @@ export async function formatVault(vaultPath, apply = false, options = {}) {
     notes: allNotes,
     mapping,
     vaultPath,
+    ...ruleGraphContext(allNotes),
     // apply-gated rules (e.g. date_modified) need apply context to emit a patch.
     // ruleApply lets a host run them at plan time even when fs apply is off —
     // Obsidian writes patches via its Vault API, not core's fs writer.
@@ -5026,6 +5040,8 @@ export async function reviewVault(vaultPath, scope = "all", options = {}) {
           });
         }
       }
+    } else if (scope === "sot") {
+      issues.push({ code: "review.sot.unconfigured", severity: "info", message: "configure review.sot.title_patterns in .ipa/config.yaml to enable this scope" });
     }
   }
   if (options.suggestRefactor) {
@@ -5154,6 +5170,20 @@ export interface RuleContext {
   config?: Record<string, unknown>;
   mapping: Mapping;
   notes: Note[];
+  /**
+   * childCount(note): how many notes point at \`note\` (its children in the
+   * index graph). Matching is title-normalized (NFC, case-insensitive,
+   * emoji/whitespace tolerant), so it catches link variants that a hand-rolled
+   * \`ctx.notes.filter(...)\` misses. O(N) over the vault per call — call once
+   * per note, not inside a loop.
+   */
+  childCount: (note: Note) => number;
+  /**
+   * backlinkCount(note): how many notes reference or link \`note\` (its inbound
+   * references). Same title-normalized matching and O(N)-per-call caveat as
+   * childCount.
+   */
+  backlinkCount: (note: Note) => number;
   apply?: boolean;
   options?: {
     note?: string | null;
@@ -5316,6 +5346,30 @@ export const rules = [{
 }];
 `;
 
+const PLUGIN_RULE_OVERFULL_INDEX_EXAMPLE = `// @ts-check
+
+// Vault policy — tune me. An index note with more children than this is
+// "over-full" and probably wants splitting. The threshold is convention, so it
+// lives here in the vault, never in the ipa core.
+const MAX_CHILDREN = 20;
+
+/** @type {import("../types/ipa-plugin").Rule[]} */
+export const rules = [{
+  code: "vault.index.over_full",
+  severity: "info",
+  // checkNote runs per note, so it fires under
+  // \`ipa plugin dry-run rules <file> --note "Some Index"\` — instant feedback.
+  checkNote(note, ctx) {
+    if (note.type !== "index") return [];
+    const children = ctx.childCount(note);
+    if (children <= MAX_CHILDREN) return [];
+    return [{
+      message: \`index has \${children} children (over \${MAX_CHILDREN}); consider splitting it\`
+    }];
+  }
+}];
+`;
+
 const PLUGIN_SEARCH_EXAMPLE = `// @ts-check
 
 /** @type {import("../types/ipa-plugin").SearchPlugin} */
@@ -5371,6 +5425,7 @@ export async function pluginInit(vaultPath, options = {}) {
   await writePluginScaffoldFile(vaultPath, `${root}/types/ipa-plugin.d.ts`, PLUGIN_TYPES, force, result);
   if (result.examples) {
     await writePluginScaffoldFile(vaultPath, `${root}/rules/_example-title-length.js`, PLUGIN_RULE_EXAMPLE, force, result);
+    await writePluginScaffoldFile(vaultPath, `${root}/rules/_example-overfull-index.js`, PLUGIN_RULE_OVERFULL_INDEX_EXAMPLE, force, result);
     await writePluginScaffoldFile(vaultPath, `${root}/search/_example-heading-search.js`, PLUGIN_SEARCH_EXAMPLE, force, result);
     await writePluginScaffoldFile(vaultPath, `${root}/gates/_example-session-gate.js`, PLUGIN_GATE_EXAMPLE, force, result);
   }
@@ -5597,7 +5652,7 @@ export async function pluginDryRun(vaultPath, kind, pluginRelPath, options = {})
   if (!note) throw new Error(`note not found: ${options.note}`);
   if (kind === "rules") {
     const rules = normalizeRulePlugin({ path: pluginRelPath, module: mod });
-    const ctx = { config, notes, mapping, vaultPath, apply: false, MarkdownDocument, IpaNoteDocument, options: { note: note.id } };
+    const ctx = { config, notes, mapping, vaultPath, ...ruleGraphContext(notes), apply: false, MarkdownDocument, IpaNoteDocument, options: { note: note.id } };
     const issues = [];
     for (const rule of rules.filter((item) => item.checkNote)) {
       issues.push(...normalizeRuleIssues(await rule.checkNote(note, ctx), rule, note));
@@ -6602,11 +6657,13 @@ function ipaCommandSelection(prefix = "ipa", mapping = DEFAULT_MAPPING) {
 
 - Exact note title known: \`${prefix} view "Note Title"\` (overview first), then \`--section\`/\`--full\` for the parts you actually need. Several notes: \`${prefix} view "A" "B" --full\` in one call.
 - Index/root summary: \`${prefix} digest "Index Note"\` (children + snippets + dates), then \`view --full\` on at most the 2-3 most relevant children — never open every child.
-- Broad prior context or user-specific background: \`${prefix} context "keyword" --size medium --format markdown\`; widen with \`${prefix} search "other angle"\` only when context missed something. Several search angles go in one call — \`${prefix} search "A" "B" "C"\` (vault loads once). Results already carry snippets and dates — judge relevance from them before opening notes.
-- Related notes: \`${prefix} link suggest "Note Title"\`. Graph shape: \`${prefix} traversal --up|--down|--siblings "Note Title"\`.
+- Count or list an index's children/backlinks: \`${prefix} digest "Index Note"\` or \`${prefix} traversal --down "Index Note"\` — read the count from their output instead of hand-rolling \`view | grep\` loops.
+- Broad prior context or user-specific background: \`${prefix} context "keyword" --size medium --format markdown\`; widen with \`${prefix} search "other angle"\` only when context missed something. Several search angles go in one call — \`${prefix} search "A" "B" "C"\` (vault loads once). Results already carry snippets and dates — judge relevance from them before opening notes. Center context on one note instead of a free-text query with \`${prefix} context --by-note "Note Title"\`.
+- Relate a note to an index (make it belong): \`${prefix} note set "Note" --field ${mapping.refs} --add "Index Note" --apply\` — the reliable belongs-to mechanism. \`${prefix} link apply\`/\`${prefix} cascade apply\` only wikify a title already present verbatim in the note body (a silent no-op otherwise); when the body has no plaintext mention of the target, use \`note set --field ${mapping.refs} --add\`. Read-only discovery only: \`${prefix} link suggest "Note Title"\` for candidate targets, \`${prefix} traversal --up|--down|--siblings "Note Title"\` for graph shape.
 - New/empty vault with no \`.ipa/config.yaml\`: \`${prefix} config init\` (absorb existing folders with \`--inbox/--project/--archive\`, then edit to match), verify with \`${prefix} doctor\`. Closing setup: optionally confirm folder/field mapping (config.yaml) and operating rules (\`.ipa/harness/fragments/prompt.md\` → \`${prefix} harness update <target>\`) — the ipa-config skill has the interview. Never rename the user's folders or do vault-wide moves/backfills to fit defaults; absorb existing structure via mapping.
 - New note: \`${prefix} inbox add ...\`. Body edit: \`${prefix} note replace ...\`. Frontmatter edit: \`${prefix} note set "Note" --field ${mapping.refs} --add "Index Note" --apply\`.
 - Rename a note/index (note stays, inbound ${mapping.refs}/wikilinks auto-rewired): \`${prefix} rename "Old" "New" --apply\` (drop \`--apply\` for preview). Only when merging several notes into one: \`${prefix} note redirect\`.
+- Reactivate an archived topic (move its root/index back to the project folder): \`${prefix} move "Note" "${mapping.project_dir}" --apply\` — inbound wikilinks keep resolving (they are folder-independent, so nothing needs rewiring; unlike rename, move does not rewrite link text).
 - During note work always scope \`validator\`/\`formatter plan\` with \`--note\`; without it they are vault-wide maintenance sweeps.
 - Unsure command or syntax: \`${prefix} help\` or \`${prefix} <command> --help\`.
 `;
@@ -6641,20 +6698,21 @@ const VAULT_LOCAL_SKILLS = [
   {
     name: "ipa-rule",
     description: "Create, modify, review, and debug IPA vault convention rules using .ipa/plugins/rules/*.js and formatter fixes. Use this skill whenever the user mentions IPA rules, vault conventions, frontmatter requirements, title/tag/ref validation, folder/type policy, validator warnings, formatter rule fixes, or wants the vault to enforce a custom convention.",
-    body: `# IPA Rule Skill
+    body: (mapping) => `# IPA Rule Skill
 
 Use this skill when the user wants to add, change, review, or debug IPA vault conventions such as frontmatter rules, note title rules, folder/type rules, tag rules, or formatter fixes.
 
 ## Workflow
 
 1. Inspect the active convention surface with \`ipa list-rules\` and \`ipa validator\`.
-2. Scaffold plugin authoring files with \`ipa plugin init\` if \`.ipa/plugins\` is missing.
-3. Implement vault-specific convention checks under \`.ipa/plugins/rules/*.js\`.
-4. Use \`// @ts-check\` and the local type contract, for example \`import("../types/ipa-plugin").Rule\`.
-5. Verify the rule with \`ipa plugin validate .ipa/plugins/rules/<rule>.js\`.
-6. Dry-run against focused notes with \`ipa plugin dry-run rules .ipa/plugins/rules/<rule>.js --note "Note Title"\`.
-7. Run \`ipa list-rules\` and \`ipa validator\` after enabling or editing rules.
-8. If the rule has a safe fix, verify the formatter loop with \`ipa formatter plan --note "Note Title"\` and \`ipa formatter apply --note "Note Title"\`.
+2. Scaffold plugin authoring files with \`ipa plugin init\` if \`.ipa/plugins\` is missing; it drops runnable \`_example-*.js\` rules to copy from.
+3. Read \`.ipa/plugins/types/ipa-plugin.d.ts\` for the \`Note\` and \`RuleContext\` field shapes — read it to learn the field shapes before writing check logic. Use \`// @ts-check\` and \`import("../types/ipa-plugin").Rule\` in each rule file.
+4. Write the check as a \`checkNote(note, ctx)\` rule under \`.ipa/plugins/rules/*.js\`. Count an index's children with \`ctx.childCount(note)\` and a note's inbound references (notes pointing at it through \`${mapping.refs}\`) with \`ctx.backlinkCount(note)\` — both apply the vault's title-normalized matching. Reserve \`checkVault(ctx)\` / \`scope: "vault"\` for whole-vault aggregates; those are exercised by \`ipa validator\`, not by dry-run.
+5. Verify instantly with \`ipa plugin dry-run rules .ipa/plugins/rules/<rule>.js --note "Note Title"\` — a \`checkNote\` rule fires per note here, so you see it the moment you save.
+6. Validate the plugin shape with \`ipa plugin validate .ipa/plugins/rules/<rule>.js\`, then re-run \`ipa list-rules\` and \`ipa validator\` after enabling it.
+7. If the rule has a safe fix, verify the formatter loop with \`ipa formatter plan --note "Note Title"\` and \`ipa formatter apply --note "Note Title"\`.
+
+Inspect and debug installed plugins with \`ipa plugin list\` and \`ipa plugin doctor\`.
 
 Keep rules narrow and convention-focused. Do not use rule plugins for search ranking; use an IPA search plugin or the ipa-tune workflow instead.`
   },
@@ -6815,10 +6873,11 @@ Diagnose vault structure, report by category, and fix only what the user approve
 2. Scan:
 
 \`\`\`bash
-ipa review all --suggest-refactor   # tags, indexes, duplicates, inbox issues
+ipa review all --suggest-refactor   # convention, inbox, duplicates, tags, sot
 ipa validator                       # frontmatter, broken links, orphan notes
 \`\`\`
 
+   The \`sot\` scope (report-style pileups under one index) stays silent until \`review.sot.title_patterns\` is set in \`.ipa/config.yaml\`.
    Categories to cover: tag health (near-duplicate or one-off tags), index structure (overcrowded, empty, or overlapping indexes), root structure (areas missing a root), link health (orphan notes without \`${mapping.refs}\`, broken wikilinks, notes pointing directly at a root), and frontmatter consistency.
 3. Report a chat summary per category with issue counts and affected notes, then ask which items to fix.
 4. Fix approved items only:
@@ -6832,7 +6891,7 @@ ipa refactor tag-rename old_tag new_tag --apply
 ipa refactor wikilink-replace "Old" "New" --apply
 \`\`\`
 
-   \`ipa refactor\` also supports \`ref-add\`, \`ref-remove\`, \`tag-remove\` and \`--filter\`/\`--scope-ref\` narrowing — see \`ipa refactor --help\`.
+   \`ipa refactor\` also supports \`ref-add\`, \`ref-remove\`, \`tag-remove\`, and \`tag-add\` — see \`ipa refactor --help\`.
 5. Summarize the applied changes.
 
 ## Must Not
@@ -7162,7 +7221,11 @@ ${prefix} search "keyword A" "keyword B" "keyword C"   # several queries, one ca
 ${ipaCommandSelection(prefix, mapping)}
 Keep exploration proportional to the question: simple lookups within ~3 ipa calls, broad questions within ~8. At the budget, answer from the evidence gathered and state what was not checked. Pick short keywords or exact titles — never paste file paths or the full user prompt as a query.
 
+If search results look stale after external (Obsidian) edits, diagnose the index fingerprint with \`${prefix} cache doctor\` and force a rebuild with \`${prefix} cache rebuild\`.
+
 ## Safe Writes
+
+Mutating commands preview by default and write only with \`--apply\`: a preview or plan is not the deliverable — re-run the same command with \`--apply\` to actually write.
 
 New Markdown notes belong in the configured inbox:
 
@@ -8950,7 +9013,7 @@ export async function conventionShow(vaultPath) {
         `- Folders express only lifecycle state — \`${mapping.inbox_dir}\` (capturing), \`${mapping.project_dir}\` (working), \`${mapping.archive_dir}\` (done). They never classify.`,
         `- Classification lives in links: \`${mapping.refs}\` answers "where does this belong" (vertical, one or many parents), \`${mapping.tags}\` answers "what perspective cuts across it" (horizontal). A note can belong to several contexts at once, so "which folder?" stops being a question.`,
         "- Only the project folder is actively managed; it holds index/root notes only. The archive expands freely without subfolders — thousands of notes are fine because indexes and tags retrieve them.",
-        "- Notes flow one way: inbox → (triage) → archive. Reactivating a dormant topic means moving just its root/index back to the project folder; the archived notes follow through their existing links.",
+        `- Notes flow one way: inbox → (triage) → archive. Reactivating a dormant topic means moving just its root/index back to the project folder (\`ipa move\`); the archived notes follow through their existing links.`,
         "- An index is a conceptual folder: curated links plus automatic backlinks, no content of its own. Indexes may reference other indexes as context, tiny one-note indexes are fine (unused ones simply retire to the archive), and link order is deliberate curation.",
         "",
         'IPA deliberately covers only "record and retrieve". It does not prescribe',
