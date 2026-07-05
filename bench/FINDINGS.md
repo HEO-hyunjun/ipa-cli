@@ -34,5 +34,52 @@ no_hand_edit 지키며 링크 거는 확실한 메커니즘은 기존 `note set 
   픽스처로만 쓰인다.
 - 개선: 나중에 픽스처에 인바운드 링크를 심으면 redirect 재배선 *메커니즘*까지 검증 가능. 우선순위 낮음.
 
+## F4 — "관련 노트 연결"이 read-only link suggest로 라우팅됨 [하네스 라우팅 UX, P1 수정]
+g30 라이브 root cause: 하네스가 "관련 노트끼리 이어줘"를 write 경로가 아니라 read-only `link suggest`로
+라우팅했다. 실제 배선 경로인 `note set --field ref --add`가 프롬프트 표면에서 가려져 있어 에이전트가
+제안만 나열하고 파일을 안 바꿨다. `link apply`는 본문 평문 언급이 없으면 silent no-op(F2)이라 대체 경로도 못 됨.
+- 이건 core 결함이 아니라 프롬프트 표면이 write 배선 메커니즘을 안 가르친 라우팅 UX 문제다 — P1이 수정.
+
+## F5 — rule 플러그인 저작 UX가 데이터모델·헬퍼를 안 가르침 [rule-authoring UX, P4/P5]
+g24 라이브: rule API 표현력은 충분(F1)한데 저작이 매끄럽지 않았다. plugin 데이터 모델(`RuleContext.notes`,
+노트 shape)이 프롬프트/문서 표면에서 안 가르쳐지고, 자식·백링크 카운트 헬퍼(`countChildren`/`countBacklinks`)가
+private이라 에이전트가 매번 `notes.filter(...)`를 손으로 재발명해야 했다.
+- 방향: 커스터마이징 프레임워크(rule-authoring 표면)의 개선 — P4가 데이터 모델을 가르치고, P5가 헬퍼를 노출한다.
+
+## F6 — g31은 ipa 결함이 아니라 시나리오 설계 버그 [시나리오 버그, ipa 아님, P14 수정]
+g31이 correctness=false로 뜬 건 ipa 결함이 아니다. 샌드박스 픽스처의 결정 노트(`🔖 리소스 정리 실험`)가
+대상 노트를 "아카이브 유지"로 명시 기록하고 있어, 정답 에이전트는 `move` dry-run으로 이동 대상을 옳게
+계산하고도 문서화된 결정을 뒤집기 전에 확인을 구한다. `mode:"single"`은 승인 턴이 없어 `--apply`를 못
+밟고 정지 — `used_command:move`/`validator_clean_changed`는 통과하나 `file_added`/`file_removed`만 실패했다.
+- 수정: 픽스처·결정 노트는 PARA/search/traversal 시나리오가 공유하므로 건드리지 않고, c12/g24와 같은
+  `mode:"multi"`+`responder:"approve"`로 전환(P14). turn 1은 계획 표면화, turn 2 승인 후 end-state 판정.
+
+## F7 — correctness 결함 배치 [실제 core 결함, 정책-흡수 아님]
+라이브가 발굴한 실제 동작 결함들(정책이 아니라 명령 표면이 광고와 안 맞는 버그):
+- `review indexes` — dead 서브커맨드(광고되나 동작 없음).
+- `review --content` — no-op 플래그(효과 없이 통과).
+- refactor `--filter`/`--scope-ref` — phantom 플래그(도움말엔 있으나 미구현).
+- `--help` 배너에 `convention`/`doctor` 누락 — 존재하는 명령이 top-level 목록에서 빠짐.
+- `harness --help`에 `components`/`gate` 누락 — 하위 표면이 도움말에 안 드러남.
+
+## F8 — 마일스톤(opus+sonnet 47/54)의 잔여 red: 캘리브레이션 부채 + 모델 편차 [ipa 결함 아님]
+전체 게이트에서 correctness 회귀는 0. 잔여 fail은 두 부류이며 어느 쪽도 core 결함이 아니다.
+- **캘리브레이션 부채(정당 작업이 옛 작은 볼트 기준 상한을 초과)** — 볼트가 100노트로 커지며 maxTurns/
+  ceiling이 정당 작업을 자르거나 폭주로 오판했다. 감사로 정당성 확인 후 상향(억지 green 아님):
+  - maxTurns: c/d/e→24, f→28, g→32(관측 정당 턴 ×~1.5~2). "모든 agent가 끝까지 수행" 설계 존중.
+  - c12(인박스 triage): 11노트 인박스의 per-note(cascade+move+검증) 작업이 56~70콜 → ceiling 50→80,
+    goldenPath 8→18. 감사상 노트당 ~6콜의 정당 메커니즘 작업이지 루프 아님. 70콜 시 call-counter 넛지
+    훅이 정상 발화(의도된 동작).
+  - c9(capture): note-scoped 루프로 정당 ~10콜 → ceiling 9→12(opus 6의 ~2×).
+- **모델 편차(opus는 통과, sonnet만 비효율/flaky) — ipa가 아니라 모델 역량 신호, 게임하지 않고 발견으로 남김:**
+  - g30(relate) / g31(move): opus는 correct+효율(6/24콜)인데 sonnet은 flaky(커밋 실패 or 과탐색). 대상이
+    모호한 relate·결정충돌 move에서 sonnet 편차가 크다.
+  - e16(rule 저작): opus 9콜, sonnet 24콜 — P5 헬퍼가 없는 유형의 규칙에선 sonnet이 데이터모델 탐색에 헤맴.
+  - b6(multi-note synthesis): opus가 21노트를 통째로 view(23콜), sonnet은 7콜. opus 과탐색 — snippet/digest로
+    수렴하라는 call-counter 넛지가 옳게 경고하는 지점. ceiling 11은 공정, 상향하지 않음.
+- 함의: "에이전트가 ipa를 잘 활용하는가"의 답은 모델 의존적이다. opus는 전 시나리오에서 ipa를 효율적으로
+  구사(b6 과탐색만 예외). sonnet은 복잡 워크플로(triage/rule-auth/relate/move)에서 콜이 많고 이따금 flaky.
+  이건 프롬프트로 더 밀어붙일 여지(수렴 유도)이자, 벤치가 모델별 효용을 정직하게 드러낸다는 증거다.
+
 ---
 (라이브 실행이 추가 findings를 계속 append한다.)

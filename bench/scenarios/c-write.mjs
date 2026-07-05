@@ -1,5 +1,7 @@
 // bench/scenarios/c-write.mjs
-const base = { group: "C", persona: "canonical", smoke: false, holdout: false, harness: true, models: ["sonnet", "opus"], maxTurns: 12 };
+// maxTurns 24: 끝까지 수행 원칙(D 참조) — note set + note-scoped 루프(validator→formatter plan→apply→
+// validator)가 100노트 볼트에서 정당하게 ~13턴을 쓴다. 넉넉히 두고 효율은 ipa 예산이 판정.
+const base = { group: "C", persona: "canonical", smoke: false, holdout: false, harness: true, models: ["sonnet", "opus"], maxTurns: 24 };
 export default [
   { ...base, id: "c9-inbox-capture", mode: "single", smoke: true, responder: null,
     prompts: [
@@ -14,7 +16,9 @@ export default [
       formatter_pending_empty: true,
       validator_clean_changed: true,
     } }],
-    budget: { maxCostUsd: 0.88, maxIpaCalls: 9 }, goldenPath: 3 },
+    // 폭주 상한 = ~2×효율관측(opus 6콜 → 12). 100노트 볼트에서 capture 뒤 note-scoped 루프(validator→
+    // formatter plan→apply→validator)가 정당하게 ~10콜을 쓴다(sonnet). 이전 9는 그 정당 작업을 1콜 차로 잘랐다.
+    budget: { maxCostUsd: 1.4, maxIpaCalls: 12 }, goldenPath: 3 },
 
   { ...base, id: "c10-edit-note-section", mode: "multi", responder: "approve",
     prompts: [
@@ -76,8 +80,10 @@ export default [
         formatter_pending_empty: true,
       } },
     ],
-    // budget = 폭주 감지용 상한. triage는 인박스 크기·꼼꼼함에 따라 호출 편차가 크다(관측 sonnet 17~41,
-    // opus 19~24). 41콜도 9노트 per-note cascade+move의 정당한 작업(루프 아님)이라 임계를 그 위로 둔다.
+    // budget = 폭주 감지용 상한. 100노트 볼트의 인박스는 11노트라, 9노트 triage가 per-note
+    // (view+cascade plan+cascade apply+move+validator+formatter) = 노트당 ~6콜의 정당한 메커니즘
+    // 작업으로 56~70콜을 쓴다(감사 확인, 루프 아님). 상한을 그 위 80에 둔다. goldenPath도 9노트
+    // per-note 현실 최소(노트당 ~2)에 맞춰 8→18로 올려 stepRatio가 실제 편차를 반영하게 한다.
     // 모델 간 효율 차이는 pass/fail이 아니라 stepRatio 지표로 본다.
-    budget: { maxCostUsd: 2.5, maxIpaCalls: 50 }, goldenPath: 8 },
+    budget: { maxCostUsd: 2.5, maxIpaCalls: 80 }, goldenPath: 18 },
 ];

@@ -7,7 +7,10 @@
 // 메커니즘이 요점인 시나리오(링크/이동/리네임)엔 no_hand_edit 게이트를 걸어 CLI 우회 손편집을
 // 차단한다(mechanism-in-CLI). 픽스처 제목은 데이터라 하드코딩하되 폴더/필드명 규칙은 canonical
 // mapping(refs=ref/tags=tags/folders=00 Inbox·02 Archive)을 따른다.
-const base = { group: "G", persona: "canonical", mode: "single", smoke: false, holdout: false, harness: true, models: ["sonnet", "opus"], responder: null, maxTurns: 20 };
+// maxTurns 32: 끝까지 수행 원칙(D 참조) — 워크플로는 search→view 다수→변형→검증의 다단계라 100노트
+// 볼트에서 관측 25~29턴을 쓴다(g30/g31이 base 20/override 24를 넘겨 VOID였음). 넉넉히 두고 효율은
+// per-scenario budget.maxIpaCalls + stepRatio가 판정한다(maxTurns를 효율 게이트로 겸용하지 않는다).
+const base = { group: "G", persona: "canonical", mode: "single", smoke: false, holdout: false, harness: true, models: ["sonnet", "opus"], responder: null, maxTurns: 32 };
 export default [
   // 겹침 점검 메커니즘(read-only). 새 노트를 만들기 전에 기존과 겹치는 게 있는지 확인하는 요청.
   // 정답 메커니즘은 cascade plan --note 또는 search/context로 근접 노트를 조회하는 것 — 판단(흡수할지
@@ -29,7 +32,7 @@ export default [
   // 배열을 주므로 checkVault 규칙이 인덱스별 자식(ref) 수를 셀 수 있다 — 저작 가능. 자식 21개
   // '🔖 레시피 모음'에 저작한 rule이 발화하는지 validator로 end-state 판정한다. 저작이 매끄럽지
   // 않으면 그게 커스터마이징 프레임워크의 개선 방향(core 흡수 아님).
-  { ...base, id: "g24-review-overfull", mode: "multi", responder: "approve", maxTurns: 24,
+  { ...base, id: "g24-review-overfull", mode: "multi", responder: "approve",
     prompts: [
       "인덱스가 자식 20개 넘게 커지면 경고하는 규칙을 만들어줘.",
       "노트 인덱스가 너무 비대해지면 알려주는 볼트 규칙 세워줘.",
@@ -111,21 +114,38 @@ export default [
         { file_modified: "커피 드립 실패 메모" },
       ],
     } }],
-    budget: { maxCostUsd: 1.21, maxIpaCalls: 12 }, goldenPath: 3 },
+    // 폭주 상한 = ~2×효율관측(효율런 9콜 → 18). 대상이 모호한 relate 과제라 sonnet 탐색 편차가 크다
+    // (9~15콜). ceiling은 진짜 폭주만 잡고, 탐색 비효율은 stepRatio(golden 3 대비)가 지표로 드러낸다.
+    budget: { maxCostUsd: 2.0, maxIpaCalls: 18 }, goldenPath: 3 },
 
   // move lifecycle(PLAN I1). 아카이브된 인덱스 '🔖 공부-git명령어'를 활성 프로젝트로 되살린다.
   // move 메커니즘으로 01 Project 아래로 옮기고 자식(git reflog…/git reset…)은 위키링크로
   // 연결돼 있어 validator는 clean으로 남는다.
-  { ...base, id: "g31-move-lifecycle",
+  // multi+approve인 이유: 샌드박스 픽스처의 결정 노트(01 Project/…/🔖 리소스 정리 실험)가 이
+  // 노트를 "아카이브 유지"로 명시 기록하고 있다. 정답 에이전트는 move dry-run으로 이동 대상을
+  // 계산한 뒤, 문서화된 결정을 뒤집기 전에 확인을 구한다 — single-turn은 승인을 줄 턴이 없어
+  // --apply를 못 밟고 정지한다(이건 ipa 결함이 아니라 시나리오 설계 버그다, F6). 그래서 c12/g24와
+  // 같은 multi+approve로 쪼갠다: turn 1은 이동 계획을 표면화하고(move dry-run, 무변경), turn 2의
+  // 승인 후에 옛 single-turn의 end-state 어서션(이동 완료 + 그래프 정합)을 판정한다.
+  { ...base, id: "g31-move-lifecycle", mode: "multi", responder: "approve",
     prompts: [
       "예전에 아카이브한 git 명령어 공부(🔖 공부-git명령어)를 다시 활성 프로젝트로 되살려줘.",
       "git 명령어 공부 인덱스를 아카이브에서 꺼내서 활성 프로젝트로 옮겨줘.",
     ],
-    turns: [{ user: "$PROMPT", expect: {
-      used_command: "move",
-      file_added: "01 Project/.*공부-git명령어\\.md",     // 활성 프로젝트로 이동
-      file_removed: "02 Archive/🔖 공부-git명령어\\.md",   // 아카이브에서 제거
-      validator_clean_changed: true,                       // 이동 후에도 그래프 정합
-    } }],
-    budget: { maxCostUsd: 1.21, maxIpaCalls: 12 }, goldenPath: 3 },
+    turns: [
+      { user: "$PROMPT", expect: {
+        used_command: "move",   // move로 이동을 처리했다(dry-run 표면화 또는 직접 --apply)
+        // md_changed_max 가드 없음: P9로 move가 turn 1에서 직접 --apply되기도 한다. 이동 완료
+        // 판정은 turn 2 end-state가 담당한다 — 어느 턴에 적용됐든 최종 볼트 상태로 본다.
+      } },
+      { user: "응, 그렇게 진행해줘.", expect: {
+        file_added: "01 Project/.*공부-git명령어\\.md",     // 활성 프로젝트로 이동
+        file_removed: "02 Archive/🔖 공부-git명령어\\.md",   // 아카이브에서 제거
+        validator_clean_changed: true,                       // 이동 후에도 그래프 정합
+      } },
+    ],
+    // budget = 폭주 감지용 상한(타이트 게이트 아님). 픽스처의 결정 노트가 이 노트를 "아카이브 유지"로
+    // 기록해 둬서, 정답 에이전트는 되살리기 전 그 충돌을 조사한다(결정 노트 read + 재조회) — 정당한
+    // 신중함이라 상한을 그 조사 비용 위(관측 24)로 26에 둔다. 효율은 stepRatio 지표로 별도로 본다.
+    budget: { maxCostUsd: 1.98, maxIpaCalls: 26 }, goldenPath: 4 },
 ];

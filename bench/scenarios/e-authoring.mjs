@@ -1,5 +1,6 @@
 // bench/scenarios/e-authoring.mjs
-const base = { group: "E", persona: "canonical", mode: "multi", smoke: false, holdout: false, harness: true, models: ["sonnet", "opus"], maxTurns: 16 };
+// maxTurns 24: 끝까지 수행 원칙(위 D 참조) — authoring은 저작+검증 왕복이라 여유가 필요. 효율은 ipa 예산이 판정.
+const base = { group: "E", persona: "canonical", mode: "multi", smoke: false, holdout: false, harness: true, models: ["sonnet", "opus"], maxTurns: 24 };
 export default [
   { ...base, id: "e16-author-rule", smoke: true, responder: "approve",
     prompts: [

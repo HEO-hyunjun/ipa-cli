@@ -1,5 +1,7 @@
 // bench/scenarios/f-migration.mjs
-const base = { group: "F", mode: "multi", smoke: false, holdout: false, models: ["sonnet", "opus"], maxTurns: 16, responder: "approve" };
+// maxTurns 28: 끝까지 수행 원칙(위 D 참조) — 마이그레이션/온보딩은 볼트 진단+다단계 설정이라 관측 17턴을
+// 넘겨 base 16을 초과했다(f18/f20/f21 correct=true인데 VOID였음). 넉넉히 두고 효율은 ipa 예산이 판정.
+const base = { group: "F", mode: "multi", smoke: false, holdout: false, models: ["sonnet", "opus"], maxTurns: 28, responder: "approve" };
 export default [
   { ...base, id: "f18-preipa-bootstrap", persona: "pre-ipa", harness: false,
     prompts: [

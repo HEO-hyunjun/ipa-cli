@@ -1,5 +1,7 @@
 // bench/scenarios/d-robustness.mjs
-const base = { group: "D", smoke: false, holdout: false, harness: true, models: ["sonnet", "opus"], maxTurns: 12 };
+// maxTurns 24: "모든 agent가 끝까지 수행"(설계 의도) 존중 — 100노트 볼트를 항해·변형하는 정당 작업이
+// 안 잘리게 넉넉한 안전망으로 둔다. 효율/폭주 판정은 per-scenario budget.maxIpaCalls + stepRatio가 전담.
+const base = { group: "D", smoke: false, holdout: false, harness: true, models: ["sonnet", "opus"], maxTurns: 24 };
 export default [
   { ...base, id: "d13-divergent-mapping", persona: "divergent", mode: "single", smoke: true, responder: null,
     prompts: [
