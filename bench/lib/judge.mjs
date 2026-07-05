@@ -53,6 +53,10 @@ export function evaluateExpect(expect, ctx) {
         push(key, parsed.ipaCalls.length === 0, `${parsed.ipaCalls.length} ipa calls`); break;
       case "ipa_used":
         push(key, parsed.ipaCalls.length > 0, `${parsed.ipaCalls.length} ipa calls`); break;
+      case "no_hand_edit":
+        // 메커니즘이 요점인 시나리오의 이스케이프 해치 감시: ipa CLI를 우회해 vault .md를
+        // Write/Edit/Grep으로 직접 손댔으면 fail. mechanism-in-CLI 계약을 지표가 아니라 게이트로 세운다.
+        push(key, parsed.nonIpaVaultTouches === 0, `${parsed.nonIpaVaultTouches} non-ipa vault touches`); break;
       case "used_command":
         push(key, parsed.ipaCalls.some((c) => new RegExp(value).test(c.command)), value); break;
       case "not_used_command":

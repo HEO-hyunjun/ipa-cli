@@ -30,6 +30,14 @@ test("call assertions", () => {
   assert.ok(!allPass(evaluateExpect({ no_ipa_calls: true }, baseCtx({ parsed }))));
 });
 
+test("no_hand_edit gates on nonIpaVaultTouches (CLI-bypass hand edits)", () => {
+  // ipa 경유면 통과, vault .md를 Write/Edit로 직접 손댔으면 실패.
+  assert.ok(allPass(evaluateExpect({ no_hand_edit: true }, baseCtx({ parsed: { ...emptyParsed(), nonIpaVaultTouches: 0 } }))));
+  const rs = evaluateExpect({ no_hand_edit: true }, baseCtx({ parsed: { ...emptyParsed(), nonIpaVaultTouches: 2 } }));
+  assert.equal(rs[0].pass, false);
+  assert.match(rs[0].detail, /2 non-ipa vault touches/);
+});
+
 test("command_flow matches ordered subsequence of ipa calls", () => {
   const parsed = { ...emptyParsed(), ipaCalls: [
     { id: "1", command: 'ipa search "커피" "드립"', isError: false },

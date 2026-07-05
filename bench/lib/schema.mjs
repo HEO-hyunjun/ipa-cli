@@ -5,13 +5,13 @@ import { pathToFileURL } from "node:url";
 
 const PERSONAS = new Set(["canonical", "divergent", "messy", "pre-ipa", "empty"]);
 const MODELS = new Set(["sonnet", "opus", "haiku"]);
-const GROUPS = new Set(["A", "B", "C", "D", "E", "F"]);
+const GROUPS = new Set(["A", "B", "C", "D", "E", "F", "G"]);
 
 export function validateScenario(s) {
   const errors = [];
   const need = (cond, msg) => { if (!cond) errors.push(`${s?.id ?? "(no id)"}: ${msg}`); };
-  need(typeof s?.id === "string" && /^[a-f]\d+-[a-z0-9-]+$/.test(s.id), "id must match <group><n>-<slug>");
-  need(GROUPS.has(s?.group), "group must be A-F");
+  need(typeof s?.id === "string" && /^[a-g]\d+-[a-z0-9-]+$/.test(s.id), "id must match <group><n>-<slug>");
+  need(GROUPS.has(s?.group), "group must be A-G");
   need(PERSONAS.has(s?.persona), `unknown persona: ${s?.persona}`);
   need(s?.mode === "single" || s?.mode === "multi", "mode must be single|multi");
   for (const flag of ["smoke", "holdout", "harness"]) need(typeof s?.[flag] === "boolean", `${flag} must be boolean`);
