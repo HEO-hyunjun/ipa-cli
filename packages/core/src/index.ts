@@ -6884,6 +6884,8 @@ Treat tuning as an evaluation loop, not a one-off command. Prefer better labels 
 
 Move finished inbox notes into the archive: confirm refs/tags → wire links → validate → move after approval. Triage connects and moves notes that are already written; it does not create notes or deepen their content.
 
+When a triage sweep moves or archives several notes at once, surface the full per-note plan (the \`ipa inbox triage\`/\`ipa cascade plan\` dry-run output) and run each \`--apply\` step only after the user confirms; a single-note capture or edit needs no such round-trip.
+
 ## Workflow
 
 1. Scan the inbox: \`ipa review inbox\` lists notes and issues (missing refs/tags). If the user named specific notes, triage only those; with 10+ notes, work in batches the user confirms.
@@ -7277,7 +7279,7 @@ If search results look stale after external (Obsidian) edits, diagnose the index
 
 ## Safe Writes
 
-Mutating commands preview by default and write only with \`--apply\`: a preview or plan is not the deliverable — re-run the same command with \`--apply\` to actually write.
+Mutating commands preview by default and write only with \`--apply\`. For a single-note mutation the user already asked for, a preview or plan is not the deliverable — re-run the same command with \`--apply\` to actually write. The exception is a multi-note or bulk mutation (a triage sweep, a mass move or refactor) in an interactive session: surface the per-note plan, get the user's confirmation, then run \`--apply\`.
 
 New Markdown notes belong in the configured inbox:
 

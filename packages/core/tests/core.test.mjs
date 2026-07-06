@@ -944,6 +944,13 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   assert.match(skill, /inbound wikilinks keep resolving/);
   // Generalized "preview is not the deliverable" mutation cue in Safe Writes.
   assert.match(skill, /a preview or plan is not the deliverable — re-run the same command with `--apply`/);
+  // c12: the single-note apply cue and the bulk-confirm exception are scoped by
+  // blast radius so they compose — the P9 no-stall cue is fenced to single-note
+  // mutations, and bulk sweeps get an explicit confirm-then-apply round-trip.
+  assert.match(skill, /For a single-note mutation the user already asked for/);
+  assert.match(skill, /multi-note or bulk mutation[^\n]*surface the per-note plan, get the user's confirmation, then run `--apply`/);
+  // Guard: the bulk-confirm cue must stay scoped, never a blanket ask-before-every-apply.
+  assert.doesNotMatch(skill, /always (?:ask|confirm)[^\n]*before[^\n]*`--apply`/i, "bulk-confirm cue must not read as a blanket ask-before-apply rule");
   // Stale-search troubleshooting pointer (kept out of the hot command list).
   assert.match(skill, /ipa cache doctor/);
   assert.match(skill, /ipa cache rebuild/);
@@ -1053,6 +1060,10 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   assert.match(triageSkill, /ipa cascade plan --note/);
   assert.match(triageSkill, /Move a note to the archive without user approval/);
   assert.match(triageSkill, /ipa move "Note" "02 Archive" --apply/, "triage skill must render the mapped archive folder");
+  // c12: bulk triage that moves/archives several notes surfaces the per-note plan
+  // first and applies only after confirmation; single-note work skips the round-trip.
+  assert.match(triageSkill, /moves or archives several notes at once, surface the full per-note plan/);
+  assert.match(triageSkill, /a single-note capture or edit needs no such round-trip/);
   const reviewSkill = await readFile(join(vault, ".agents", "skills", "ipa-review", "SKILL.md"), "utf8");
   assert.match(reviewSkill, /name: ipa-review/);
   assert.match(reviewSkill, /ipa review all --suggest-refactor/);
