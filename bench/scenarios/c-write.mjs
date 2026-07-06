@@ -73,7 +73,9 @@ export default [
     // budget = 폭주 감지용 상한: 관측 8~9콜(검색→확인→rename preview→apply→검증)의 여유 위. correctness는 rename/재배선으로 판정한다.
     budget: { maxCostUsd: 1.2, maxIpaCalls: 15 }, goldenPath: 3 },
 
-  { ...base, id: "c12-inbox-triage", mode: "multi", smoke: true, responder: "approve",
+  // maxTurns 36(base 24 override): 승인-게이트 교육 후 c12는 per-note 계획 표면화→승인→apply의
+  // 왕복이 추가돼 정당 턴이 늘었다(관측 opus가 24에서 correct=true인 채 절단됨 = 캘리브레이션 부채).
+  { ...base, id: "c12-inbox-triage", mode: "multi", smoke: true, responder: "approve", maxTurns: 36,
     prompts: [
       "인박스 정리 좀 해줘.",
       "00 Inbox에 쌓인 노트들 triage 해줘.",
@@ -85,10 +87,10 @@ export default [
         // 어디로 보낼지는 볼트 정책이라 여기선 "이동이 일어났다"는 메커니즘만 판정한다.
         file_removed: "00 Inbox/.*\\.md",
         formatter_pending_empty: true,
-        // call-counter PostToolUse 훅 e2e: 9노트 triage는 40~70콜을 써 넛지 임계(10)를 확실히 넘긴다.
-        // min:10 → 훅이 임계를 넘겨 카운트했음을 증명. max_ratio:1.5 → 실-홈+샌드박스 이중 발화(≈2×)면
-        // 실패 = 단일 발화(격리) 회귀 가드. 큰 콜 수라 비율이 안정적이다.
-        hook_call_count: { min: 10, max_ratio: 1.5 },
+        // call-counter PostToolUse 훅 e2e: min:1 → 훅이 살아서 카운트함, max_ratio:1.5 → 실-홈+샌드박스
+        // 이중 발화(≈2×)면 실패 = 단일 발화(격리) 회귀 가드. min을 10으로 두면 승인-게이트 교육 후
+        // 8콜로 끝내는 효율적 에이전트를 벌주게 돼 완화했다(임계 통과 증명은 훅 unit e2e가 담당).
+        hook_call_count: { min: 1, max_ratio: 1.5 },
       } },
     ],
     // budget = 폭주 감지용 상한. 100노트 볼트의 인박스는 11노트라, 9노트 triage가 per-note

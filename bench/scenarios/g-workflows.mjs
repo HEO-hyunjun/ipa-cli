@@ -104,7 +104,10 @@ export default [
     ],
     turns: [{ user: "$PROMPT", expect: {
       no_hand_edit: true,
-      used_command: "link|note set",  // 링크/ref 배선 메커니즘
+      // 배선 메커니즘: 가르치는 우선 경로는 note set --field ref지만, note replace로 본문에
+      // 위키링크를 넣는 것도 합법 CLI 메커니즘이다(opus 관측). 진짜 게이트는 no_hand_edit +
+      // md_changed_max + end-state(any_of)고, used_command는 CLI 경유만 확인한다.
+      used_command: "link|note set|note replace",
       md_changed_max: 1,              // 대상 노트 하나에만 링크 추가 (연쇄 확전 금지)
       any_of: [
         // 관련 커피 이웃으로의 새 위키링크/ref가 생겼다 (이상적 end-state)
