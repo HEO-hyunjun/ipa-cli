@@ -19,6 +19,9 @@ export default [
       // .ipa/harness/call-counter.json을 쓴다(색인 제외 dotdir라 snapshot에 잡힌다). 이 파일이
       // 생기지 않으면 훅이 세션에 주입되지 않은 것 — 훅이 실제로 돌 때만 발화하는 e2e 회귀 가드다.
       file_added: "\\.ipa/harness/call-counter\\.json",
+      // 파일 존재를 넘어 훅이 실제로 카운트를 기록했는지 검증(count≥1). 파일만 있고 count=0이면 훅이
+      // 안 돈 것. c9은 콜 수가 적어 비율 판정은 큰 콜 시나리오(c12)에 둔다.
+      hook_call_count: { min: 1 },
     } }],
     // 폭주 상한 = ~2×효율관측(opus 6콜 → 12). 100노트 볼트에서 capture 뒤 note-scoped 루프(validator→
     // formatter plan→apply→validator)가 정당하게 ~10콜을 쓴다(sonnet). 이전 9는 그 정당 작업을 1콜 차로 잘랐다.
@@ -82,6 +85,10 @@ export default [
         // 어디로 보낼지는 볼트 정책이라 여기선 "이동이 일어났다"는 메커니즘만 판정한다.
         file_removed: "00 Inbox/.*\\.md",
         formatter_pending_empty: true,
+        // call-counter PostToolUse 훅 e2e: 9노트 triage는 40~70콜을 써 넛지 임계(10)를 확실히 넘긴다.
+        // min:10 → 훅이 임계를 넘겨 카운트했음을 증명. max_ratio:1.5 → 실-홈+샌드박스 이중 발화(≈2×)면
+        // 실패 = 단일 발화(격리) 회귀 가드. 큰 콜 수라 비율이 안정적이다.
+        hook_call_count: { min: 10, max_ratio: 1.5 },
       } },
     ],
     // budget = 폭주 감지용 상한. 100노트 볼트의 인박스는 11노트라, 9노트 triage가 per-note

@@ -153,6 +153,41 @@ test("any_of passes when at least one sub-expect fully passes (OR over AND keys)
   ] }, baseCtx({ parsed }))));
 });
 
+test("hook_call_count reads the call-counter side-effect file and gates on count / ratio", () => {
+  const ctx = baseCtx({ parsed: { ...emptyParsed(), ipaCalls: Array.from({ length: 12 }, (_, i) => ({ id: String(i), command: "ipa search x", isError: false })) } });
+  mkdirSync(join(ctx.sandboxDir, ".ipa", "harness"), { recursive: true });
+  const p = join(ctx.sandboxDir, ".ipa", "harness", "call-counter.json");
+  // 단일 발화: 세션 두 개(멀티턴 --resume) 합산 = 12, transcript ipaCalls = 12 → ratio 1.0.
+  writeFileSync(p, JSON.stringify({ version: 1, sessions: { a: { count: 7 }, b: { count: 5 } } }));
+  assert.ok(allPass(evaluateExpect({ hook_call_count: { min: 10, max_ratio: 1.5 } }, ctx)), "single-fire count 12 passes");
+  // min 미달은 실패.
+  assert.ok(!allPass(evaluateExpect({ hook_call_count: { min: 20 } }, ctx)));
+  // 이중 발화 시뮬레이션: count 24, transcript 12 → ratio 2.0 > 1.5 → 실패(회귀 가드가 잡는다).
+  writeFileSync(p, JSON.stringify({ version: 1, sessions: { a: { count: 24 } } }));
+  const dbl = evaluateExpect({ hook_call_count: { min: 10, max_ratio: 1.5 } }, ctx);
+  assert.equal(dbl[0].pass, false, "doubled count fails the ratio gate");
+  assert.match(dbl[0].detail, /hook counted 24 \(transcript 12/);
+  // 파일 없음 → count 0.
+  const empty = evaluateExpect({ hook_call_count: { min: 1 } }, baseCtx());
+  assert.equal(empty[0].pass, false);
+});
+
+test("mutation_pending reads the mutation-ledger side-effect file", () => {
+  const ctx = baseCtx();
+  mkdirSync(join(ctx.sandboxDir, ".ipa", "harness"), { recursive: true });
+  const p = join(ctx.sandboxDir, ".ipa", "harness", "mutation-pending.json");
+  writeFileSync(p, JSON.stringify({ version: 1, mutations: [
+    { command: "move", session_id: "s1", ts: new Date().toISOString() },
+    { command: "cascade", session_id: "s1", ts: new Date().toISOString() },
+  ] }));
+  assert.ok(allPass(evaluateExpect({ mutation_pending: true }, ctx)), "any pending entry passes bare true");
+  assert.ok(allPass(evaluateExpect({ mutation_pending: { command: "move" } }, ctx)), "command regex matches");
+  const miss = evaluateExpect({ mutation_pending: { command: "rename" } }, ctx);
+  assert.equal(miss[0].pass, false, "unmatched command fails");
+  // 파일 없음(모두 apply되어 삭제된 경우) → pending 0 → 실패.
+  assert.equal(evaluateExpect({ mutation_pending: true }, baseCtx())[0].pass, false);
+});
+
 test("unknown assertion key fails loudly", () => {
   const rs = evaluateExpect({ no_ipa_callz: true }, baseCtx());
   assert.equal(rs[0].pass, false);

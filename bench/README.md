@@ -29,16 +29,28 @@ npm run bench -- --full --max-workers 8  # 매트릭스 동시 실행 (기본 5)
 - `budget`(maxCostUsd/maxIpaCalls)은 폭주 감지용 상한(관측 정상치의 ~2배)이다. 모델 간 per-call
   효율 차이는 pass/fail이 아니라 지표(`summary.stepRatio`, baseline `cost_up` 경고)로 추적한다.
 
-### HOME 격리와 잔여 리스크
+### 세션 격리 (CLAUDE_CONFIG_DIR)
 
-`harness: true` 시나리오의 러너-사이드 사전 설치(`ipa harness install claude`)는 `$HOME/.claude`에
-전역 하네스를 쓴다. 예전엔 이게 실제 사용자 `~/.claude`를 샌드박스 볼트를 가리키는 스킬로 덮어썼다.
-지금은 이 설치를 샌드박스 옆 격리 홈(`<sandbox>-home`)에서 돌려 실제 `~/.claude`를 보호한다.
+`harness: true` 시나리오는 러너가 `ipa harness install claude`를 샌드박스 옆 격리 홈(`<sandbox>-home`)에
+설치한 뒤, 세션 자식(`claude -p`)을 그 격리 `.claude`를 `CLAUDE_CONFIG_DIR`로 가리켜 돌린다.
+`CLAUDE_CONFIG_DIR`는 실제 `~/.claude`를 **병합이 아니라 완전히 대체**하므로, 세션엔 샌드박스 하네스 훅만
+발화하고 개발자의 실-홈 훅은 절대 끼지 않는다. (예전엔 `--settings`로 훅을 주입했는데, `--settings`는 실제
+`~/.claude/settings.json`과 **병합**되어 실-홈 훅과 샌드박스 훅이 같은 vault 부작용 파일을 나란히 증가시켜
+모든 훅 기반 측정을 이중 발화로 오염시켰다 — call-counter가 실제 콜의 ~2배로 셌다.)
 
-세션 자식(`claude -p`)에는 HOME을 격리하지 않는다. macOS에서 격리 HOME으로 띄우면 로그인 상태를
-읽지 못해 `Not logged in`으로 인증에 실패하기 때문이다(자격증명은 로그인 키체인에 있으나 온보딩/계정
-상태는 HOME에 있다). 따라서 세션은 실제 HOME을 그대로 쓴다.
+- **인증:** 이 claude 버전은 비-기본 `CLAUDE_CONFIG_DIR`에선 macOS 키체인을 참조하지 않고 config dir의
+  `.credentials.json`에서 자격증명을 읽는다. 그래서 러너가 로그인 키체인의 `Claude Code-credentials`를
+  config dir에 `.credentials.json`으로 복사한다(`provisionAuth`) — 키체인에서 **밖으로 READ만** 하고 실제
+  `~/.claude`엔 쓰지 않는다. 세션이 끝나면 이 사본을 즉시 지운다(`--keep-sandbox`로 홈을 보존해도).
+- **HOME도 격리한다.** 인증이 config dir로 해결되므로 세션 HOME을 `<sandbox>-home`으로 둘 수 있고, 이로써
+  `~` 확장과 세션 내부 `ipa harness install`이 실제 홈에서 완전히 떨어진다. macOS `os.homedir()`는 `$HOME`을
+  무시하므로 config 격리는 HOME이 아니라 `CLAUDE_CONFIG_DIR`가 담당한다(HOME은 방어 계층).
+- **훅 command 경로:** core의 hookCommand는 tilde-상대(`node ~/...`)로 렌더된다. 러너가 설치 직후
+  config dir의 `settings.json`을 제자리에서 손질해 `~/`를 격리 홈 절대경로로 치환하고(`prepareBenchConfigDir`),
+  `permissions.defaultMode:"auto"`를 명시한다(예전 병합이 실-홈에서 상속하던 값이라, 격리 config dir에선 없으면
+  headless 세션이 권한 프롬프트에 막힌다).
 
-**잔여 리스크:** 세션 에이전트가 스스로 `ipa harness install claude`를 실행하면(주로 온보딩 시나리오)
-실제 `~/.claude`가 갱신될 수 있다. 러너-사이드 사전 설치의 결정적 오염은 막았지만, 세션 내부에서 벌어지는
-설치까지는 막지 못한다. 격리 HOME에서도 인증되는 방법이 생기면 세션 자식도 완전 격리로 전환할 것.
+이전의 "세션 내부 설치가 실제 `~/.claude`를 오염시킬 수 있다"는 잔여 리스크는 HOME+config 완전 격리로 닫혔다.
+PostToolUse 훅은 stream-json transcript에 안 남으므로, 세션이 훅을 실제로 발화시켰는지는 vault 부작용 파일로
+판정한다 — `hook_call_count`(call-counter.json의 세션별 카운트 합, `max_ratio`로 이중 발화 회귀 감시),
+`mutation_pending`(mutation-pending.json에 남은 dry-run 뮤테이션 엔트리).

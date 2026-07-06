@@ -157,6 +157,45 @@ export function evaluateExpect(expect, ctx) {
         }
         break;
       }
+      case "hook_call_count": {
+        // PostToolUse 훅은 stream-json transcript에 기록되지 않으므로 부작용 파일로 검증한다.
+        // call-counter 훅이 세션당 ipa 콜 수를 .ipa/harness/call-counter.json에 누적한다. 세션이
+        // 여럿(멀티턴 --resume으로 갈릴 수 있음)이면 합산한다. value: { min?, max?, max_ratio? }.
+        //   min/max: 합산 카운트의 절대 하/상한 (min으로 넛지 임계 통과 등을 증명).
+        //   max_ratio: count ≤ ceil(ipaCalls × max_ratio) — 이중 발화(실-홈+샌드박스 훅이 같은 파일을
+        //     증가시켜 transcript 콜 수의 ~2배가 됨)를 잡는다. 단일 발화는 비율 ~1.0.
+        const p = join(sandboxDir, ".ipa", "harness", "call-counter.json");
+        let total = 0;
+        if (existsSync(p)) {
+          try {
+            const sessions = JSON.parse(readFileSync(p, "utf8")).sessions ?? {};
+            total = Object.values(sessions).reduce((sum, e) => sum + (Number(e?.count) || 0), 0);
+          } catch { /* corrupt → 0 */ }
+        }
+        const ipaCalls = parsed.ipaCalls.length;
+        const okMin = value.min === undefined || total >= value.min;
+        const okMax = value.max === undefined || total <= value.max;
+        const okRatio = value.max_ratio === undefined || total <= Math.ceil(ipaCalls * value.max_ratio);
+        push(key, okMin && okMax && okRatio,
+          `hook counted ${total} (transcript ${ipaCalls}; min ${value.min ?? "-"} max ${value.max ?? "-"} ratio<=${value.max_ratio ?? "-"})`);
+        break;
+      }
+      case "mutation_pending": {
+        // mutation-ledger PostToolUse 훅의 발화를 부작용 파일로 검증한다. `ipa move|rename|refactor`
+        // (--apply 없이) 또는 `ipa cascade|link plan`은 mutation-pending.json에 pending 엔트리를 남긴다
+        // (--apply/apply는 매칭 엔트리를 제거). value: true 또는 { command?: regex, min?: N=1 }.
+        const p = join(sandboxDir, ".ipa", "harness", "mutation-pending.json");
+        let mutations = [];
+        if (existsSync(p)) {
+          try { mutations = JSON.parse(readFileSync(p, "utf8")).mutations ?? []; } catch { /* corrupt → [] */ }
+        }
+        const matched = value?.command
+          ? mutations.filter((m) => new RegExp(value.command).test(m?.command ?? ""))
+          : mutations;
+        const min = value?.min ?? 1;
+        push(key, matched.length >= min,
+          `${matched.length} pending${value?.command ? ` ~ /${value.command}/` : ""} (min ${min})`); break;
+      }
       case "final_answer_regex":
         push(key, new RegExp(value).test(parsed.finalText), value); break;
       case "final_answer_not_regex":

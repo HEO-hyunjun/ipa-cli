@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
 import { loadScenarios } from "./lib/schema.mjs";
 import { parseTranscript, mergeParsed, emptyParsed } from "./lib/transcript.mjs";
 import { createSandbox, snapshot, diffSnapshots } from "./lib/sandbox.mjs";
-import { runClaudeTurn, installHarness } from "./lib/runner.mjs";
+import { runClaudeTurn, installHarness, provisionAuth } from "./lib/runner.mjs";
 import { pickReply } from "./lib/responder.mjs";
 import { evaluateExpect } from "./lib/judge.mjs";
 import { loadBaseline, compareToBaseline, formatBaseline, readBaselineRows, mergeBaseline } from "./lib/baseline.mjs";
@@ -97,9 +97,13 @@ async function runOne({ scenario, model }, args, runDir) {
   const caseDir = join(runDir, `${scenario.id}__${model}`);
   mkdirSync(caseDir, { recursive: true });
   const claudeCmd = args.dryRun ? [process.execPath, FAKE_CLAUDE] : ["claude"];
-  // 훅 설정을 세션에 주입할 --settings 경로. install했을 때만 값이 있고, 없으면 훅 미주입.
-  let settingsFile = null;
-  if (scenario.harness && !args.dryRun) settingsFile = installHarness({ ipaBin: IPA_BIN, sandboxDir: sandbox, homeDir: installHome });
+  // 세션이 CLAUDE_CONFIG_DIR로 로드할 격리 하네스 config dir. install했을 때만 값이 있고, 없으면 훅 미주입.
+  // install 직후 키체인 자격증명을 config dir에 복사해 격리 config dir에서도 `claude -p`가 인증되게 한다.
+  let configDir = null;
+  if (scenario.harness && !args.dryRun) {
+    configDir = installHarness({ ipaBin: IPA_BIN, sandboxDir: sandbox, homeDir: installHome });
+    provisionAuth(configDir);
+  }
 
   const before = snapshot(sandbox);
   const promptIndex = args.promptIndex ?? new Date().getUTCDate() % scenario.prompts.length;
@@ -113,7 +117,7 @@ async function runOne({ scenario, model }, args, runDir) {
     const message = turn.user.replace("$PROMPT", prompt);
     const raw = await runClaudeTurn({
       cwd: sandbox, model, message, maxTurns: scenario.maxTurns,
-      resumeSessionId: acc.sessionId, claudeCmd, settingsFile,
+      resumeSessionId: acc.sessionId, claudeCmd, configDir,
     });
     writeFileSync(join(caseDir, `turn-${turnNo}.jsonl`), raw);
     acc = mergeParsed(acc, parseTranscript(raw));
@@ -128,7 +132,7 @@ async function runOne({ scenario, model }, args, runDir) {
         turnNo += 1;
         const raw2 = await runClaudeTurn({
           cwd: sandbox, model, message: reply, maxTurns: scenario.maxTurns,
-          resumeSessionId: acc.sessionId, claudeCmd, settingsFile,
+          resumeSessionId: acc.sessionId, claudeCmd, configDir,
         });
         writeFileSync(join(caseDir, `turn-${turnNo}.jsonl`), raw2);
         acc = mergeParsed(acc, parseTranscript(raw2));
@@ -185,6 +189,9 @@ async function runOne({ scenario, model }, args, runDir) {
     sandbox: args.keepSandbox ? sandbox : null,
   };
   writeFileSync(join(caseDir, "summary.json"), JSON.stringify(summary, null, 2));
+  // 세션이 끝났으니 config dir에 복사해 둔 키체인 자격증명 사본을 즉시 지운다 — keepSandbox로
+  // 격리 홈을 보존하더라도 자격증명은 남기지 않는다 (검사 대상은 sandbox이지 -home이 아니다).
+  if (configDir) rmSync(join(configDir, ".credentials.json"), { force: true });
   if (!args.keepSandbox) {
     rmSync(sandbox, { recursive: true, force: true });
     rmSync(installHome, { recursive: true, force: true });

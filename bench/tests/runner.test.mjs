@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { existsSync, readFileSync, mkdtempSync, cpSync, mkdirSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { runClaudeTurn, installHarness, rewriteSettingsForBench } from "../lib/runner.mjs";
+import { runClaudeTurn, installHarness, prepareBenchConfigDir } from "../lib/runner.mjs";
 import { pickReply } from "../lib/responder.mjs";
 import { parseTranscript } from "../lib/transcript.mjs";
 
@@ -57,10 +57,11 @@ function collectCommands(node, acc = []) {
   return acc;
 }
 
-test("rewriteSettingsForBench absolutizes tilde-relative hook commands into settings.bench.json", () => {
+test("prepareBenchConfigDir absolutizes tilde hook commands in place and sets defaultMode", () => {
   const home = mkdtempSync(join(tmpdir(), "bench-rewrite-"));
-  mkdirSync(join(home, ".claude"), { recursive: true });
-  const src = join(home, ".claude", "settings.json");
+  const configDir = join(home, ".claude");
+  mkdirSync(configDir, { recursive: true });
+  const src = join(configDir, "settings.json");
   writeFileSync(src, JSON.stringify({
     hooks: {
       PostToolUse: [{
@@ -71,13 +72,10 @@ test("rewriteSettingsForBench absolutizes tilde-relative hook commands into sett
     permissions: { allow: ["Bash(ipa *)"] },
   }, null, 2));
 
-  const dest = rewriteSettingsForBench(home);
-  assert.equal(dest, join(home, ".claude", "settings.bench.json"));
-  assert.ok(existsSync(dest), "settings.bench.json written");
-  // 원본은 그대로 둔다 (status/doctor 검사가 원본을 본다).
-  assert.match(readFileSync(src, "utf8"), /node ~\/\.claude/, "original settings.json untouched");
-
-  const rewritten = JSON.parse(readFileSync(dest, "utf8"));
+  const dest = prepareBenchConfigDir(configDir, home);
+  // config dir의 settings.json을 제자리에서 손질한다 (CLAUDE_CONFIG_DIR가 로드하는 유일한 파일).
+  assert.equal(dest, src);
+  const rewritten = JSON.parse(readFileSync(src, "utf8"));
   const commands = collectCommands(rewritten);
   assert.ok(commands.length > 0, "at least one hook command present");
   for (const cmd of commands) {
@@ -86,26 +84,32 @@ test("rewriteSettingsForBench absolutizes tilde-relative hook commands into sett
   }
   // statusMessage의 ~/ 는 command가 아니므로 손대지 않는다.
   assert.equal(rewritten.hooks.PostToolUse[0].hooks[0].statusMessage, "leave ~/ alone here");
+  // 격리 config dir는 병합으로 defaultMode를 상속받지 못하므로 명시해야 headless 세션이 안 막힌다.
+  assert.equal(rewritten.permissions.defaultMode, "auto");
+  assert.deepEqual(rewritten.permissions.allow, ["Bash(ipa *)"], "existing permissions preserved");
 });
 
-test("installHarness writes the global harness into the isolated home, not the real HOME, and returns a settings file whose hook commands all exist", () => {
+test("installHarness writes the global harness into the isolated home, not the real HOME, and returns a config dir whose hook commands are absolute and exist", () => {
   const sandbox = mkdtempSync(join(tmpdir(), "bench-inst-sb-"));
   cpSync(MINI_VAULT, sandbox, { recursive: true });
   const home = mkdtempSync(join(tmpdir(), "bench-inst-home-"));
-  const settingsFile = installHarness({ ipaBin: IPA_BIN, sandboxDir: sandbox, homeDir: home });
+  const configDir = installHarness({ ipaBin: IPA_BIN, sandboxDir: sandbox, homeDir: home });
   // 전역 하네스(스킬)는 격리 홈 아래에 떨어진다 — 실제 ~/.claude를 건드리지 않는다.
   assert.ok(existsSync(join(home, ".claude", "skills", "ipa", "SKILL.md")), "global skill under isolated home");
   // 볼트-로컬 스킬은 cwd(sandbox) 아래에 떨어진다.
   assert.ok(existsSync(join(sandbox, ".claude", "skills", "ipa-config", "SKILL.md")), "vault-local skill under sandbox");
-  // 반환된 --settings 파일의 모든 훅 command가 실재하는 스크립트를 절대경로로 가리켜야 훅이 산다.
-  assert.equal(settingsFile, join(home, ".claude", "settings.bench.json"));
-  const commands = collectCommands(JSON.parse(readFileSync(settingsFile, "utf8")));
+  // 반환값은 세션이 CLAUDE_CONFIG_DIR로 쓸 config dir 경로.
+  assert.equal(configDir, join(home, ".claude"));
+  const settings = JSON.parse(readFileSync(join(configDir, "settings.json"), "utf8"));
+  // 세션이 로드하는 settings.json의 모든 훅 command가 실재하는 스크립트를 절대경로로 가리켜야 훅이 산다.
+  const commands = collectCommands(settings);
   assert.ok(commands.length > 0, "hook commands present");
   for (const cmd of commands) {
     assert.doesNotMatch(cmd, /~\//, `tilde survived: ${cmd}`);
     const scriptPath = cmd.replace(/^node\s+/, "");
     assert.ok(existsSync(scriptPath), `hook script exists: ${scriptPath}`);
   }
+  assert.equal(settings.permissions?.defaultMode, "auto");
 });
 
 test("pickReply answers questions per policy and stays silent otherwise", () => {
