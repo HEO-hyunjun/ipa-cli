@@ -66,7 +66,14 @@ file keeps only the rules that apply repo-wide.
   packages — never run `node --test` directly (stale `dist`). Test and build
   conventions: `.claude/rules/testing-build.md`.
 - Commit style: conventional commits (`feat|fix|refactor|docs|test|chore`),
-  subject lines in Korean are the norm here.
+  subject lines in Korean are the norm here. Split commits by meaning, not by
+  file.
+- Branching: `main` is always releasable. Work on a meaning-scoped topic
+  branch even solo (`feat/…`, `fix/…`, `bench/…`, `docs/…`); merge
+  fast-forward when the commits are clean meaning-units, squash-merge when the
+  branch carries WIP. No `develop`/gitflow. Release = version-bump commit +
+  `vX.Y.Z` tag. Sync machines via `git push`/`pull`, never by file-syncing the
+  working tree. Details: `CONTRIBUTING.md`.
 - **Behavior claims need behavioral evidence.** For prompt/harness changes
   that are supposed to change agent behavior, prefer a headless A/B run
   (`claude -p` sessions against a sandbox copy of a vault) over intuition;
