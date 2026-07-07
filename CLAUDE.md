@@ -6,8 +6,9 @@ validate, format, tune, and safely write notes. ipa-cli itself is a *utility*
 for practicing the IPA method: each user runs their own operating rules on top
 of it, so nearly everything is meant to be customizable — mapping, rule/search/
 gate plugins, prompt fragments — **as long as the base IPA philosophy stays
-intact** (the Inbox→Project→Archive lifecycle, evidence-based note operations,
-the managed/user-owned safety contract). Every vault is different — this
+intact** (the Inbox→Project→Archive lifecycle, the note/index/root type system
+with classification living in `ref`/`tags` links rather than folders,
+evidence-based note operations, the managed/user-owned safety contract). Every vault is different — this
 project ships the *mechanism*, and each vault supplies its own *policy*. That
 split is the core design rule of the codebase. A change that hardcodes one
 user's policy into core, or one that lets customization break the IPA
