@@ -19,7 +19,9 @@ packages/*/dist/
 packages/test-vaults/fixtures/**/.cache/
 packages/test-vaults/fixtures/**/*.pkl
 
-.claude/
+# Claude Code local state stays ignored; path-scoped rules docs are committed.
+.claude/*
+!.claude/rules/
 
 .omo/*
 

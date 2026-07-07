@@ -6,6 +6,10 @@ validate, format, tune, and safely write notes. Every vault is different — thi
 project ships the *mechanism*, and each vault supplies its own *policy*. That
 split is the core design rule of the codebase.
 
+Path-scoped conventions live in `.claude/rules/` (core, cli, testing-build,
+obsidian, bench) and load automatically when you touch matching files. This
+file keeps only the rules that apply repo-wide.
+
 ## Design rules (read before changing anything)
 
 - **Mechanism in the CLI, policy in the vault.** Folder and frontmatter names
@@ -21,9 +25,8 @@ split is the core design rule of the codebase.
   `🔖 플랫폼 회의`). Never paste real note titles, employer/project names, or
   absolute personal paths.
 - **Managed vs user-owned.** Every file the harness writes carries the
-  `IPA_HARNESS_MANAGED` marker. A target file without the marker is user-owned
-  and must never be overwritten (it is reported as `skipped_user_owned`).
-  Preserve this contract in any install/update change.
+  `IPA_HARNESS_MANAGED` marker; a target file without the marker is user-owned
+  and must never be overwritten. Details in `.claude/rules/core.md`.
 - **Hooks must fail safe.** A broken gate plugin, missing CLI, or unparseable
   output must never permanently lock a session; recording hooks must stay
   silent on stdout unless they intend to inject context.
@@ -36,14 +39,10 @@ split is the core design rule of the codebase.
   assertion, and run `ipa harness update <target>` so installed environments
   pick it up.
 - **The CLI is not the only consumer of core.** The Obsidian plugin
-  (`packages/obsidian`) calls core directly — `prepareSearchContext`/
-  `searchWithContext`, `loadNotesForView`, `traversalAll`,
-  `formatVault(..., { patchesOnly, loadedNotes, ruleApply })`, plugin
-  list/doctor. When changing core signatures or return shapes, grep
-  `packages/obsidian/src/core/ipaClient.ts` and run `npm run build` (the
-  test script only builds the core bundle, not the Obsidian one). Deployment
-  into a vault goes through `ipa obsidian install|sync`; `ipa update --apply`
-  rebuilds and syncs an installed vault plugin automatically.
+  (`packages/obsidian`) calls core directly through `src/core/ipaClient.ts`.
+  When changing core signatures or return shapes, grep that file and run
+  `npm run build` (the test script only builds the core bundle, not the
+  Obsidian one). Details in `.claude/rules/obsidian.md`.
 
 ## Repo layout
 
@@ -57,54 +56,10 @@ split is the core design rule of the codebase.
 ## Dev workflow
 
 - `npm test` builds first (`scripts/build.mjs`) and then runs both test
-  packages. Running `node --test` directly executes against a stale
-  `packages/core/dist` — always go through `npm test`.
-- Tests build isolated fixture vaults (`fixtureVault()`) and isolated
-  `homeDir`s; hook-script tests point resolution at the fixture with
-  `IPA_VAULT_PATH` in the spawned env.
+  packages — never run `node --test` directly (stale `dist`). Test and build
+  conventions: `.claude/rules/testing-build.md`.
 - Commit style: conventional commits (`feat|fix|refactor|docs|test|chore`),
   subject lines in Korean are the norm here.
-
-## Things that bite
-
-- **Generated hook scripts are template literals.** The code inside
-  `` `#!/usr/bin/env node ...` `` needs escaped newlines (`\\n`) where the
-  *generated* script must contain `\n`, and every symbol used by
-  `vaultResolverSnippet()` (`homedir`, `join`, `spawnSync`, `readFileSync`)
-  must be imported by the generated script itself. A missing import passes
-  tests that set `IPA_VAULT_PATH` and crashes in real installs.
-- **Prompt templates are contract surfaces.** Any change to a template
-  (global skill, prompt blocks, vault-local skills) needs a regression
-  assertion: mapped-name rendering (remap `refs`/`tags`/folders in the test
-  config and assert the rendered output) and `doesNotMatch` guards that keep
-  removed duplication from creeping back.
-- **`harness update` vs `install`.** Update re-renders from the manifest's
-  component selection, auto-joins default components added by newer CLI
-  versions, and honors `omitted_components`. New components must be added to
-  all of: `HARNESS_COMPONENTS`, the script/event/matcher maps,
-  `IPA_MANAGED_HOOK_SCRIPTS` (old names stay listed for legacy cleanup),
-  `installGlobalHarness`, `uninstallGlobalHarness`, `componentsValidForTarget`
-  (which components apply per target — `permissions` is claude-only,
-  `hook:call-counter`/`hook:mutation-ledger`/`hook:vault-ref` are claude/codex
-  only, `opencode-plugin` is opencode-only), and doctor.
-- **Bench sessions isolate config via `CLAUDE_CONFIG_DIR`.** A `harness: true`
-  bench session replaces `~/.claude` wholesale, so PostToolUse hooks never
-  appear in the `claude -p` stream-json transcript — only `SessionStart` does.
-  Verify a hook fired by its side-effect files (`.ipa/harness/call-counter.json`,
-  `mutation-pending.json`), never by grepping the transcript.
-- **The bench measures the pure harness surface.** No personal
-  `~/.claude/CLAUDE.md` leaks into a bench session. When a scenario fails on the
-  clean surface, apply the 2-branch rule: behavior IPA methodology owns → teach
-  it in the harness template; generic agent etiquette or personal preference →
-  fix the scenario assertion, never stuff the harness.
-- **Gate plugin block semantics.** `{ block: true }` hard-blocks the Stop
-  response; `{ block: false, message }` surfaces as a non-blocking warning.
-  Errors and warnings are surfaced by the Stop hook — a gate that throws or
-  returns bad output is reported but never blocks the session.
-- **Search is performance-sensitive.** The BM25 index persists at
-  `.ipa/cache/bm25.bin` keyed by a per-file stat signature; per-query work
-  must stay out of per-note loops. Benchmark before/after for search-path
-  changes (tune testset queries, median of repeated runs, diff result lists).
 - **Behavior claims need behavioral evidence.** For prompt/harness changes
   that are supposed to change agent behavior, prefer a headless A/B run
   (`claude -p` sessions against a sandbox copy of a vault) over intuition;
@@ -129,3 +84,4 @@ CLI 명령 표면(플래그·출력 형식)에 영향을 주는 변경은:
 4. 실패나 baseline `regressed`/`cost_up`이 있으면 원인 분석 결과를 커밋 메시지에 남긴다.
 
 순수 내부 리팩토링(프롬프트 표면·CLI 표면 불변)은 Tier 1/2(`npm test`)로 충분하다.
+벤치 격리·판정·시나리오 작성 규칙: `.claude/rules/bench.md`.
