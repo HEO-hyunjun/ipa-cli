@@ -83,7 +83,24 @@ split is the core design rule of the codebase.
   versions, and honors `omitted_components`. New components must be added to
   all of: `HARNESS_COMPONENTS`, the script/event/matcher maps,
   `IPA_MANAGED_HOOK_SCRIPTS` (old names stay listed for legacy cleanup),
-  `installGlobalHarness`, `uninstallGlobalHarness`, and doctor.
+  `installGlobalHarness`, `uninstallGlobalHarness`, `componentsValidForTarget`
+  (which components apply per target — `permissions` is claude-only,
+  `hook:call-counter`/`hook:mutation-ledger`/`hook:vault-ref` are claude/codex
+  only, `opencode-plugin` is opencode-only), and doctor.
+- **Bench sessions isolate config via `CLAUDE_CONFIG_DIR`.** A `harness: true`
+  bench session replaces `~/.claude` wholesale, so PostToolUse hooks never
+  appear in the `claude -p` stream-json transcript — only `SessionStart` does.
+  Verify a hook fired by its side-effect files (`.ipa/harness/call-counter.json`,
+  `mutation-pending.json`), never by grepping the transcript.
+- **The bench measures the pure harness surface.** No personal
+  `~/.claude/CLAUDE.md` leaks into a bench session. When a scenario fails on the
+  clean surface, apply the 2-branch rule: behavior IPA methodology owns → teach
+  it in the harness template; generic agent etiquette or personal preference →
+  fix the scenario assertion, never stuff the harness.
+- **Gate plugin block semantics.** `{ block: true }` hard-blocks the Stop
+  response; `{ block: false, message }` surfaces as a non-blocking warning.
+  Errors and warnings are surfaced by the Stop hook — a gate that throws or
+  returns bad output is reported but never blocks the session.
 - **Search is performance-sensitive.** The BM25 index persists at
   `.ipa/cache/bm25.bin` keyed by a per-file stat signature; per-query work
   must stay out of per-note loops. Benchmark before/after for search-path

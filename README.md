@@ -410,6 +410,16 @@ export const rules = [{
 }];
 ```
 
+The rule context also exposes title-normalized graph counts:
+`ctx.childCount(note)` returns how many notes point at `note` through the
+mapped refs field (its children), and `ctx.backlinkCount(note)` counts inbound
+references plus wikilinks. Both normalize titles the same way builtin matching
+does (NFC + case-insensitive + emoji/whitespace) and each call scans the loaded
+note set (O(N) per call), so cache the result instead of calling per candidate
+inside a hot loop. The scaffolded `_example-overfull-index.js` rule uses
+`ctx.childCount` to flag index notes that have grown past a vault-configured
+child ceiling.
+
 ### Search channel
 
 ```js
@@ -456,6 +466,15 @@ must be linked before the session ends). The Stop hook consults
 `ipa harness gate`, which combines the builtin formatter check with all
 enabled gates; a gate that throws is reported but never blocks. Disable
 individual gates via `gates.plugins` in `.ipa/config.yaml`.
+
+Beyond the edited notes, a gate also receives `ctx.session.pending_mutations` —
+the ipa mutation dry-runs this session previewed but never confirmed with
+`--apply` (`ipa link`/`cascade` plans, `rename`/`move`/`refactor` dry-runs),
+recorded by the mutation-ledger hook at command-name granularity. Returning
+`{ block: false, message }` instead of `block: true` surfaces the message as a
+non-blocking warning at session end rather than holding the response. The
+scaffolded, disabled `_example-unapplied-mutation-gate.js` shows the idiom:
+warn when a preview never got applied.
 
 ## Tune workflow
 
@@ -610,6 +629,23 @@ harness:
 ```
 
 `ipa harness guard status` lists the active allow patterns.
+
+The call-counter hook (`hook:call-counter`) warns an agent that is making an
+unusual number of `ipa` calls in a single session. Its thresholds are
+vault-configurable:
+
+```yaml
+harness:
+  call_counter:
+    warn_at: 10        # first warning after this many ipa calls in a session
+    repeat_every: 6    # re-warn every N calls after the first
+```
+
+Defaults are `warn_at: 10` / `repeat_every: 6`. These values are baked into the
+generated hook script at `ipa harness install` / `update` time, so editing them
+in `.ipa/config.yaml` leaves the installed script stale — doctor reports the
+component as outdated (`component_outdated`) until you re-run
+`ipa harness update <target>`.
 
 Harness prompts use `ipa context "keyword" --size small|medium --format
 markdown` as the initial compact note pack. Treat that pack as a bootstrap:

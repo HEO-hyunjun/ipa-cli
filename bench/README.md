@@ -21,6 +21,73 @@ npm run bench -- --full --max-workers 8  # 매트릭스 동시 실행 (기본 5)
 - 페르소나 재생성: `node bench/tools/derive-vaults.mjs` (divergent가 원본, 손편집 금지).
 - 테스트는 `IPA_BENCH_SCENARIOS_DIR` 환경변수로 시나리오 디렉터리를 오버라이드한다.
 
+## 평가 모델 (2축)
+
+세션 결과는 `summary.verdict = { correctness, efficiency, completion }` 세 축으로
+판정한다 (`bench/run.mjs`).
+
+- **correctness** — 불리언. 해당 턴의 `expect` 어서션이 전부 통과했는가 (budget·completion 제외).
+- **efficiency** — `ok | warn | over`. ipa 콜 수 기준, 모델 독립. 같은 축에 임계가 둘이다:
+  - goldenPath 축 — `scenario.goldenPath`는 사람이 추적한 "정답 최소 콜 시퀀스".
+    `stepRatio = ipaCalls / goldenPath`로 관측한다. `ipaCalls ≤ goldenPath × 2`면 `ok`,
+    그 위부터 상한 사이는 `warn`("정답인데 서툼" — fail 아님, 개선 기회 리포트).
+  - 폭주 상한 축 — `scenario.budget.maxIpaCalls`(관측 정상치의 ~2배). 넘으면 `over` → fail.
+- **completion** — `completed | void`. 세션이 max-turns/에러로 잘리면(`truncated`) `void`로
+  격리해 사람 리뷰 대상으로 뺀다 (fourth verdict가 아니라 completion 축의 값이다).
+
+종합 PASS = `correctness && ceilingPass && efficiency !== "over" && completion === "completed"`.
+즉 `warn`은 통과하고 `over`만 효율 축에서 실패한다. USD 비용은 게이트가 아니라 관측치이며,
+회귀는 baseline `cost_up`(pass는 유지한 채 1.5배↑ 경고)과 `regressed`(pass→fail)로 추적한다
+(`bench/lib/baseline.mjs`).
+
+### 순수 하네스 표면 원칙 (2-branch rule)
+
+벤치는 개발자 개인 `~/.claude/CLAUDE.md`가 새어들지 않는 순수 하네스 표면만 측정한다
+(아래 세션 격리 참조). 시나리오가 이 깨끗한 표면에서 실패하면 2-branch로 나눈다: IPA
+방법론이 소유한 행동 → 하네스 템플릿에서 가르친다; 일반 에이전트 예절·개인 취향 → 시나리오
+어서션을 고친다(하네스에 우겨넣지 않는다).
+
+### 훅 부작용 검증
+
+PostToolUse 훅은 stream-json transcript에 남지 않으므로 vault 부작용 파일로 판정한다
+(`bench/lib/judge.mjs`):
+
+- `hook_call_count` — `.ipa/harness/call-counter.json`의 세션별 `count` 합. `{ min, max,
+  max_ratio }`; `max_ratio`는 `total ≤ ceil(ipaCalls × ratio)`로 이중 발화(~2배) 회귀를 잡는다.
+- `mutation_pending` — `.ipa/harness/mutation-pending.json`의 `mutations` 배열. `true`
+  또는 `{ command: regex, min }`.
+
+## 시나리오 그룹 (A–G)
+
+`bench/scenarios/`의 파일 한 개가 한 그룹이다.
+
+- **A — recognition** (`a-recognition.mjs`): 볼트를 건드리지 말아야 할 때를 구분하는가 —
+  무관한 코딩·비-볼트 파일 생성(콜 없음) vs 진짜 IPA 개념 질문.
+- **B — read** (`b-read.mjs`): 노트를 찾아 실제로 읽는 검색·retrieval. 단일 요약, 다중 노트
+  종합, history bootstrap — 전부 읽기 전용(md 변경 0).
+- **C — write** (`c-write.mjs`): 쓰기 경로 — inbox capture, 노트 스코프 섹션 편집
+  (validator → formatter plan → apply → validator 루프).
+- **D — robustness** (`d-robustness.mjs`): 비-정규 페르소나 견고성 — divergent 필드 매핑,
+  messy 스코프 편집(볼트 전체 수리로 폭주하지 않고), 볼트 규칙 준수.
+- **E — authoring** (`e-authoring.mjs`): 커스터마이즈 — 룰 플러그인 작성·검증, 검색 개인화/튜닝.
+- **F — migration** (`f-migration.mjs`): 마이그레이션/온보딩 — pre-IPA 부트스트랩(기존 폴더명을
+  config 매핑에 흡수), 부분 frontmatter 마이그레이션.
+- **G — workflows** (`g-workflows.mjs`): 다단계 IPA 메커니즘 e2e(cascade/digest/link/move +
+  tag-vs-ref 같은 방법론), end-state로 판정.
+
+## 볼트 페르소나 derive chain
+
+`bench/vaults/`의 페르소나는 `divergent`(원본 스냅샷, 손편집 금지)에서
+`node bench/tools/derive-vaults.mjs`로 결정적으로 재생성한다 (출력물은 커밋한다):
+
+- `divergent` → `canonical` — fixtures/plugins/logs 제거, 필드 변환(`kind→type`,
+  `parents→ref`, `created→date_created` 등), 벤치 게이트 설치, `formatter apply`.
+- `canonical` → `messy` — 일부 노트 frontmatter 제거·구필드명으로 복귀, frontmatter 없는
+  orphan 추가.
+- `canonical` → `pre-ipa` — `.ipa/`·`AGENTS.md`·`CLAUDE.md` 제거, 폴더명을 비-IPA로 되돌림
+  ("IPA 이전" 상태 재현).
+- `empty` — 파생 대상 아님. `.gitkeep`만 있는 빈 볼트 페르소나.
+
 ## 주의
 
 - 실제 `claude` CLI와 API 비용을 사용한다. `--full`은 세션 30+개 규모.
