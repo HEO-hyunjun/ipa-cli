@@ -3182,6 +3182,7 @@ test("obsidian plugin sync deploys the built bundle into the vault plugin folder
   const missing = await obsidianPluginSync(vault, { repoRoot });
   assert.equal(missing.status, "error");
   assert.equal(missing.reason, "dist_missing");
+  assert.equal(missing.operation, "obsidian-sync");
 
   for (const file of ["main.js", "manifest.json", "styles.css", "versions.json"]) {
     await writeFile(join(distDir, file), `content of ${file}\n`, "utf8");
@@ -3204,6 +3205,9 @@ test("obsidian plugin sync deploys the built bundle into the vault plugin folder
   await writeFile(join(distDir, "main.js"), "updated bundle\n", "utf8");
   const synced = await obsidianPluginSync(vault, { repoRoot });
   assert.equal(synced.synced, true);
+  // Regression: the payload must carry its renderer discriminator — without it
+  // the CLI duck-types this into the harness renderer and prints "uninstall".
+  assert.equal(synced.operation, "obsidian-sync");
   assert.match(await readFile(join(target, "main.js"), "utf8"), /updated bundle/);
   assert.match(await readFile(join(target, "data.json"), "utf8"), /user/);
 });

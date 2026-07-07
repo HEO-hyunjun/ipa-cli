@@ -701,6 +701,7 @@ function render(payload) {
   if (Object.hasOwn(payload, "replayed")) return renderTuneReplay(payload);
   if (payload.events) return renderTuneLog(payload);
   if (payload.operation === "config-init") return renderConfigInit(payload);
+  if (payload.operation === "obsidian-sync") return renderObsidianSync(payload);
   if (payload.file && Object.hasOwn(payload, "config_updated") && Object.hasOwn(payload, "created")) return renderKeyValues("Tune testset", payload);
   if (payload.testsets) return renderTableReport("Tune testsets", ["Active", "File"], payload.testsets.map((item) => [payload.active === item ? "yes" : "", item]));
   if (Object.hasOwn(payload, "allowed")) return renderKeyValues("Harness guard", payload);
@@ -1236,6 +1237,25 @@ function renderHarnessDoctor(payload) {
       item.message ?? "-"
     ])));
   }
+  return lines.join("\n");
+}
+
+function renderObsidianSync(payload) {
+  if (payload.status === "error") {
+    return `${styleTitle("Obsidian plugin sync")}\n\n${styleWarn(payload.message)}`;
+  }
+  if (!payload.synced) {
+    const lines = [styleTitle("Obsidian plugin sync"), "", `Status: ${styleWarn("not installed")}`];
+    if (payload.hint) lines.push(styleMuted(payload.hint));
+    return lines.join("\n");
+  }
+  const lines = [
+    styleTitle(`Obsidian plugin ${payload.installed ? "install" : "sync"}: ${payload.target}`),
+    "",
+    `Status: ${styleGood(payload.installed ? "installed" : "synced")}`
+  ];
+  if (payload.files?.length) lines.push("", "Vault-local files:", ...payload.files.map((file) => `  ${file}`));
+  if (payload.installed) lines.push("", styleMuted("enable the plugin in Obsidian: Settings > Community plugins"));
   return lines.join("\n");
 }
 

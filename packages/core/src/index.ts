@@ -6425,25 +6425,28 @@ const OBSIDIAN_PLUGIN_ASSETS = ["main.js", "manifest.json", "styles.css", "versi
 // data.json (user settings) is never touched. Without { install: true } an
 // uninstalled vault is left alone, so generic users are never surprised by a
 // plugin appearing in their Obsidian.
+// The `operation` discriminator keeps the CLI from duck-typing this payload
+// into the harness install/uninstall renderer (whose `installed` field means
+// "is installed now", not "was this an install run").
 export async function obsidianPluginSync(vaultPath, options = {}) {
   const repoRoot = options.repoRoot ?? process.env.IPA_UPDATE_REPO_ROOT ?? cliVersionInfo().repo_root;
   if (!repoRoot) {
-    return { status: "error", reason: "not_a_git_checkout", message: "could not locate the ipa-cli git checkout from the running binary" };
+    return { operation: "obsidian-sync", status: "error", reason: "not_a_git_checkout", message: "could not locate the ipa-cli git checkout from the running binary" };
   }
   const sourceDir = join(repoRoot, "packages", "obsidian", "dist");
   const missing = OBSIDIAN_PLUGIN_ASSETS.filter((file) => !existsSync(join(sourceDir, file)));
   if (missing.length) {
-    return { status: "error", reason: "dist_missing", source: sourceDir, message: `obsidian plugin bundle is not built (missing: ${missing.join(", ")}); run pnpm run build first` };
+    return { operation: "obsidian-sync", status: "error", reason: "dist_missing", source: sourceDir, message: `obsidian plugin bundle is not built (missing: ${missing.join(", ")}); run pnpm run build first` };
   }
   const targetDir = join(vaultPath, ".obsidian", "plugins", "ipa-obsidian");
   if (!existsSync(targetDir) && !options.install) {
-    return { status: "ok", synced: false, reason: "not_installed", target: targetDir, hint: "run ipa obsidian install to install the plugin into this vault" };
+    return { operation: "obsidian-sync", status: "ok", synced: false, reason: "not_installed", target: targetDir, hint: "run ipa obsidian install to install the plugin into this vault" };
   }
   await mkdir(targetDir, { recursive: true });
   for (const file of OBSIDIAN_PLUGIN_ASSETS) {
     await cp(join(sourceDir, file), join(targetDir, file));
   }
-  return { status: "ok", synced: true, installed: Boolean(options.install), target: targetDir, files: OBSIDIAN_PLUGIN_ASSETS };
+  return { operation: "obsidian-sync", status: "ok", synced: true, installed: Boolean(options.install), target: targetDir, files: OBSIDIAN_PLUGIN_ASSETS };
 }
 
 const SELF_UPDATE_STEPS = [
