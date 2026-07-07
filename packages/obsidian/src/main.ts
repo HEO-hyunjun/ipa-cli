@@ -177,6 +177,9 @@ export default class IpaPlugin extends Plugin {
   // modify event the write itself fires.
   private async formatOnSaveApply(file: TFile): Promise<void> {
     if (!this.adapter.hasFileSystemAccess()) return;
+    // Excluded (non-IPA-managed) files are out of scope: skip silently instead
+    // of asking core, which would throw "note not found" into a Notice.
+    if (!(await this.client.isManagedPath(file.path))) return;
     if (this.formatGuard.has(file.path)) return;
     this.formatGuard.add(file.path);
     try {

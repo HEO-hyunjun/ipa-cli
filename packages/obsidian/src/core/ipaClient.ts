@@ -42,6 +42,16 @@ export class IpaClient {
     return this.fullNotesCache;
   }
 
+  // A path outside the indexed note set (mapping exclude) is not IPA-managed;
+  // callers skip IPA surfaces for it instead of surfacing "note not found".
+  // core note paths (relPath) are posix + possibly NFD (macOS fs); Obsidian's
+  // active path is NFC, so normalize both sides before comparing.
+  async isManagedPath(path: string): Promise<boolean> {
+    const target = path.normalize("NFC");
+    const notes = await this.loadNotesCached();
+    return notes.some((note) => String(note?.relPath ?? "").normalize("NFC") === target);
+  }
+
   invalidateNotes(): void {
     this.notesCache = null;
     this.fullNotesCache = null;

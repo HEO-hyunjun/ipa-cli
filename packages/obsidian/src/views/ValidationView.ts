@@ -134,6 +134,14 @@ export class ValidationView extends BaseIpaView {
       this.showEmpty(this.issuesEl, "Open a note to validate it.");
       return;
     }
+    // Excluded (non-IPA-managed) files are out of scope: show an empty state
+    // instead of letting core throw "note not found" into the error banner.
+    const activePath = this.adapter.getActiveNotePath();
+    if (this.scope === "current" && activePath && !(await this.client.isManagedPath(activePath))) {
+      this.summaryEl.setText("Current note");
+      this.showEmpty(this.issuesEl, "Not an IPA-managed note (excluded from indexing).");
+      return;
+    }
 
     this.busy = true;
     this.summaryEl.setText("Validating…");

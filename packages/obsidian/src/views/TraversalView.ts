@@ -87,6 +87,15 @@ export class TraversalView extends BaseIpaView {
     this.noteTitle = this.adapter.getActiveNoteTitle();
     const title = this.noteTitle ?? "";
 
+    // Excluded (non-IPA-managed) files have no graph: show an empty state
+    // instead of letting core throw "note not found" into the error banner.
+    if (!(await this.client.isManagedPath(path))) {
+      if (this.notePath !== path) return;
+      this.bodyEl.empty();
+      this.showEmpty(this.bodyEl, "Not an IPA-managed note (excluded from indexing).");
+      return;
+    }
+
     try {
       // One load (reused from cache) covers up/down/siblings/root in a single pass.
       const data = await this.client.traversalAll(title);
