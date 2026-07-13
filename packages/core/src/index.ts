@@ -6475,6 +6475,14 @@ export async function selfUpdate(options = {}) {
   const changes = behind > 0
     ? (gitOutput(repoRoot, ["log", "--oneline", `HEAD..${upstream}`]) ?? "").split("\n").filter(Boolean).slice(0, 20)
     : [];
+  // A local commit (dev machine) leaves the checkout up to date in git terms
+  // while the built bundle — what the `ipa` symlink actually runs — is stale.
+  // Compare the bundle mtime against the HEAD commit time so `--apply` still
+  // rebuilds in that case. A missing bundle is not treated as stale: fixture
+  // clones and non-ipa checkouts have no dist at all.
+  const distBundle = join(repoRoot, "packages", "cli", "dist", "main.js");
+  const headCommitMs = Number(gitOutput(repoRoot, ["log", "-1", "--format=%ct"]) ?? 0) * 1000;
+  const distStale = headCommitMs > 0 && existsSync(distBundle) && statSync(distBundle).mtimeMs < headCommitMs;
   const commands = SELF_UPDATE_STEPS.map((cmd) => cmd.join(" "));
   const base = {
     status: "ok",
@@ -6488,45 +6496,65 @@ export async function selfUpdate(options = {}) {
     ahead,
     dirty,
     up_to_date: behind === 0,
+    dist_stale: distStale,
     changes,
     commands
   };
   if (!options.apply) {
-    return { ...base, mode: "plan", hint: behind > 0 ? "run `ipa update --apply` or the commands above from the repo root" : null };
+    const hint = behind > 0
+      ? "run `ipa update --apply` or the commands above from the repo root"
+      : distStale
+        ? "the built bundle is older than HEAD; run `ipa update --apply` to rebuild"
+        : null;
+    return { ...base, mode: "plan", hint };
   }
-  if (dirty) {
-    return { ...base, mode: "apply", status: "error", reason: "dirty_worktree", message: "commit or stash local changes before updating" };
-  }
-  if (behind === 0) {
-    return { ...base, mode: "apply", applied: false, steps: [], message: "already up to date" };
-  }
-  if (ahead > 0) {
-    return { ...base, mode: "apply", status: "error", reason: "diverged", message: `local branch is ahead of ${upstream}; fast-forward pull is not possible` };
-  }
-  const stepsToRun = options.steps ?? SELF_UPDATE_STEPS;
-  const steps = [];
-  for (const cmd of stepsToRun) {
-    const run = spawnSync(cmd[0], cmd.slice(1), {
-      cwd: repoRoot,
-      encoding: "utf8",
-      stdio: options.stream ? ["ignore", "inherit", "inherit"] : undefined
-    });
-    const ok = !run.error && run.status === 0;
-    const step = { command: cmd.join(" "), ok };
-    if (!ok && !options.stream) step.output = `${run.stdout ?? ""}${run.stderr ?? ""}`.slice(-2000);
-    steps.push(step);
-    if (!ok) {
-      return { ...base, mode: "apply", status: "error", reason: "step_failed", steps, message: `command failed: ${cmd.join(" ")}` };
+  const runSteps = (stepsToRun) => {
+    const steps = [];
+    for (const cmd of stepsToRun) {
+      const run = spawnSync(cmd[0], cmd.slice(1), {
+        cwd: repoRoot,
+        encoding: "utf8",
+        stdio: options.stream ? ["ignore", "inherit", "inherit"] : undefined
+      });
+      const ok = !run.error && run.status === 0;
+      const step = { command: cmd.join(" "), ok };
+      if (!ok && !options.stream) step.output = `${run.stdout ?? ""}${run.stderr ?? ""}`.slice(-2000);
+      steps.push(step);
+      if (!ok) return { steps, failed: cmd.join(" ") };
     }
-  }
-  return {
+    return { steps, failed: null };
+  };
+  const finish = (steps, extra = {}) => ({
     ...base,
     mode: "apply",
     applied: true,
     steps,
     commit_after: gitOutput(repoRoot, ["rev-parse", "--short", "HEAD"]),
-    next: "run `ipa harness status` to check for outdated harness components, then `ipa harness update <target>` if needed"
-  };
+    next: "run `ipa harness status` to check for outdated harness components, then `ipa harness update <target>` if needed",
+    ...extra
+  });
+  if (behind === 0) {
+    if (!distStale) {
+      return { ...base, mode: "apply", applied: false, steps: [], message: "already up to date" };
+    }
+    // Rebuild-only path: no git pull happens, so a dirty worktree is fine.
+    const { steps, failed } = runSteps(options.steps ?? SELF_UPDATE_STEPS.slice(1));
+    if (failed) {
+      return { ...base, mode: "apply", status: "error", reason: "step_failed", steps, message: `command failed: ${failed}` };
+    }
+    return finish(steps, { rebuilt: true, message: "already up to date; rebuilt the stale bundle" });
+  }
+  if (dirty) {
+    return { ...base, mode: "apply", status: "error", reason: "dirty_worktree", message: "commit or stash local changes before updating" };
+  }
+  if (ahead > 0) {
+    return { ...base, mode: "apply", status: "error", reason: "diverged", message: `local branch is ahead of ${upstream}; fast-forward pull is not possible` };
+  }
+  const { steps, failed } = runSteps(options.steps ?? SELF_UPDATE_STEPS);
+  if (failed) {
+    return { ...base, mode: "apply", status: "error", reason: "step_failed", steps, message: `command failed: ${failed}` };
+  }
+  return finish(steps);
 }
 
 function harnessRoot(vaultPath) {

@@ -109,3 +109,16 @@
 {"ts":"2026-07-06T23-47-35-705Z","sessions":1,"passed":1,"totalCostUsd":0.01,"args":["--dry-run","--scenario","a9-dryrun-probe"]}
 {"ts":"2026-07-06T23-47-35-942Z","sessions":3,"passed":3,"totalCostUsd":0.03,"args":["--dry-run","--max-workers","2","--scenario","a91-pool","--scenario","a92-pool","--scenario","a93-pool"]}
 {"ts":"2026-07-06T23-47-36-209Z","sessions":1,"passed":1,"totalCostUsd":0.01,"args":["--dry-run","--sonnet-only","--scenario","a94-sonnet-only"]}
+{"ts":"2026-07-08T00-23-41-999Z","sessions":1,"passed":1,"totalCostUsd":0.01,"args":["--dry-run","--scenario","a9-dryrun-probe"]}
+{"ts":"2026-07-08T00-23-42-138Z","sessions":3,"passed":3,"totalCostUsd":0.03,"args":["--dry-run","--max-workers","2","--scenario","a91-pool","--scenario","a92-pool","--scenario","a93-pool"]}
+{"ts":"2026-07-08T00-23-42-324Z","sessions":1,"passed":1,"totalCostUsd":0.01,"args":["--dry-run","--sonnet-only","--scenario","a94-sonnet-only"]}
+{"ts":"2026-07-08T00-23-59-929Z","sessions":1,"passed":1,"totalCostUsd":0.01,"args":["--dry-run","--scenario","a9-dryrun-probe"]}
+{"ts":"2026-07-08T00-24-00-092Z","sessions":3,"passed":3,"totalCostUsd":0.03,"args":["--dry-run","--max-workers","2","--scenario","a91-pool","--scenario","a92-pool","--scenario","a93-pool"]}
+{"ts":"2026-07-08T00-24-00-278Z","sessions":1,"passed":1,"totalCostUsd":0.01,"args":["--dry-run","--sonnet-only","--scenario","a94-sonnet-only"]}
+{"ts":"2026-07-08T00-24-19-483Z","sessions":1,"passed":1,"totalCostUsd":0.01,"args":["--dry-run","--scenario","a9-dryrun-probe"]}
+{"ts":"2026-07-08T00-24-19-620Z","sessions":3,"passed":3,"totalCostUsd":0.03,"args":["--dry-run","--max-workers","2","--scenario","a91-pool","--scenario","a92-pool","--scenario","a93-pool"]}
+{"ts":"2026-07-08T00-24-19-798Z","sessions":1,"passed":1,"totalCostUsd":0.01,"args":["--dry-run","--sonnet-only","--scenario","a94-sonnet-only"]}
+{"ts":"2026-07-08T00-24-27-681Z","sessions":1,"passed":1,"totalCostUsd":0.01,"args":["--dry-run","--scenario","a9-dryrun-probe"]}
+{"ts":"2026-07-08T00-24-27-859Z","sessions":3,"passed":3,"totalCostUsd":0.03,"args":["--dry-run","--max-workers","2","--scenario","a91-pool","--scenario","a92-pool","--scenario","a93-pool"]}
+{"ts":"2026-07-08T00-24-28-058Z","sessions":1,"passed":1,"totalCostUsd":0.01,"args":["--dry-run","--sonnet-only","--scenario","a94-sonnet-only"]}
+{"ts":"2026-07-08T00-25-10-610Z","sessions":6,"passed":6,"totalCostUsd":2.203,"args":["--smoke"]}

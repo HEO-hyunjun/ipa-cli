@@ -1295,7 +1295,12 @@ function renderSelfUpdate(payload) {
     return lines.join("\n");
   }
   if (payload.up_to_date) {
-    lines.push("", "already up to date");
+    if (payload.dist_stale) {
+      lines.push("", styleWarn("already up to date, but the built bundle is older than HEAD"));
+      if (payload.mode === "plan" && payload.hint) lines.push(styleMuted(payload.hint));
+    } else {
+      lines.push("", "already up to date");
+    }
   } else {
     lines.push("", `behind ${payload.behind} commit(s)${payload.ahead ? `, ahead ${payload.ahead}` : ""}:`);
     lines.push(...payload.changes.map((change) => `  ${change}`));
@@ -1304,7 +1309,7 @@ function renderSelfUpdate(payload) {
     }
   }
   if (payload.applied) {
-    lines.push("", `updated to ${payload.commit_after}`, styleMuted(payload.next));
+    lines.push("", payload.rebuilt ? `rebuilt dist at ${payload.commit_after}` : `updated to ${payload.commit_after}`, styleMuted(payload.next));
   }
   return lines.join("\n");
 }

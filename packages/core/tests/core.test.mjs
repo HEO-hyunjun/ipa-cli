@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { chmod, cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -2923,6 +2923,29 @@ test("selfUpdate plans behind commits and applies a fast-forward pull on a fixtu
   const after = await selfUpdate({ repoRoot: clone, apply: true });
   assert.equal(after.up_to_date, true);
   assert.equal(after.applied, false);
+
+  // Regression: a local commit leaves git up to date while the built bundle
+  // is stale — `--apply` must still run the build steps in that case.
+  const bundle = join(clone, "packages", "cli", "dist", "main.js");
+  await mkdir(dirname(bundle), { recursive: true });
+  await writeFile(bundle, "old bundle\n", "utf8");
+  await utimes(bundle, new Date("2000-01-01"), new Date("2000-01-01"));
+
+  const stalePlan = await selfUpdate({ repoRoot: clone });
+  assert.equal(stalePlan.up_to_date, true);
+  assert.equal(stalePlan.dist_stale, true);
+  assert.match(stalePlan.hint, /rebuild/);
+
+  const rebuilt = await selfUpdate({ repoRoot: clone, apply: true, steps: [["git", "--version"]] });
+  assert.equal(rebuilt.applied, true);
+  assert.equal(rebuilt.rebuilt, true);
+  assert.equal(rebuilt.steps.length, 1);
+  assert.equal(rebuilt.steps[0].ok, true);
+
+  await utimes(bundle, new Date(), new Date());
+  const fresh = await selfUpdate({ repoRoot: clone, apply: true });
+  assert.equal(fresh.dist_stale, false);
+  assert.equal(fresh.applied, false);
 });
 
 test("harness status/doctor flag outdated components and harness update reinstalls with preserved selection", async () => {
