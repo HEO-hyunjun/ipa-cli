@@ -21,11 +21,16 @@ test("run.mjs --dry-run executes one scenario end-to-end with fake claude", () =
     responder: null, budget: { maxCostUsd: 1, maxIpaCalls: 10 }, goldenPath: null, maxTurns: 4 }];`);
   mkdirSync(join(REPO, "bench", "vaults", "empty"), { recursive: true });
   writeFileSync(join(REPO, "bench", "vaults", "empty", ".gitkeep"), "");
+  // dry-run이 git 추적 중인 results/history.jsonl을 오염시키지 않는지 가드.
+  const historyPath = join(REPO, "bench", "results", "history.jsonl");
+  const readHistory = () => (existsSync(historyPath) ? readFileSync(historyPath, "utf8") : "");
+  const historyBefore = readHistory();
   try {
     const out = execFileSync(process.execPath,
       [join(REPO, "bench", "run.mjs"), "--dry-run", "--scenario", "a9-dryrun-probe"],
       { encoding: "utf8", cwd: REPO, env: { ...process.env, IPA_BENCH_SCENARIOS_DIR: scenDir } });
     assert.match(out, /a9-dryrun-probe/);
+    assert.equal(readHistory(), historyBefore, "dry-run must not append to history.jsonl");
     const runsDir = join(REPO, "bench", "results", "runs");
     const latest = readdirSync(runsDir).sort().at(-1);
     const summaryPath = join(runsDir, latest, "a9-dryrun-probe__sonnet", "summary.json");

@@ -237,9 +237,13 @@ async function main() {
     rows, baselineReport: report,
   };
   writeFileSync(join(runDir, "run-summary.json"), JSON.stringify(runSummary, null, 2));
-  mkdirSync(RESULTS_DIR, { recursive: true });
-  appendFileSync(join(RESULTS_DIR, "history.jsonl"),
-    JSON.stringify({ ts, sessions: rows.length, passed: runSummary.passed, totalCostUsd: runSummary.totalCostUsd, args: runSummary.args }) + "\n");
+  // dry-run은 LLM 비용 없는 파이프라인 점검(npm test의 프로브 포함)이므로
+  // 실측 기록인 history.jsonl에 남기지 않는다.
+  if (!args.dryRun) {
+    mkdirSync(RESULTS_DIR, { recursive: true });
+    appendFileSync(join(RESULTS_DIR, "history.jsonl"),
+      JSON.stringify({ ts, sessions: rows.length, passed: runSummary.passed, totalCostUsd: runSummary.totalCostUsd, args: runSummary.args }) + "\n");
+  }
 
   for (const r of report.filter((x) => x.kind !== "ok")) console.log(`baseline ${r.kind}: ${r.key} ${r.detail}`);
   if (args.updateBaseline && !args.dryRun) {
