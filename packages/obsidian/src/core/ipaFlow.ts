@@ -2,8 +2,8 @@ import { App, TFile } from "obsidian";
 
 // IPA Flow planner. Computes the convention-driven target folder for a note from
 // its type, refs, and current location, reproducing the "Move IPA Convention"
-// template as plugin logic. The actual move is performed by core's moveNote so
-// links stay consistent.
+// template as plugin logic. The actual move goes through Obsidian's fileManager
+// so the open editor and links stay consistent.
 
 export interface FlowPlan {
   note: string;

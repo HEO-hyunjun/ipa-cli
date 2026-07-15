@@ -1,4 +1,4 @@
-import { Notice, Plugin, TFile, WorkspaceLeaf } from "obsidian";
+import { Notice, Plugin, TFile, WorkspaceLeaf, normalizePath } from "obsidian";
 import { readFile } from "node:fs/promises";
 import {
   ICON_ID,
@@ -355,7 +355,15 @@ export default class IpaPlugin extends Plugin {
 
     const run = async () => {
       try {
-        await this.client.move(plan.note, plan.targetFolder, true);
+        // Move through the Obsidian API, not core's fs rename: an external
+        // rename looks like a delete to Obsidian and kicks the note out of the
+        // open editor, while fileManager.renameFile keeps the tab on the note
+        // and updates links.
+        const targetFolder = normalizePath(plan.targetFolder).normalize("NFC");
+        if (!this.app.vault.getAbstractFileByPath(targetFolder)) {
+          await this.app.vault.createFolder(targetFolder);
+        }
+        await this.app.fileManager.renameFile(file, normalizePath(`${targetFolder}/${file.name}`));
         new Notice(`IPA Flow: moved "${plan.note}" → ${plan.targetFolder}.`);
       } catch (error) {
         new Notice(`IPA Flow failed: ${errorMessage(error)}`);
