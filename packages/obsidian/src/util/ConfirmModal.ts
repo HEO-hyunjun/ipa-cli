@@ -18,7 +18,10 @@ export class ConfirmModal extends Modal {
 
   onOpen(): void {
     this.titleEl.setText(this.options.title);
-    this.contentEl.createEl("p", { text: this.options.body });
+    // Body lines render as separate divs — a <p> collapses "\n", which makes
+    // multi-line bodies (e.g. a batch move list) unreadable.
+    const body = this.contentEl.createEl("p");
+    for (const line of this.options.body.split("\n")) body.createDiv({ text: line });
 
     const buttons = this.contentEl.createDiv({ cls: "modal-button-container" });
     const confirm = buttons.createEl("button", {

@@ -15,7 +15,7 @@ import { TraversalView } from "./views/TraversalView";
 import { ValidationView } from "./views/ValidationView";
 import { errorMessage } from "./util/format";
 import { ConfirmModal } from "./util/ConfirmModal";
-import { IpaFlow } from "./core/ipaFlow";
+import { FlowPlan, IpaFlow } from "./core/ipaFlow";
 import { applyFixes } from "./core/applyFixes";
 
 // Obsidian's renderer cannot resolve node builtin ESM imports (node:fs, ...)
@@ -74,6 +74,32 @@ export default class IpaPlugin extends Plugin {
 
     this.registerCommands();
     this.addSettingTab(new IpaSettingTab(this.app, this));
+
+    // File-explorer context menu: move the clicked note (file-menu) or the
+    // multi-selection (files-menu) by IPA convention without opening them.
+    this.registerEvent(
+      this.app.workspace.on("file-menu", (menu, file) => {
+        if (!(file instanceof TFile) || file.extension !== "md") return;
+        menu.addItem((item) =>
+          item
+            .setTitle("IPA: Move by convention")
+            .setIcon(ICON_ID)
+            .onClick(() => void this.moveFilesByConvention([file]))
+        );
+      })
+    );
+    this.registerEvent(
+      this.app.workspace.on("files-menu", (menu, files) => {
+        const notes = files.filter((f): f is TFile => f instanceof TFile && f.extension === "md");
+        if (notes.length === 0) return;
+        menu.addItem((item) =>
+          item
+            .setTitle(`IPA: Move ${notes.length} notes by convention`)
+            .setIcon(ICON_ID)
+            .onClick(() => void this.moveFilesByConvention(notes))
+        );
+      })
+    );
 
     // Warm the search context in the background so the first search is fast.
     this.scheduleSearchWarm(2000);
@@ -277,7 +303,7 @@ export default class IpaPlugin extends Plugin {
 
     this.addCommand({
       id: "move-current-note-by-convention",
-      name: "Move current note by convention",
+      name: "Move note(s) by convention",
       callback: async () => {
         await this.moveActiveByConvention();
       }
@@ -339,41 +365,87 @@ export default class IpaPlugin extends Plugin {
     }
   }
 
+  // The file explorer's Cmd/Ctrl multi-selection is not exposed by the public
+  // API; tree.selectedDoms is undocumented internals, so fail safe to [] on
+  // any shape change.
+  private explorerSelectedNotes(): TFile[] {
+    const view = this.app.workspace.getLeavesOfType("file-explorer")[0]?.view as any;
+    const doms = view?.tree?.selectedDoms;
+    if (!doms) return [];
+    const files: TFile[] = [];
+    for (const dom of doms) {
+      const file = (dom as any)?.file;
+      if (file instanceof TFile && file.extension === "md") files.push(file);
+    }
+    return files;
+  }
+
   async moveActiveByConvention(): Promise<void> {
-    if (!this.guardVault()) return;
+    // A deliberate multi-selection (2+) in the file explorer wins over the
+    // active note, so the palette command can batch-move too.
+    const selected = this.explorerSelectedNotes();
+    if (selected.length >= 2) {
+      await this.moveFilesByConvention(selected);
+      return;
+    }
     const file = this.app.workspace.getActiveFile();
     if (!file) {
       new Notice("IPA: open a note to move.");
       return;
     }
+    await this.moveFilesByConvention([file]);
+  }
 
-    const plan = new IpaFlow(this.app).plan(file);
-    if ("error" in plan) {
-      new Notice(`IPA Flow: ${plan.error}`);
+  async moveFilesByConvention(files: TFile[]): Promise<void> {
+    if (!this.guardVault()) return;
+    const flow = new IpaFlow(this.app);
+    const moves: { file: TFile; plan: FlowPlan }[] = [];
+    const skipped: string[] = [];
+    for (const file of files) {
+      const plan = flow.plan(file);
+      if ("error" in plan) skipped.push(`${file.basename}: ${plan.error}`);
+      else moves.push({ file, plan });
+    }
+    if (moves.length === 0) {
+      new Notice(`IPA Flow: nothing to move.\n${skipped.join("\n")}`);
       return;
     }
 
     const run = async () => {
-      try {
-        // Move through the Obsidian API, not core's fs rename: an external
-        // rename looks like a delete to Obsidian and kicks the note out of the
-        // open editor, while fileManager.renameFile keeps the tab on the note
-        // and updates links.
-        const targetFolder = normalizePath(plan.targetFolder).normalize("NFC");
-        if (!this.app.vault.getAbstractFileByPath(targetFolder)) {
-          await this.app.vault.createFolder(targetFolder);
+      const failed: string[] = [];
+      for (const { file, plan } of moves) {
+        try {
+          // Move through the Obsidian API, not core's fs rename: an external
+          // rename looks like a delete to Obsidian and kicks the note out of the
+          // open editor, while fileManager.renameFile keeps the tab on the note
+          // and updates links.
+          const targetFolder = normalizePath(plan.targetFolder).normalize("NFC");
+          if (!this.app.vault.getAbstractFileByPath(targetFolder)) {
+            await this.app.vault.createFolder(targetFolder);
+          }
+          await this.app.fileManager.renameFile(file, normalizePath(`${targetFolder}/${file.name}`));
+        } catch (error) {
+          failed.push(`${plan.note}: ${errorMessage(error)}`);
         }
-        await this.app.fileManager.renameFile(file, normalizePath(`${targetFolder}/${file.name}`));
-        new Notice(`IPA Flow: moved "${plan.note}" → ${plan.targetFolder}.`);
-      } catch (error) {
-        new Notice(`IPA Flow failed: ${errorMessage(error)}`);
       }
+      if (moves.length === 1 && failed.length === 0) {
+        new Notice(`IPA Flow: moved "${moves[0].plan.note}" → ${moves[0].plan.targetFolder}.`);
+        return;
+      }
+      const lines = [`IPA Flow: moved ${moves.length - failed.length}/${moves.length} notes.`];
+      for (const entry of failed) lines.push(`failed — ${entry}`);
+      for (const entry of skipped) lines.push(`skipped — ${entry}`);
+      new Notice(lines.join("\n"));
     };
 
     if (this.settings.confirmIpaFlow) {
+      const lines = moves.map(
+        ({ plan }) => `${plan.note}: ${plan.fromFolder || "(vault root)"} → ${plan.targetFolder} (${plan.reason})`
+      );
+      for (const entry of skipped) lines.push(`skip — ${entry}`);
       new ConfirmModal(this.app, {
-        title: "Move note by IPA convention?",
-        body: `${plan.note}\n${plan.fromFolder || "(vault root)"} → ${plan.targetFolder}\n(${plan.reason})`,
+        title: moves.length === 1 ? "Move note by IPA convention?" : `Move ${moves.length} notes by IPA convention?`,
+        body: lines.join("\n"),
         confirmText: "Move",
         onConfirm: () => void run()
       }).open();
