@@ -169,6 +169,38 @@ test("link plan records a content hash and apply rejects stale files", async () 
   await assert.rejects(() => linkApply(vault, ".ipa/plans/link.json"), /hash guard failed/);
 });
 
+test("link apply keeps every change when one note carries several suggestions", async () => {
+  const vault = await fixtureVault();
+  await writeFile(
+    join(vault, "00 Inbox", "Gamma.md"),
+    `---
+date_created: 2026/05/10 (Sun) 00:00:00
+date_modified: 2026/05/10 (Sun) 00:00:00
+ref:
+  - "[[🔖 Topic Index]]"
+tags:
+  - note
+type: note
+---
+# Gamma
+
+Gamma mentions Alpha and Beta in plain text.
+`,
+    "utf8"
+  );
+  const plan = await linkPlan(vault, { note: "Gamma" });
+  const targets = plan.changes.map((change) => change.target);
+  assert.ok(targets.includes("Alpha"));
+  assert.ok(targets.includes("Beta"));
+  await mkdir(join(vault, ".ipa", "plans"), { recursive: true });
+  await writeFile(join(vault, ".ipa", "plans", "link.json"), JSON.stringify(plan), "utf8");
+  const applied = await linkApply(vault, ".ipa/plans/link.json");
+  assert.deepEqual(applied.applied, ["00 Inbox/Gamma.md"]);
+  const raw = await readFile(join(vault, "00 Inbox", "Gamma.md"), "utf8");
+  assert.match(raw, /\[\[Alpha\]\]/);
+  assert.match(raw, /\[\[Beta\]\]/);
+});
+
 test("link plan uses semantic search queries and ignores collapsed transcript noise", async () => {
   const vault = await fixtureVault();
   await mkdir(join(vault, "02 Archive"), { recursive: true });

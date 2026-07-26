@@ -4697,6 +4697,9 @@ export async function linkApply(vaultPath, planPath) {
   const plan = JSON.parse(await readFile(resolve(vaultPath, planPath), "utf8"));
   const { mapping } = await readVaultConfig(vaultPath);
   const notes = await loadNotes(vaultPath, mapping);
+  // 한 노트에 여러 변경이 걸리면 이어지는 치환은 직전 결과 위에 적용해야 한다.
+  // 매번 note.raw에서 시작하면 앞선 치환이 덮여 사라진다.
+  const textByNote = new Map();
   const changed = [];
   for (const change of plan.changes ?? []) {
     const note = findNote(notes, change.note);
@@ -4704,10 +4707,12 @@ export async function linkApply(vaultPath, planPath) {
     if (change.sha256 && sha256(note.raw) !== change.sha256) {
       throw new Error(`hash guard failed for ${note.id}`);
     }
-    const next = note.raw.replace(change.target, `[[${change.target}]]`);
-    if (next !== note.raw) {
+    const current = textByNote.get(note.id) ?? note.raw;
+    const next = current.replace(change.target, `[[${change.target}]]`);
+    if (next !== current) {
+      textByNote.set(note.id, next);
       await writeFile(note.path, next, "utf8");
-      changed.push(note.relPath);
+      if (!changed.includes(note.relPath)) changed.push(note.relPath);
     }
   }
   return { applied: changed };
