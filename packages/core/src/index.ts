@@ -263,11 +263,15 @@ function isExcalidrawMarkdownPath(relPath) {
   return toPosix(String(relPath ?? "")).toLowerCase().endsWith(".excalidraw.md");
 }
 
+// 아래 판정은 전부 원문에 "excalidraw" 리터럴을 요구한다 — 프론트매터 키,
+// `# Excalidraw Data` 헤딩, JSON `type` 값 어디로든. 경로 검사와 이 스캔을
+// 먼저 돌려서 일반 노트는 YAML 파싱 없이 빠져나가게 한다.
 export function isExcalidrawMarkdownFile(relPath, raw) {
-  const text = String(raw ?? "").replace(/\r\n/g, "\n");
-  const { frontmatter, body } = readFrontmatter(text);
-  return isExcalidrawMarkdownPath(relPath) ||
-    Object.hasOwn(frontmatter, "excalidraw-plugin") ||
+  if (isExcalidrawMarkdownPath(relPath)) return true;
+  const text = String(raw ?? "");
+  if (!/excalidraw/i.test(text)) return false;
+  const { frontmatter, body } = readFrontmatter(text.replace(/\r\n/g, "\n"));
+  return Object.hasOwn(frontmatter, "excalidraw-plugin") ||
     Object.hasOwn(frontmatter, "excalidraw") ||
     hasExcalidrawMarkdownSections(body) ||
     isExcalidrawJsonDocument(body);
@@ -1049,22 +1053,35 @@ function noteFromFile(vaultPath, path, raw, mapping = DEFAULT_MAPPING) {
   };
 }
 
-async function activeMarkdownFileStats(vaultPath, mapping = DEFAULT_MAPPING) {
+// entries(캐시된 files.jsonl)를 주면 stat만으로 활성 노트를 확정한다: 캐시에는
+// 활성 노트만 기록되므로 byte_size/mtime이 그대로면 excalidraw 판정을 위해 본문을
+// 다시 읽을 필요가 없다. 캐시에 없는 파일(신규·변경·excalidraw)만 읽어 분류한다 —
+// excalidraw 노트는 캐시에 들어가지 않으니 매 diff마다 다시 읽히지만 수가 적다.
+async function activeMarkdownFileStats(vaultPath, mapping = DEFAULT_MAPPING, entries = null) {
   const excludes = asList(mapping.exclude);
   const files = await walkFiles(vaultPath, (path, relPath) =>
     extname(path).toLowerCase() === ".md" && !isExcludedPath(relPath, excludes)
   );
+  const entriesByPath = entries
+    ? new Map(entries.map((entry) => [toPosix(entry.path).normalize("NFC"), entry]))
+    : null;
   const rows = [];
   for (const path of files.sort()) {
     const relPath = toPosix(relative(vaultPath, path));
     if (isExcalidrawMarkdownPath(relPath)) continue;
-    try {
-      const raw = await readFile(path, "utf8");
-      if (isExcalidrawMarkdownFile(relPath, raw)) continue;
-    } catch {
-      // Cache diff can rely on stat metadata for unchanged unreadable files.
-    }
     const fileStat = await stat(path);
+    const entry = entriesByPath?.get(relPath.normalize("NFC"));
+    const known = Boolean(entry &&
+      Number(entry.byte_size) === fileStat.size &&
+      sameMtime(entry.mtime_ms, fileStat.mtimeMs));
+    if (!known) {
+      try {
+        const raw = await readFile(path, "utf8");
+        if (isExcalidrawMarkdownFile(relPath, raw)) continue;
+      } catch {
+        // Cache diff can rely on stat metadata for unchanged unreadable files.
+      }
+    }
     rows.push({
       path,
       relPath,
@@ -1075,7 +1092,7 @@ async function activeMarkdownFileStats(vaultPath, mapping = DEFAULT_MAPPING) {
   return rows;
 }
 
-async function activeMarkdownFiles(vaultPath, mapping = DEFAULT_MAPPING) {
+async function activeMarkdownFiles(vaultPath, mapping = DEFAULT_MAPPING, options = {}) {
   const excludes = asList(mapping.exclude);
   const files = await walkFiles(vaultPath, (path, relPath) =>
     extname(path).toLowerCase() === ".md" && !isExcludedPath(relPath, excludes)
@@ -1085,29 +1102,15 @@ async function activeMarkdownFiles(vaultPath, mapping = DEFAULT_MAPPING) {
     const relPath = toPosix(relative(vaultPath, path));
     const raw = await readFile(path, "utf8");
     if (isExcalidrawMarkdownFile(relPath, raw)) continue;
-    rows.push({
-      path,
-      relPath,
-      raw
-    });
+    const row = { path, relPath, raw };
+    if (options.stats) {
+      const fileStat = await stat(path);
+      row.byteSize = fileStat.size;
+      row.mtimeMs = fileStat.mtimeMs;
+    }
+    rows.push(row);
   }
   return rows;
-}
-
-async function excludedMarkdownFiles(vaultPath, mapping = DEFAULT_MAPPING) {
-  const excludes = asList(mapping.exclude);
-  const files = await walkFiles(vaultPath, (path, relPath) =>
-    extname(path).toLowerCase() === ".md" && isExcludedPath(relPath, excludes)
-  );
-  const maybeActive = await walkFiles(vaultPath, (path, relPath) =>
-    extname(path).toLowerCase() === ".md" && !isExcludedPath(relPath, excludes)
-  );
-  for (const path of maybeActive.sort()) {
-    const relPath = toPosix(relative(vaultPath, path));
-    const raw = await readFile(path, "utf8");
-    if (isExcalidrawMarkdownFile(relPath, raw)) files.push(path);
-  }
-  return files.sort();
 }
 
 function cacheFileEntry(note, fileStat = null) {
@@ -1185,7 +1188,7 @@ async function readCacheFileEntries(vaultPath) {
 async function cacheFileDiff(vaultPath, mapping = DEFAULT_MAPPING, entries = null) {
   const cachedEntries = entries ?? await readCacheFileEntries(vaultPath);
   if (!cachedEntries) return null;
-  const currentFiles = await activeMarkdownFileStats(vaultPath, mapping);
+  const currentFiles = await activeMarkdownFileStats(vaultPath, mapping, cachedEntries);
   const entriesByPath = new Map(cachedEntries.map((entry) => [toPosix(entry.path).normalize("NFC"), entry]));
   const currentByPath = new Map(currentFiles.map((file) => [file.relPath.normalize("NFC"), file]));
   const added = [];
@@ -1223,36 +1226,52 @@ function cacheChangeSummary(diff) {
   };
 }
 
+// 캐시가 살아 있으면 요약을, 파일만 달라졌으면 증분 재빌드 결과를 그대로 돌려준다.
+// fingerprint 계산과 볼트 스캔은 각각 한 번만 — 재빌드 후 캐시를 디스크에서
+// 다시 읽지 않는다. 쓸 수 없는 캐시는 null이고, 호출자가 loadNotes로 폴백한다.
 async function loadCachedNoteSummaries(vaultPath, mapping = DEFAULT_MAPPING) {
+  const currentPluginFingerprint = await pluginFingerprint(vaultPath);
+  const currentMappingFingerprint = mappingFingerprint(mapping);
   const manifest = await readCacheManifest(vaultPath);
   if (manifest?.cache_schema !== CACHE_SCHEMA) return null;
-  if (manifest?.mapping_fingerprint !== mappingFingerprint(mapping)) return null;
-  if (manifest?.plugin_fingerprint !== await pluginFingerprint(vaultPath)) return null;
+  if (manifest?.mapping_fingerprint !== currentMappingFingerprint) return null;
+  if (manifest?.plugin_fingerprint !== currentPluginFingerprint) return null;
   const entries = await readCacheFileEntries(vaultPath);
   if (!entries) return null;
   const diff = await cacheFileDiff(vaultPath, mapping, entries);
-  if (!diff || hasCacheFileChanges(diff)) return null;
-  return entries.map((entry) => noteSummaryFromCacheEntry(vaultPath, entry));
+  if (!diff) return null;
+  if (!hasCacheFileChanges(diff)) return entries.map((entry) => noteSummaryFromCacheEntry(vaultPath, entry));
+  const cacheDir = join(vaultPath, ".ipa", "cache");
+  const result = await rebuildCacheIncremental(
+    vaultPath, mapping, cacheDir, diff, currentPluginFingerprint, currentMappingFingerprint
+  );
+  return result.files.map((entry) => noteSummaryFromCacheEntry(vaultPath, entry));
 }
 
 export async function loadNotesForView(vaultPath, mapping = DEFAULT_MAPPING) {
   return await loadCachedNoteSummaries(vaultPath, mapping) ??
-    await refreshCachedNoteSummaries(vaultPath, mapping) ??
     await loadNotes(vaultPath, mapping);
 }
 
-async function refreshCachedNoteSummaries(vaultPath, mapping = DEFAULT_MAPPING) {
-  const result = await rebuildCache(vaultPath, { allowFull: false });
-  if (!result) return null;
-  return await loadCachedNoteSummaries(vaultPath, mapping);
+// Exclude patterns are re-normalized for every scanned file; the raw pattern
+// list is tiny and stable, so keep the normalized form (and the compiled glob
+// below) around instead of redoing NFC/RegExp work per file.
+const excludePatternCache = new Map();
+const globRegexCache = new Map();
+
+function normalizeExcludePattern(pattern) {
+  const raw = String(pattern ?? "");
+  let cached = excludePatternCache.get(raw);
+  if (cached === undefined) {
+    cached = toPosix(raw.trim()).replace(/^\/+/, "").normalize("NFC");
+    excludePatternCache.set(raw, cached);
+  }
+  return cached;
 }
 
 function isExcludedPath(relPath, patterns) {
   const rel = toPosix(relPath).normalize("NFC");
-  return patterns.some((pattern) => {
-    const raw = toPosix(String(pattern ?? "").trim()).replace(/^\/+/, "").normalize("NFC");
-    return matchesPathPattern(rel, raw);
-  });
+  return patterns.some((pattern) => matchesPathPattern(rel, normalizeExcludePattern(pattern)));
 }
 
 function matchesPathPattern(rel, pattern) {
@@ -1267,6 +1286,8 @@ function matchesPathPattern(rel, pattern) {
 }
 
 function globToRegExp(pattern) {
+  const cached = globRegexCache.get(pattern);
+  if (cached !== undefined) return cached;
   let source = "";
   for (let i = 0; i < pattern.length; i += 1) {
     const ch = pattern[i];
@@ -1286,7 +1307,9 @@ function globToRegExp(pattern) {
       source += ch.replace(/[|\\{}()[\]^$+?.]/g, "\\$&");
     }
   }
-  return new RegExp(`^${source}$`);
+  const re = new RegExp(`^${source}$`);
+  globRegexCache.set(pattern, re);
+  return re;
 }
 
 export function indexNotes(notes) {
@@ -1296,10 +1319,13 @@ export function indexNotes(notes) {
 export function buildGraph(notes) {
   const edges = {};
   const backlinks = {};
+  // Same resolution order as findNote, but memoized: dangling links repeat
+  // across notes and each miss would otherwise pay a full fuzzy scan.
+  const lookup = makeNoteLookup(notes);
   for (const note of notes) {
     const targets = [...new Set(
       [...note.refs, ...note.links]
-        .map((target) => findNote(notes, target)?.id)
+        .map((target) => lookup(target)?.id)
         .filter(Boolean)
     )];
     edges[note.id] = targets;
@@ -1318,8 +1344,12 @@ function tokenize(text) {
 }
 
 function subsequenceScore(needle, haystack) {
-  const q = needle.toLowerCase();
-  const h = haystack.toLowerCase();
+  return subsequenceScoreLower(needle.toLowerCase(), haystack.toLowerCase());
+}
+
+// 양쪽이 이미 소문자인 호출자용(prepared 검색 경로). toLowerCase는 멱등이라
+// subsequenceScore와 결과가 같다.
+function subsequenceScoreLower(q, h) {
   if (!q) return 0;
   if (h.includes(q)) return q.length / Math.max(h.length, q.length);
   let j = 0;
@@ -1343,13 +1373,27 @@ function fuzzyNameScore(queryLower, name, precomputedQueryTrigrams = null, preco
   if (!queryLower) return 0;
   const rawName = String(name ?? "");
   const lower = rawName.toLowerCase();
-  if (lower === queryLower) return 1;
-  if (lower.includes(queryLower)) return 1;
-  const noSpace = queryLower.replace(/\s+/g, "");
-  if (noSpace && lower.replace(/\s+/g, "").includes(noSpace)) return 1;
-  const queryTrigrams = precomputedQueryTrigrams ?? new Set(jamoTrigrams(queryLower));
+  return fuzzyNameScorePrepared(
+    queryLower,
+    queryLower.replace(/\s+/g, ""),
+    rawName,
+    lower,
+    lower.replace(/\s+/g, ""),
+    precomputedQueryTrigrams,
+    precomputedNameTrigrams
+  );
+}
+
+// 노트/쿼리 한쪽에만 의존하는 소문자·공백제거 형태를 호출자가 미리 만들어 넘기는
+// 경로. 순수 함수라 같은 입력에 대해 fuzzyNameScore와 결과가 같다.
+function fuzzyNameScorePrepared(queryLower, queryNoSpace, name, nameLower, nameNoSpace, queryTrigramSet, nameTrigramSet) {
+  if (!queryLower) return 0;
+  if (nameLower === queryLower) return 1;
+  if (nameLower.includes(queryLower)) return 1;
+  if (queryNoSpace && nameNoSpace.includes(queryNoSpace)) return 1;
+  const queryTrigrams = queryTrigramSet ?? new Set(jamoTrigrams(queryLower));
   if (queryTrigrams.size) {
-    const nameTrigrams = precomputedNameTrigrams ?? new Set(jamoTrigrams(name));
+    const nameTrigrams = nameTrigramSet ?? new Set(jamoTrigrams(name));
     if (nameTrigrams.size) {
       let overlap = 0;
       for (const item of queryTrigrams) {
@@ -1359,7 +1403,7 @@ function fuzzyNameScore(queryLower, name, precomputedQueryTrigrams = null, preco
       if (score >= 0.4) return score;
     }
   }
-  return subsequenceScore(queryLower, name);
+  return subsequenceScoreLower(queryLower, nameLower);
 }
 
 // BM25 over jamo trigrams as an inverted index (term -> postings of
@@ -1490,12 +1534,11 @@ function rebuildBm25Incremental(cached, notes, statsByPath) {
 function bm25QueryScores(index, queryTokens) {
   const scores = new Float64Array(index.nDocs);
   const avgdl = Math.max(index.avgdl, 1);
-  const seen = new Set();
-  for (const token of queryTokens) {
-    if (seen.has(token)) continue;
-    seen.add(token);
-    let repeats = 0;
-    for (const item of queryTokens) if (item === token) repeats += 1;
+  // One pass to count duplicate query tokens instead of re-scanning the token
+  // list per distinct token (was O(tokens^2) on long queries).
+  const repeats = new Map();
+  for (const token of queryTokens) repeats.set(token, (repeats.get(token) ?? 0) + 1);
+  for (const [token, repeat] of repeats) {
     const termIndex = index.termToIndex.get(token);
     if (termIndex === undefined) continue;
     const idf = index.idf[termIndex];
@@ -1503,7 +1546,7 @@ function bm25QueryScores(index, queryTokens) {
       const docIndex = index.postings[p * 2];
       const frequency = index.postings[p * 2 + 1];
       const denom = frequency + index.k1 * (1 - index.b + index.b * index.docLen[docIndex] / avgdl);
-      scores[docIndex] += repeats * idf * frequency * (index.k1 + 1) / Math.max(denom, 1e-9);
+      scores[docIndex] += repeat * idf * frequency * (index.k1 + 1) / Math.max(denom, 1e-9);
     }
   }
   return scores;
@@ -1732,22 +1775,28 @@ function prepareSearchNotes(notes, mapping = DEFAULT_MAPPING, options = {}) {
   const noteById = new Map(notes.map((note) => [note.id, note]));
   const lookup = makeNoteLookup(notes);
   const inProjectDir = (folder) => folder === projectDir || folder.startsWith(`${projectDir}/`);
+  const isIndexLike = (note) => note.type === "index" || note.type === "root" || note.id.startsWith("🔖");
   const prepared = notes.map((note) => {
     const names = [note.id, ...note.aliases];
     const searchNames = names.map(searchableTitle).filter(Boolean);
+    const searchNameLowers = searchNames.map((name) => name.toLowerCase());
     const bodySearch = searchableTitle(note.body);
+    const isProject = inProjectDir(note.folder);
     return {
       note,
       names,
+      nameKeys: names.map((name) => searchableKey(name)),
       searchNames,
-      searchNameLowers: searchNames.map((name) => name.toLowerCase()),
+      searchNameLowers,
+      searchNameNoSpaces: searchNameLowers.map((name) => name.replace(/\s+/g, "")),
       nameTrigramSets: searchNames.map((name) => new Set(jamoTrigrams(name))),
+      isIndexLike: isIndexLike(note),
       idKey: searchableKey(note.id),
       bodyLower: bodySearch.toLowerCase(),
       bodyTokenSet: new Set(tokenize(`${searchNames.join(" ")} ${bodySearch}`)),
       keywordText: searchableTitle(`${note.refs.join(" ")} ${note.tags.join(" ")} ${note.aliases.join(" ")} ${note.body}`).toLowerCase(),
-      isProject: inProjectDir(note.folder),
-      hasProjectContext: inProjectDir(note.folder) ||
+      isProject,
+      hasProjectContext: isProject ||
         note.refs.some((ref) => {
           const target = lookup(ref);
           return target && inProjectDir(target.folder);
@@ -1757,7 +1806,6 @@ function prepareSearchNotes(notes, mapping = DEFAULT_MAPPING, options = {}) {
   });
   // Map each index/root note to its children via an inverted ref index instead
   // of filtering all prepared notes for every index note (was O(index * n)).
-  const isIndexLike = (note) => note.type === "index" || note.type === "root" || note.id.startsWith("🔖");
   const childrenByRefKey = new Map();
   for (const item of prepared) {
     if (isIndexLike(item.note)) continue;
@@ -1772,6 +1820,19 @@ function prepareSearchNotes(notes, mapping = DEFAULT_MAPPING, options = {}) {
     const children = childrenByRefKey.get(searchableKey(item.note.id)) ?? [];
     item.childBodyLowers = children.map((candidate) => candidate.bodyLower);
   }
+  // child_body_match의 bm25 전파(자식 점수 -> index/root 부모)에 쓰는 간선은 노트에만
+  // 의존하므로, 쿼리마다 refs를 다시 resolve하지 않도록 한 번만 만들어 둔다.
+  const indexLikeParentsByNote = new Map();
+  for (const note of notes) {
+    if (note.type === "index" || note.type === "root") continue;
+    const parents = [];
+    for (const ref of note.refs) {
+      const target = lookup(ref);
+      if (target && isIndexLike(target)) parents.push(target.id);
+    }
+    if (parents.length) indexLikeParentsByNote.set(note.id, parents);
+  }
+  prepared.indexLikeParentsByNote = indexLikeParentsByNote;
   prepared.notes = notes;
   prepared.noteById = noteById;
   prepared.lookup = lookup;
@@ -1794,7 +1855,7 @@ function prepareSearchQuery(query, preparedNotes) {
     let maxRaw = 0;
     for (const score of rawScores) if (score > maxRaw) maxRaw = score;
     if (maxRaw > 0) {
-      const lookup = preparedNotes.lookup ?? ((name) => findNote(preparedNotes.notes ?? [], name));
+      const parentsByNote = preparedNotes.indexLikeParentsByNote;
       for (let docIndex = 0; docIndex < rawScores.length; docIndex += 1) {
         const score = rawScores[docIndex];
         if (score <= 0) continue;
@@ -1802,10 +1863,8 @@ function prepareSearchQuery(query, preparedNotes) {
         if (!child) continue;
         bm25Scores.set(child.id, score / maxRaw);
         if (child.type === "index" || child.type === "root") continue;
-        for (const ref of child.refs) {
-          const target = lookup(ref);
-          if (!target || (target.type !== "index" && target.type !== "root" && !target.id.startsWith("🔖"))) continue;
-          childBm25Scores.set(target.id, Math.max(childBm25Scores.get(target.id) ?? 0, score / maxRaw));
+        for (const parentId of parentsByNote?.get(child.id) ?? []) {
+          childBm25Scores.set(parentId, Math.max(childBm25Scores.get(parentId) ?? 0, score / maxRaw));
         }
       }
     }
@@ -1813,11 +1872,28 @@ function prepareSearchQuery(query, preparedNotes) {
   return {
     raw,
     lower,
+    noSpace: lower.replace(/\s+/g, ""),
     tokens: tokenize(raw),
     trigramSet: new Set(trigrams),
     bm25Scores,
     childBm25Scores
   };
+}
+
+// 하위 노트 본문이 많은 index에서 배열 전개(Math.max(0, ...))가 인자 한도에 걸리지
+// 않도록 루프로 최대값을 구한다.
+function maxChildBodyCoverage(tokens, bodies) {
+  if (!tokens.length) return 0;
+  let best = 0;
+  for (const body of bodies) {
+    let hits = 0;
+    for (const token of tokens) {
+      if (body.includes(token)) hits += 1;
+    }
+    const coverage = hits / tokens.length;
+    if (coverage > best) best = coverage;
+  }
+  return best;
 }
 
 function scorePreparedChannels(prepared, query) {
@@ -1831,11 +1907,16 @@ function scorePreparedChannels(prepared, query) {
     return 0;
   })) : 0;
   channelScores.filename = bestName;
-  if (bestName) reasons.filename = { matched: prepared.names.find((name) => searchableKey(name).includes(query.lower)) ?? note.id };
+  if (bestName) {
+    const matchedIndex = prepared.nameKeys.findIndex((key) => key.includes(query.lower));
+    reasons.filename = { matched: matchedIndex >= 0 ? prepared.names[matchedIndex] : note.id };
+  }
 
   const fuzzy = query.lower
     ? Math.max(0, ...prepared.searchNames.map((name, index) =>
-        fuzzyNameScore(query.lower, name, query.trigramSet, prepared.nameTrigramSets?.[index])))
+        fuzzyNameScorePrepared(query.lower, query.noSpace, name,
+          prepared.searchNameLowers[index], prepared.searchNameNoSpaces[index],
+          query.trigramSet, prepared.nameTrigramSets?.[index])))
     : 0;
   channelScores.fuzzy = fuzzy;
   if (fuzzy) reasons.fuzzy = { score: fuzzy };
@@ -1866,12 +1947,8 @@ function scorePreparedChannels(prepared, query) {
   channelScores.body_match = query.bm25Scores.get(note.id) ?? Math.max(body, coverage);
   if (channelScores.body_match) reasons.body_match = { coverage: channelScores.body_match };
 
-  const childBody = note.type === "index" || note.type === "root" || note.id.startsWith("🔖")
-    ? (query.childBm25Scores.get(note.id) ?? Math.max(0, ...prepared.childBodyLowers.map((candidateBody) =>
-        query.tokens.length
-          ? query.tokens.filter((token) => candidateBody.includes(token)).length / query.tokens.length
-          : 0
-      )))
+  const childBody = prepared.isIndexLike
+    ? (query.childBm25Scores.get(note.id) ?? maxChildBodyCoverage(query.tokens, prepared.childBodyLowers))
     : 0;
   channelScores.child_body_match = childBody;
   if (childBody) reasons.child_body_match = { coverage: childBody };
@@ -1910,6 +1987,12 @@ const BUILTIN_SEARCH_CHANNELS = CHANNELS.map((channel) => ({
   source: "builtin",
   phase: BUILTIN_CHANNEL_PHASES[channel.name] ?? "base"
 }));
+
+// scorePreparedChannels가 채우는 키 집합과 같다 — 전부 켜져 있으면 비활성 채널
+// 제거 루프를 건너뛸 수 있다.
+const BASE_BUILTIN_CHANNEL_NAMES = BUILTIN_SEARCH_CHANNELS
+  .filter((channel) => channel.phase === "base")
+  .map((channel) => channel.name);
 
 function publicChannel(channel, enabled = true) {
   return {
@@ -1988,30 +2071,43 @@ function makeNoteLookup(notes) {
       if (!byAliasLower.has(aliasLower)) byAliasLower.set(aliasLower, note);
     }
   }
+  // Notes are fixed for a lookup instance, so both hits and misses are cached.
+  // Misses matter most: a dangling ref repeated across notes would otherwise
+  // pay the fuzzy scan every time.
+  const resolved = new Map();
   return (noteName) => {
+    if (resolved.has(noteName)) return resolved.get(noteName);
     const normalized = normalizeTitle(noteName);
     const query = normalized.toLowerCase();
     const exact = byId.get(normalized) ?? byIdLower.get(query) ?? byAliasLower.get(query);
-    if (exact) return exact;
-    const scored = notes
-      .map((note) => ({ note, score: noteNameScore(note, normalized) }))
-      .filter((item) => item.score >= 0.65)
-      .sort((a, b) => b.score - a.score || a.note.id.localeCompare(b.note.id));
-    return scored[0]?.note ?? null;
+    let match = exact ?? null;
+    if (!exact) {
+      const scored = notes
+        .map((note) => ({ note, score: noteNameScore(note, normalized) }))
+        .filter((item) => item.score >= 0.65)
+        .sort((a, b) => b.score - a.score || a.note.id.localeCompare(b.note.id));
+      match = scored[0]?.note ?? null;
+    }
+    resolved.set(noteName, match);
+    return match;
   };
 }
+
+const EMPTY_ROOT_SET = new Set();
 
 function buildRootSets(notes, lookup = null) {
   const find = lookup ?? makeNoteLookup(notes);
   const rootSets = new Map();
+  // The memoized sets are only ever read (here and by the rootSets consumers),
+  // so hand back the cached instance instead of copying it on every hit.
   const visit = (note, seen = new Set()) => {
-    if (!note || seen.has(note.id)) return new Set();
-    if (rootSets.has(note.id)) return new Set(rootSets.get(note.id));
+    if (!note || seen.has(note.id)) return EMPTY_ROOT_SET;
+    if (rootSets.has(note.id)) return rootSets.get(note.id);
     seen.add(note.id);
     if (note.type === "root") {
       const roots = new Set([note.id]);
       rootSets.set(note.id, roots);
-      return new Set(roots);
+      return roots;
     }
     const roots = new Set();
     for (const ref of note.refs) {
@@ -2019,7 +2115,7 @@ function buildRootSets(notes, lookup = null) {
       for (const root of visit(target, seen)) roots.add(root);
     }
     rootSets.set(note.id, roots);
-    return new Set(roots);
+    return roots;
   };
   for (const note of notes) visit(note);
   return rootSets;
@@ -2052,8 +2148,8 @@ function buildRelatedCandidateIndex(notes) {
   }
 
   const orderById = new Map(notes.map((note, index) => [note.id, index]));
-  const bySeed = new Map();
-  for (const seed of notes) {
+  const seedById = new Map(notes.map((note) => [note.id, note]));
+  const candidatesFor = (seed) => {
     const scores = new Map();
     const bump = (id, delta) => {
       if (id === seed.id) return;
@@ -2082,9 +2178,22 @@ function buildRelatedCandidateIndex(notes) {
       if (score > 0) related.push({ note: id, score });
     }
     related.sort((a, b) => (orderById.get(a.note) ?? 0) - (orderById.get(b.note) ?? 0));
-    bySeed.set(seed.id, related);
-  }
-  return bySeed;
+    return related;
+  };
+
+  // 쿼리 하나가 읽는 seed는 최대 3개인데 모든 노트를 seed로 미리 펼치면 후보 쌍이
+  // 수십만 개까지 늘어난다. 역인덱스만 미리 만들고 seed별 목록은 첫 요청 때
+  // 계산해 캐시한다(get 결과는 eager 버전과 동일).
+  const bySeed = new Map();
+  return {
+    get(seedId) {
+      if (bySeed.has(seedId)) return bySeed.get(seedId);
+      const seed = seedById.get(seedId);
+      const related = seed ? candidatesFor(seed) : undefined;
+      bySeed.set(seedId, related);
+      return related;
+    }
+  };
 }
 
 async function activeSearchParams(vaultPath, providedConfig = null) {
@@ -2149,12 +2258,16 @@ export async function searchVault(vaultPath, query, options = {}) {
 // indexes are prepared once, then each query pays only its own scoring pass.
 export async function searchVaultMany(vaultPath, queries, options = {}) {
   const context = await prepareSearchContext(vaultPath, options.notes ?? null);
+  // The prompt context and the log file are the same for every query here, so
+  // read it once and write the whole batch at the end.
+  const recorded = { promptContext: await currentPromptContext(vaultPath, options), lines: [] };
   const results = [];
   for (const query of queries) {
     const result = await searchWithContext(context, query, options);
-    await maybeRecordSearchEvent(vaultPath, result, options);
+    await maybeRecordSearchEvent(vaultPath, result, options, recorded);
     results.push(result);
   }
+  await appendSearchEventLines(vaultPath, recorded.lines);
   return { status: "ok", count: results.length, queries: results };
 }
 
@@ -2252,10 +2365,18 @@ async function currentPromptContext(vaultPath, options = {}) {
   return {};
 }
 
-async function maybeRecordSearchEvent(vaultPath, result, options = {}) {
-  const promptContext = await currentPromptContext(vaultPath, options);
-  if (!shouldRecordSearchEvent(options, promptContext)) return;
+async function appendSearchEventLines(vaultPath, lines) {
+  if (!lines.length) return;
   const path = tuneSearchLogPath(vaultPath);
+  await mkdir(dirname(path), { recursive: true });
+  await appendFile(path, lines.join(""), "utf8");
+}
+
+// `recorded` lets a multi-query caller share one prompt-context read and
+// collect the event lines for a single append (see searchVaultMany).
+async function maybeRecordSearchEvent(vaultPath, result, options = {}, recorded = {}) {
+  const promptContext = recorded.promptContext ?? await currentPromptContext(vaultPath, options);
+  if (!shouldRecordSearchEvent(options, promptContext)) return;
   const cwd = firstNonEmpty([options.logCwd, options.cwd, promptContext.cwd]);
   const agent = firstNonEmpty([
     options.agent,
@@ -2314,8 +2435,9 @@ async function maybeRecordSearchEvent(vaultPath, result, options = {}) {
       path: hit.path
     }))
   };
-  await mkdir(dirname(path), { recursive: true });
-  await appendFile(path, JSON.stringify(event) + "\n", "utf8");
+  const line = JSON.stringify(event) + "\n";
+  if (recorded.lines) recorded.lines.push(line);
+  else await appendSearchEventLines(vaultPath, [line]);
 }
 
 export async function prepareSearchContext(vaultPath, notes = null) {
@@ -2376,17 +2498,22 @@ export async function searchWithContext(context, query, options = {}) {
   }
   const notesById = context.preparedNotes?.noteById ?? new Map((context.notes ?? []).map((note) => [note.id, note]));
   const updatedKey = context.mapping?.updated_at ?? DEFAULT_MAPPING.updated_at;
-  let hits = [...rowsByNote.values()]
-    .map((row) => ({
+  // 임계값을 통과한 행에 대해서만 hit 객체를 만든다 — reasons 병합 비용을 전체
+  // 노트가 아니라 살아남은 행에만 낸다.
+  let hits = [];
+  for (const row of rowsByNote.values()) {
+    const score = Number((weightedScore(row.channelScores, weights, channels) + row.pluginScore).toFixed(6));
+    if (!(options.showAll || score >= threshold)) continue;
+    hits.push({
       note: row.note,
       path: row.path,
       type: row.type,
       refs: row.refs,
-      score: Number((weightedScore(row.channelScores, weights, channels) + row.pluginScore).toFixed(6)),
+      score,
       reasons: { ...row.reasons, ...row.pluginReasons }
-    }))
-    .filter((hit) => options.showAll || hit.score >= threshold)
-    .sort((a, b) => b.score - a.score || a.note.localeCompare(b.note));
+    });
+  }
+  hits.sort((a, b) => b.score - a.score || a.note.localeCompare(b.note));
   // Post-rank hook: plugins exporting postRank(hits, ctx) may re-order, drop,
   // or annotate the weighted hits before the cap is applied. The returned
   // array order is trusted as-is.
@@ -2425,21 +2552,38 @@ export async function searchWithContext(context, query, options = {}) {
   return { query, threshold, max_results: cap, count: hits.length, results: hits, ref_distribution };
 }
 
+// Each entry holds a row per note, so a long-lived context (Obsidian) must not
+// keep every query it has ever seen.
+const QUERY_SCORE_CACHE_MAX = 64;
+
 async function baseSearchRows(context, query) {
-  if (context.queryScoreCache?.has(query)) return context.queryScoreCache.get(query);
+  if (context.queryScoreCache?.has(query)) {
+    const cached = context.queryScoreCache.get(query);
+    context.queryScoreCache.delete(query);
+    context.queryScoreCache.set(query, cached);
+    return cached;
+  }
   const { vaultPath, mapping, notes, plugins, preparedNotes, channels = BUILTIN_SEARCH_CHANNELS } = context;
   const searchQuery = prepareSearchQuery(query, preparedNotes);
-  const enabledBaseBuiltins = new Set(channels
-    .filter((channel) => channel.source === "builtin" && channel.phase === "base")
-    .map((channel) => channel.name));
+  // 채널 구성은 context 수명 동안 고정이므로 쿼리마다 다시 만들지 않는다.
+  let baseBuiltins = context.baseBuiltinChannels;
+  if (!baseBuiltins) {
+    const enabled = new Set(channels
+      .filter((channel) => channel.source === "builtin" && channel.phase === "base")
+      .map((channel) => channel.name));
+    baseBuiltins = { enabled, allEnabled: BASE_BUILTIN_CHANNEL_NAMES.every((name) => enabled.has(name)) };
+    context.baseBuiltinChannels = baseBuiltins;
+  }
   const rowsByNote = new Map();
   for (const prepared of preparedNotes) {
     const { note } = prepared;
     const scored = scorePreparedChannels(prepared, searchQuery);
-    for (const key of Object.keys(scored.channelScores)) {
-      if (!enabledBaseBuiltins.has(key)) {
-        delete scored.channelScores[key];
-        delete scored.reasons[key];
+    if (!baseBuiltins.allEnabled) {
+      for (const key of Object.keys(scored.channelScores)) {
+        if (!baseBuiltins.enabled.has(key)) {
+          delete scored.channelScores[key];
+          delete scored.reasons[key];
+        }
       }
     }
     rowsByNote.set(note.id, {
@@ -2488,7 +2632,12 @@ async function baseSearchRows(context, query) {
     rowsByNote.set(note.id, current);
   }
   const rows = [...rowsByNote.values()];
-  context.queryScoreCache?.set(query, rows);
+  if (context.queryScoreCache) {
+    context.queryScoreCache.set(query, rows);
+    while (context.queryScoreCache.size > QUERY_SCORE_CACHE_MAX) {
+      context.queryScoreCache.delete(context.queryScoreCache.keys().next().value);
+    }
+  }
   return rows;
 }
 
@@ -2501,13 +2650,19 @@ function applyRelatedScores(rowsByNote, relatedCandidatesBySeed = new Map(), wei
   const preRelatedChannels = ["filename", "fuzzy", "sequence_match", "filename_partial", "keyword"];
   const preSignal = (row) =>
     preRelatedChannels.some((channel) => (row.channelScores[channel] ?? 0) > 0);
+  // channelWeight scans the channel list, and the seed score used to be
+  // recomputed inside the sort comparator: resolve the weights once and score
+  // each row once instead.
+  const seedWeights = preRelatedChannels.map((channel) => channelWeight(channel, weights, channels));
   const seedScore = (row) =>
-    preRelatedChannels.reduce((sum, channel) =>
-      sum + (row.channelScores[channel] ?? 0) * channelWeight(channel, weights, channels), 0);
+    preRelatedChannels.reduce((sum, channel, index) =>
+      sum + (row.channelScores[channel] ?? 0) * seedWeights[index], 0);
   const seeds = [...rowsByNote.values()]
     .filter(preSignal)
-    .sort((a, b) => seedScore(b) - seedScore(a) || a.note.localeCompare(b.note))
-    .slice(0, 3);
+    .map((row) => ({ row, score: seedScore(row) }))
+    .sort((a, b) => b.score - a.score || a.row.note.localeCompare(b.row.note))
+    .slice(0, 3)
+    .map((item) => item.row);
   const related = [];
   for (const seed of seeds) {
     for (const candidate of relatedCandidatesBySeed.get(seed.note) ?? []) {
@@ -2516,7 +2671,10 @@ function applyRelatedScores(rowsByNote, relatedCandidatesBySeed = new Map(), wei
       if (candidate.score > 0) related.push({ row, score: candidate.score, seed: seed.note });
     }
   }
-  const maxScore = Math.max(0, ...related.map((item) => item.score));
+  let maxScore = 0;
+  for (const item of related) {
+    if (item.score > maxScore) maxScore = item.score;
+  }
   if (!maxScore) return;
   for (const item of related) {
     const normalized = item.score / maxScore;
@@ -2846,14 +3004,70 @@ function renderActionFooter(note, notes, isOverview = false) {
   return lines;
 }
 
+// sameNoteName의 동치류 키. 보통은 searchableKey지만 이모지만 있는 제목은 키가 빈
+// 문자열이 되고, 그때 sameNoteName은 제목(대소문자 무시) 일치만 인정하므로 키를
+// 분리한다 — searchableKey는 trim되므로 공백으로 시작하는 키와 겹치지 않는다.
+// 빈 제목은 sameNoteName이 항상 false이므로 키가 없다(null).
+function graphKey(value) {
+  const key = searchableKey(value);
+  if (key) return key;
+  const title = normalizeTitle(value);
+  return title ? ` ${title.toLowerCase()}` : null;
+}
+
+function distinctGraphKeys(values) {
+  const keys = new Set();
+  for (const value of values) {
+    const key = graphKey(value);
+    if (key) keys.add(key);
+  }
+  return keys;
+}
+
+// 노트 배열 하나당 한 번만 만드는 그래프 인덱스: refs/links를 동치류 키로 미리 묶어
+// 두므로 children/backlinks/siblings/traversal이 노트 수만큼 sameNoteName을 다시
+// 돌리지 않는다. view·context 경로는 같은 배열 인스턴스를 계속 넘기므로 WeakMap
+// 캐시로 재사용되고, 배열이 버려지면 인덱스도 같이 회수된다.
+const noteGraphIndexCache = new WeakMap();
+
+function noteGraphIndex(notes) {
+  const cached = noteGraphIndexCache.get(notes);
+  if (cached) return cached;
+  const childrenByKey = new Map();
+  const inboundByKey = new Map();
+  const order = new Map();
+  const push = (map, key, note) => {
+    const list = map.get(key);
+    if (list) list.push(note);
+    else map.set(key, [note]);
+  };
+  notes.forEach((note, position) => {
+    order.set(note, position);
+    for (const key of distinctGraphKeys(note.refs)) push(childrenByKey, key, note);
+    for (const key of distinctGraphKeys([...note.refs, ...note.links])) push(inboundByKey, key, note);
+  });
+  const index = { lookup: makeNoteLookup(notes), childrenByKey, inboundByKey, order };
+  noteGraphIndexCache.set(notes, index);
+  return index;
+}
+
+// 두 목록 모두 notes 순서를 유지한다(예전 notes.filter와 같은 순서).
+function childrenOf(note, notes) {
+  const key = graphKey(note.id);
+  return key ? noteGraphIndex(notes).childrenByKey.get(key) ?? [] : [];
+}
+
+function inboundOf(note, notes) {
+  const key = graphKey(note.id);
+  return key ? noteGraphIndex(notes).inboundByKey.get(key) ?? [] : [];
+}
+
 function countBacklinks(note, notes) {
-  return notes.filter((candidate) =>
-    candidate.id !== note.id && hasNoteName([...candidate.refs, ...candidate.links], note.id)
-  ).length;
+  return inboundOf(note, notes).filter((candidate) => candidate.id !== note.id).length;
 }
 
 function countChildren(note, notes) {
-  return notes.filter((candidate) => hasNoteName(candidate.refs, note.id)).length;
+  return childrenOf(note, notes).length;
 }
 
 // Graph helpers surfaced on every rule context (validate / dry-run / formatter
@@ -2870,11 +3084,19 @@ function ruleGraphContext(notes) {
 
 function formatTagDistribution(note, notes) {
   if (!note.tags.length) return [];
+  // 태그마다 notes를 훑는 대신 한 번만 훑어 태그별 노트 목록을 만든다. 같은 노트가
+  // 같은 태그를 중복으로 달아도 목록에는 한 번만 들어간다(예전 includes 판정과 동일).
+  const peersByTag = new Map();
+  for (const candidate of notes) {
+    if (candidate.id === note.id) continue;
+    for (const tag of candidate.tags) {
+      const peers = peersByTag.get(tag);
+      if (!peers) peersByTag.set(tag, [candidate]);
+      else if (peers[peers.length - 1] !== candidate) peers.push(candidate);
+    }
+  }
   const sorted = note.tags
-    .map((tag) => ({
-      tag,
-      peers: notes.filter((candidate) => candidate.id !== note.id && candidate.tags.includes(tag))
-    }))
+    .map((tag) => ({ tag, peers: peersByTag.get(tag) ?? [] }))
     .sort((a, b) => b.peers.length - a.peers.length)
     .slice(0, 3);
   const width = Math.max(...sorted.map((item) => item.tag.length));
@@ -2969,9 +3191,11 @@ export function findNote(notes, noteName) {
   return scored[0]?.note ?? null;
 }
 
-export async function resolveNote(vaultPath, noteName) {
+// options.notes: 이미 파싱해 둔 노트 스냅샷(같은 호출 안에서 여러 노트를 다루는
+// 경로가 볼트를 매번 다시 읽지 않도록). 노트 해석에만 쓴다.
+export async function resolveNote(vaultPath, noteName, options = {}) {
   const { mapping } = await readVaultConfig(vaultPath);
-  const notes = await loadNotes(vaultPath, mapping);
+  const notes = options.notes ?? await loadNotes(vaultPath, mapping);
   const note = findNote(notes, noteName);
   if (!note) throw new Error(`note not found: ${noteName}`);
   return { note, mapping, notes };
@@ -2979,7 +3203,13 @@ export async function resolveNote(vaultPath, noteName) {
 
 export async function rewriteNote(vaultPath, noteName, rewrite, options = {}) {
   if (typeof rewrite !== "function") throw new Error("rewriteNote requires a rewrite function");
-  const { note, mapping, notes } = await resolveNote(vaultPath, noteName);
+  const resolved = await resolveNote(vaultPath, noteName, { notes: options.notes });
+  const { mapping, notes } = resolved;
+  // 스냅샷은 노트 해석 용도이므로 본문은 대상 파일만 다시 읽는다 — 같은 스냅샷으로
+  // 같은 노트를 두 번 쓰더라도 앞선 쓰기가 유실되지 않는다.
+  const note = options.notes
+    ? noteFromRaw(resolved.note, await readFile(resolved.note.path, "utf8"), mapping)
+    : resolved.note;
   const document = IpaNoteDocument.fromNote(note, mapping);
   const rewritten = await rewrite(document, { vaultPath, note, mapping, notes });
   const nextText = typeof rewritten === "string"
@@ -3108,7 +3338,8 @@ export async function setNoteField(vaultPath, noteName, field, options = {}) {
     }, null);
   }, {
     apply: options.apply,
-    syncUpdatedAt: key === mapping.updated_at ? false : options.syncUpdatedAt
+    syncUpdatedAt: key === mapping.updated_at ? false : options.syncUpdatedAt,
+    notes: options.notes
   });
   return { ...result, operation: "set-note-field", field: key };
 }
@@ -3117,7 +3348,7 @@ export async function setNoteField(vaultPath, noteName, field, options = {}) {
 // children of an index with modified date, section titles, and a short snippet.
 export async function digestNote(vaultPath, noteName, options = {}) {
   const { mapping } = await readVaultConfig(vaultPath);
-  const notes = await loadNotes(vaultPath, mapping);
+  const notes = options.notes ?? await loadNotes(vaultPath, mapping);
   const note = findNote(notes, noteName);
   if (!note) throw new Error(`note not found: ${noteName}`);
   const max = Number.isFinite(options.max) && options.max > 0 ? Math.floor(options.max) : 30;
@@ -3159,7 +3390,8 @@ export async function replaceInNote(vaultPath, noteName, oldText, newText, optio
 }
 
 export async function traversal(vaultPath, mode, noteName, options = {}) {
-  const notes = options.notes ?? await loadNotes(vaultPath, (await readVaultConfig(vaultPath)).mapping);
+  // 순회는 id/type/ref/alias만 읽으므로 traversalAll과 같이 캐시 요약본으로 충분하다.
+  const notes = options.notes ?? await loadNotesForView(vaultPath, (await readVaultConfig(vaultPath)).mapping);
   const note = findNote(notes, noteName);
   if (!note) throw new Error(`note not found: ${noteName}`);
   if (mode === "up") return { mode, note: note.id, paths: upwardPaths(note, notes) };
@@ -3189,35 +3421,49 @@ export async function traversalAll(vaultPath, noteName, notes = null) {
   };
 }
 
+// seen은 분기마다 복사하는 대신 하나를 공유하고 재귀에서 돌아올 때 되돌린다 —
+// 어느 시점에도 현재 스택 경로의 id만 담기므로 예전 new Set(seen) 복사와 결과가
+// 같다(형제 분기가 같은 노트를 각각 펼치는 동작 포함).
 function upwardPaths(note, notes, seen = new Set()) {
   if (seen.has(note.id)) return [[note.id]];
-  seen.add(note.id);
   if (!note.refs.length) return [[note.id]];
+  const lookup = noteGraphIndex(notes).lookup;
+  seen.add(note.id);
   const paths = [];
   for (const ref of note.refs) {
-    const parent = findNote(notes, ref);
+    const parent = lookup(ref);
     if (!parent) paths.push([note.id, ref]);
-    else for (const path of upwardPaths(parent, notes, new Set(seen))) paths.push([note.id, ...path]);
+    else for (const path of upwardPaths(parent, notes, seen)) paths.push([note.id, ...path]);
   }
+  seen.delete(note.id);
   return paths;
 }
 
 function downwardTree(noteId, notes, seen = new Set()) {
-  const note = findNote(notes, noteId);
+  const index = noteGraphIndex(notes);
+  const note = index.lookup(noteId);
   const id = note?.id ?? noteId;
   if (seen.has(id)) return { note: id, type: note?.type ?? "", children: [] };
   seen.add(id);
-  const children = notes
-    .filter((candidate) => hasNoteName(candidate.refs, id))
+  const key = graphKey(id);
+  const children = (key ? index.childrenByKey.get(key) ?? [] : [])
     .map((candidate) => candidate.id)
     .sort()
-    .map((child) => downwardTree(child, notes, new Set(seen)));
+    .map((child) => downwardTree(child, notes, seen));
+  seen.delete(id);
   return { note: id, type: note?.type ?? "", children };
 }
 
 function siblings(note, notes) {
   if (!note.refs.length) return [];
-  return notes.filter((candidate) => candidate.id !== note.id && shareNoteNames(candidate.refs, note.refs));
+  const index = noteGraphIndex(notes);
+  const found = new Set();
+  for (const key of distinctGraphKeys(note.refs)) {
+    for (const candidate of index.childrenByKey.get(key) ?? []) {
+      if (candidate.id !== note.id) found.add(candidate);
+    }
+  }
+  return [...found].sort((a, b) => index.order.get(a) - index.order.get(b));
 }
 
 const RULE_BY_CODE = new Map(RULES.map((rule) => [rule.code, rule]));
@@ -3412,7 +3658,7 @@ const BUILTIN_RULES = [
   // Notes then use "ipa-cli/packages/..." instead of machine-specific paths.
   builtinRule("ipa.content.absolute_path", {
     checkNote(note, ctx) {
-      const aliases = pathAliasEntries(ctx.config);
+      const aliases = ctx.pathAliases ?? pathAliasEntries(ctx.config);
       if (!aliases.length) return [];
       const issues = [];
       for (const [alias, prefix] of aliases) {
@@ -3423,7 +3669,7 @@ const BUILTIN_RULES = [
       return issues;
     },
     fixNote(note, ctx) {
-      const aliases = pathAliasEntries(ctx.config);
+      const aliases = ctx.pathAliases ?? pathAliasEntries(ctx.config);
       if (!aliases.length) return note.raw;
       let text = note.raw;
       for (const [alias, prefix] of aliases) {
@@ -3489,7 +3735,7 @@ const BUILTIN_RULES = [
   builtinRule("ipa.link.ref_target_missing", {
     checkNote(note, ctx) {
       return note.refs
-        .filter((ref) => !noteTitleExists(ctx.notes, ref) && !markdownTitleExists(ctx.excludedTitles, ref))
+        .filter((ref) => !markdownTitleExists(ctx.noteTitles, ref) && !markdownTitleExists(ctx.excludedTitles, ref))
         .map((ref) => noteIssue(this.code, note, `ref target missing: ${ref}`));
     }
   }),
@@ -3531,7 +3777,8 @@ const BUILTIN_RULES = [
   }),
   builtinRule("ipa.heading.no_h1", {
     checkNote(note) {
-      return IpaNoteDocument.fromNote(note).hasH1()
+      // 로드 시 파싱해 둔 headings로 판정한다 — 문서를 다시 파싱한 hasH1()과 같다.
+      return (note.headings ?? []).some((heading) => heading.level === 1)
         ? [noteIssue(this.code, note, "note body should not contain H1 headings")]
         : [];
     },
@@ -3550,10 +3797,6 @@ function rootNotesByProjectFolder(notes, mapping) {
     byFolder.set(note.folder, list);
   }
   return byFolder;
-}
-
-function noteTitleExists(notes, title) {
-  return notes.some((note) => sameNoteName(note.id, title) || note.aliases.some((alias) => sameNoteName(alias, title)));
 }
 
 function normalizeRulePlugin(plugin) {
@@ -3602,7 +3845,11 @@ function normalizeRuleIssues(output, rule, note = null) {
 }
 
 export async function validateVault(vaultPath, notes = null, options = {}) {
-  const { config, mapping } = await readVaultConfig(vaultPath);
+  // config/mapping/rules can be supplied by a caller that already resolved them
+  // (formatVault), so plugins are not loaded twice for one plan.
+  const { config, mapping } = options.config && options.mapping
+    ? { config: options.config, mapping: options.mapping }
+    : await readVaultConfig(vaultPath);
   if (!notes) notes = await loadNotes(vaultPath, mapping);
   const ctx = {
     config,
@@ -3610,11 +3857,12 @@ export async function validateVault(vaultPath, notes = null, options = {}) {
     notes,
     vaultPath,
     ...ruleGraphContext(notes),
-    excludedTitles: await loadExcludedMarkdownTitles(vaultPath, mapping),
-    markdownTitles: await loadActiveMarkdownTitles(vaultPath, mapping),
-    attachmentTitles: await loadAttachmentTitles(vaultPath, mapping)
+    // 노트마다 다시 만들지 않도록 규칙 컨텍스트에 한 번만 실어 보낸다.
+    pathAliases: pathAliasEntries(config),
+    noteTitles: noteTitleSet(notes),
+    ...await loadLinkTargetTitles(vaultPath, mapping, notes)
   };
-  const rules = await activeRulesForVault(vaultPath, config);
+  const rules = options.rules ?? await activeRulesForVault(vaultPath, config);
   let issues = [];
   const rawCaptureRule = rules.find((rule) => rule.code === "ipa.inbox.raw_capture");
   const noteRules = rules.filter((rule) => rule.checkNote && rule.code !== "ipa.inbox.raw_capture");
@@ -3651,20 +3899,43 @@ export async function validateVault(vaultPath, notes = null, options = {}) {
   return result;
 }
 
-async function loadActiveMarkdownTitles(vaultPath, mapping) {
-  const files = await activeMarkdownFiles(vaultPath, mapping);
-  return markdownTitleSet(files.map((file) => file.path));
-}
-
-async function loadExcludedMarkdownTitles(vaultPath, mapping) {
-  return markdownTitleSet(await excludedMarkdownFiles(vaultPath, mapping));
-}
-
-async function loadAttachmentTitles(vaultPath, mapping) {
+// Link-target titles for the validator. One tree walk partitions the vault into
+// active markdown / excluded markdown / attachments, and the active titles come
+// from the already-loaded notes — so no active file is read a second time.
+async function loadLinkTargetTitles(vaultPath, mapping, notes) {
   const excludes = asList(mapping.exclude);
-  const files = await walkFiles(vaultPath, (path, relPath) =>
-    extname(path).toLowerCase() !== ".md" && !isExcludedPath(relPath, excludes)
-  );
+  const files = await walkFiles(vaultPath, () => true);
+  const notePaths = new Set(notes.map((note) => note.relPath));
+  const activePaths = notes.map((note) => note.path);
+  const excludedMarkdown = [];
+  const attachments = [];
+  const unclassified = [];
+  for (const path of files) {
+    const relPath = toPosix(relative(vaultPath, path));
+    const excluded = isExcludedPath(relPath, excludes);
+    if (extname(path).toLowerCase() !== ".md") {
+      if (!excluded) attachments.push(path);
+    } else if (excluded) {
+      excludedMarkdown.push(path);
+    } else if (!notePaths.has(relPath)) {
+      unclassified.push({ path, relPath });
+    }
+  }
+  // loadNotes drops excalidraw markdown, but its titles still resolve links, so
+  // only the active files missing from notes are read to classify them.
+  for (const file of unclassified) {
+    const raw = await readFile(file.path, "utf8");
+    if (isExcalidrawMarkdownFile(file.relPath, raw)) excludedMarkdown.push(file.path);
+    else activePaths.push(file.path);
+  }
+  return {
+    markdownTitles: markdownTitleSet(activePaths),
+    excludedTitles: markdownTitleSet(excludedMarkdown),
+    attachmentTitles: attachmentTitleSet(attachments)
+  };
+}
+
+function attachmentTitleSet(files) {
   const titles = new Set();
   for (const path of files) {
     for (const title of [basename(path), basename(path, extname(path))]) {
@@ -3686,6 +3957,23 @@ function markdownTitleSet(files) {
     titles.add(title.toLowerCase());
     const key = searchableKey(title);
     if (key) titles.add(key);
+  }
+  return titles;
+}
+
+// Same multi-form Set as markdownTitleSet, over note ids and aliases: a hit is
+// equivalent to sameNoteName against any note title (was an O(n) scan per ref).
+function noteTitleSet(notes) {
+  const titles = new Set();
+  for (const note of notes) {
+    for (const value of [note.id, ...note.aliases]) {
+      const title = normalizeTitle(value);
+      if (!title) continue;
+      titles.add(title);
+      titles.add(title.toLowerCase());
+      const key = searchableKey(title);
+      if (key) titles.add(key);
+    }
   }
   return titles;
 }
@@ -3787,15 +4075,19 @@ function applyRuleFixOutput(text, output) {
 }
 
 async function ruleFixPatches(notes, ctx, rules) {
+  const fixRules = rules.filter((item) => item.fixNote);
   const patches = [];
   for (const note of notes) {
     let text = note.raw;
+    // 앞 규칙이 본문을 바꾸지 않았으면 같은 파싱 결과를 그대로 다음 규칙에 넘긴다.
+    let workingNote = null;
     const applied = [];
-    for (const rule of rules.filter((item) => item.fixNote)) {
-      const workingNote = noteFromRaw(note, text, ctx.mapping);
+    for (const rule of fixRules) {
+      if (!workingNote) workingNote = noteFromRaw(note, text, ctx.mapping);
       const next = applyRuleFixOutput(text, await rule.fixNote(workingNote, { ...ctx, note: workingNote }));
       if (next !== text) {
         text = next;
+        workingNote = null;
         applied.push(rule.code);
       }
     }
@@ -3825,7 +4117,7 @@ export async function formatVault(vaultPath, apply = false, options = {}) {
   }
   const targetIds = new Set(targets.map((note) => note.id));
   const notes = targets.length ? targets : allNotes;
-  const validation = options.patchesOnly ? { issues: [] } : await validateVault(vaultPath, allNotes);
+  const validation = options.patchesOnly ? { issues: [] } : await validateVault(vaultPath, allNotes, { rules, config, mapping });
   const issues = targetIds.size
     ? validation.issues.filter((item) => targetIds.has(item.note) || notes.some((note) => note.relPath === item.path))
     : validation.issues;
@@ -3836,6 +4128,7 @@ export async function formatVault(vaultPath, apply = false, options = {}) {
     mapping,
     vaultPath,
     ...ruleGraphContext(allNotes),
+    pathAliases: pathAliasEntries(config),
     // apply-gated rules (e.g. date_modified) need apply context to emit a patch.
     // ruleApply lets a host run them at plan time even when fs apply is off —
     // Obsidian writes patches via its Vault API, not core's fs writer.
@@ -3914,7 +4207,7 @@ export async function doctor(vaultPath, options = {}) {
     }
   }
   const { mapping } = await readVaultConfig(vaultPath);
-  const notes = await loadNotes(vaultPath, mapping);
+  const noteCount = (await activeMarkdownFileStats(vaultPath, mapping)).length;
   const issues = [];
   if ((!check || check === "config") && !existsSync(join(vaultPath, ".ipa", "config.yaml"))) {
     issues.push({ code: "doctor.config.missing", severity: "warn", message: ".ipa/config.yaml missing — run `ipa config init` to create it" });
@@ -3923,8 +4216,9 @@ export async function doctor(vaultPath, options = {}) {
   if ((!check || check === "cache") && existsSync(cacheRoot)) {
     const files = await walkAll(cacheRoot);
     for (const file of files) {
-      const text = await readFile(file, "utf8").catch(() => "");
-      if (text.includes(vaultPath)) {
+      // bm25.bin 같은 대용량 바이너리를 문자열로 펼치지 않도록 Buffer로 스캔한다.
+      const content = await readFile(file).catch(() => Buffer.alloc(0));
+      if (content.includes(vaultPath)) {
         issues.push({
           code: "doctor.cache.absolute_path",
           severity: "error",
@@ -3938,7 +4232,7 @@ export async function doctor(vaultPath, options = {}) {
     status: issues.some((item) => item.severity === "error") ? "error" : "ok",
     checks: {
       vault: toPosix(vaultPath),
-      notes: notes.length,
+      notes: noteCount,
       config: existsSync(join(vaultPath, ".ipa", "config.yaml")),
       cache: existsSync(cacheRoot)
     },
@@ -4023,22 +4317,22 @@ function noteRefs(items, query, limit, excerptChars, mapping = DEFAULT_MAPPING) 
 }
 
 function backlinkNotes(note, notes) {
-  return notes.filter((candidate) =>
-    candidate.id !== note.id && hasNoteName([...candidate.refs, ...candidate.links], note.id)
-  );
+  return inboundOf(note, notes).filter((candidate) => candidate.id !== note.id);
 }
 
 function outlinkNotes(note, notes) {
-  return uniqueNotes(note.links.map((link) => findNote(notes, link)).filter(Boolean));
+  const lookup = noteGraphIndex(notes).lookup;
+  return uniqueNotes(note.links.map((link) => lookup(link)).filter(Boolean));
 }
 
 function childNotes(note, notes) {
-  return notes.filter((candidate) => candidate.id !== note.id && hasNoteName(candidate.refs, note.id));
+  return childrenOf(note, notes).filter((candidate) => candidate.id !== note.id);
 }
 
 function refDetails(note, notes, mapping = DEFAULT_MAPPING) {
+  const lookup = noteGraphIndex(notes).lookup;
   return note.refs.map((ref) => {
-    const target = findNote(notes, ref);
+    const target = lookup(ref);
     return {
       id: ref,
       type: target?.type ?? "",
@@ -4059,8 +4353,9 @@ function noteOverview(note) {
 }
 
 function traversalPathDetails(paths, notes, mapping = DEFAULT_MAPPING) {
+  const lookup = noteGraphIndex(notes).lookup;
   return paths.map((path) => path.map((id) => {
-    const target = findNote(notes, id);
+    const target = lookup(id);
     return {
       id,
       type: target?.type ?? "",
@@ -4122,8 +4417,9 @@ function contextSubgraph(contextNotes, notes) {
     }
   }
   const edges = {};
+  const lookup = noteGraphIndex(notes).lookup;
   for (const note of notes.filter((candidate) => ids.has(candidate.id))) {
-    const targets = uniqueNotes([...note.refs, ...note.links].map((target) => findNote(notes, target)).filter(Boolean))
+    const targets = uniqueNotes([...note.refs, ...note.links].map((target) => lookup(target)).filter(Boolean))
       .map((target) => target.id)
       .filter((id) => ids.has(id));
     edges[note.id] = targets;
@@ -4148,8 +4444,9 @@ function contextCommands(contextNotes, query = "") {
 }
 
 function contextSearchResults(results, notes, mapping = DEFAULT_MAPPING) {
+  const lookup = noteGraphIndex(notes).lookup;
   return results.map((hit) => {
-    const note = findNote(notes, hit.note);
+    const note = lookup(hit.note);
     return {
       note: hit.note,
       path: note?.relPath ?? hit.path ?? "",
@@ -4169,10 +4466,11 @@ function contextRefDistribution(items, notes, mapping = DEFAULT_MAPPING) {
   for (const note of items) {
     for (const ref of note.refs ?? []) counts[ref] = (counts[ref] ?? 0) + 1;
   }
+  const lookup = noteGraphIndex(notes).lookup;
   return Object.entries(counts)
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
     .map(([ref, count]) => {
-      const target = findNote(notes, ref);
+      const target = lookup(ref);
       return {
         ref,
         count,
@@ -4202,8 +4500,15 @@ export async function buildContext(vaultPath, query, options = {}) {
     : await searchVault(vaultPath, query, { maxResults: options.maxResults ?? preset.maxNotes, threshold: 0, notes });
   const resultNotes = uniqueNotes(search.results.map((hit) => findNote(notes, hit.note)).filter(Boolean));
   const selected = resultNotes.slice(0, preset.maxNotes);
+  // 노트마다 결과 목록을 다시 훑지 않도록 동치류 키로 한 번만 색인한다(먼저 나온
+  // 히트가 이긴다 — 예전 find와 같은 선택).
+  const hitByKey = new Map();
+  for (const hit of search.results) {
+    const key = graphKey(hit.note);
+    if (key && !hitByKey.has(key)) hitByKey.set(key, hit);
+  }
   const contextNotes = selected.map((note) =>
-    contextNote(note, notes, query, search.results.find((hit) => sameNoteName(hit.note, note.id)), preset, mapping)
+    contextNote(note, notes, query, hitByKey.get(graphKey(note.id)), preset, mapping)
   );
   const warnings = [];
   if (options.byNote && !selected.length) warnings.push({ code: "context.note_not_found", message: `note not found: ${query}` });
@@ -4262,15 +4567,13 @@ function cacheManifest(payload, mode, fileCount, pluginFingerprintValue, mapping
 }
 
 async function rebuildCacheFull(vaultPath, mapping, cacheDir, pluginFingerprintValue, mappingFingerprintValue) {
-  const currentFiles = await activeMarkdownFileStats(vaultPath, mapping);
+  const currentFiles = await activeMarkdownFiles(vaultPath, mapping, { stats: true });
   const notes = [];
-  for (const file of currentFiles) {
-    notes.push(noteFromFile(vaultPath, file.path, await readFile(file.path, "utf8"), mapping));
-  }
-  const fileStatsByPath = new Map(currentFiles.map((item) => [item.relPath, item]));
   const files = [];
-  for (const note of notes) {
-    files.push(cacheFileEntry(note, fileStatsByPath.get(note.relPath)));
+  for (const file of currentFiles) {
+    const note = noteFromFile(vaultPath, file.path, file.raw, mapping);
+    notes.push(note);
+    files.push(cacheFileEntry(note, file));
   }
   const graph = buildGraph(notes);
   const manifest = cacheManifest({}, "full", files.length, pluginFingerprintValue, mappingFingerprintValue);
@@ -4318,7 +4621,6 @@ export async function rebuildCache(vaultPath, options = {}) {
     const diff = await cacheFileDiff(vaultPath, mapping, entries);
     if (diff) return rebuildCacheIncremental(vaultPath, mapping, cacheDir, diff, currentPluginFingerprint, currentMappingFingerprint);
   }
-  if (options.allowFull === false) return null;
   return rebuildCacheFull(vaultPath, mapping, cacheDir, currentPluginFingerprint, currentMappingFingerprint);
 }
 
@@ -4616,20 +4918,27 @@ export async function suggestLinks(vaultPath, noteName = null, options = {}) {
   // Long-running hosts (Obsidian) pass their cached search context so a
   // per-note suggestion does not rebuild the whole vault context.
   const context = options.context ?? await prepareSearchContext(vaultPath);
-  const { notes } = context;
+  const { notes, preparedNotes } = context;
+  const lookup = preparedNotes.lookup;
   const vocab = linkSuggestVocab(context.config);
-  const selected = noteName ? [findNote(notes, noteName)].filter(Boolean) : notes;
+  const selected = noteName ? [lookup(noteName)].filter(Boolean) : notes;
   const idf = noteName ? buildLinkSuggestionIdf(notes, vocab.stopwords) : null;
-  const rootSets = noteName ? buildRootSets(notes) : new Map();
+  const rootSets = noteName ? buildRootSets(notes, lookup) : new Map();
   const suggestions = [];
   for (const note of selected) {
     const byTarget = new Map();
     const sourceBody = stripLinkSuggestionSource(note.body);
     const bodyKey = searchableTitle(sourceBody).toLowerCase();
     const existingTargets = existingLinkTargets(note);
-    for (const other of notes) {
-      if (other.id === note.id || hasNoteName(existingTargets, other.id)) continue;
-      const otherKey = searchableKey(other.id);
+    // hasNoteName을 후보마다 부르는 대신 키 집합으로 한 번에 판정한다
+    // (sameNoteName은 키가 비지 않는 한 searchableKey 동일성과 같다).
+    const existingKeys = new Set(existingTargets.map((value) => searchableKey(value)));
+    const alreadyLinked = (target, targetKey) =>
+      targetKey ? existingKeys.has(targetKey) : hasNoteName(existingTargets, target);
+    for (const prepared of preparedNotes) {
+      const other = prepared.note;
+      const otherKey = prepared.idKey;
+      if (other.id === note.id || alreadyLinked(other.id, otherKey)) continue;
       if (sourceBody.includes(other.id) || (otherKey && bodyKey.includes(otherKey))) {
         addRankedLinkSuggestion(byTarget, other, { note: note.id, reason: "plain_text_title_match", rank: 1 });
       }
@@ -4638,8 +4947,8 @@ export async function suggestLinks(vaultPath, noteName = null, options = {}) {
       for (const query of extractLinkSuggestionQueries(note, idf, vocab)) {
         const result = await searchWithContext(context, query.query, { threshold: 0, maxResults: LINK_SUGGEST_SEARCH_RESULTS_PER_QUERY });
         result.results.forEach((hit, index) => {
-          const target = findNote(notes, hit.note);
-          if (!target || target.id === note.id || hasNoteName(existingTargets, target.id)) return;
+          const target = lookup(hit.note);
+          if (!target || target.id === note.id || alreadyLinked(target.id, searchableKey(target.id))) return;
           if (target.type === "index" || target.type === "root" || target.id.startsWith("🔖")) return;
           if ((hit.score ?? 0) <= 0) return;
           const rank = (hit.score ?? 0) * query.score * semanticLinkContextBoost(note, target, rootSets) / (index + 1);
@@ -4663,19 +4972,30 @@ export async function suggestLinks(vaultPath, noteName = null, options = {}) {
 }
 
 export async function linkPlan(vaultPath, options = {}) {
-  const { mapping } = await readVaultConfig(vaultPath);
-  const notes = await loadNotes(vaultPath, mapping);
-  const suggestions = await suggestLinks(vaultPath, options.note ?? null);
+  // 컨텍스트 하나로 제안 생성과 계획 작성을 모두 처리한다 — suggestLinks가
+  // 자체 컨텍스트를 다시 만들면 볼트를 두 번 읽게 된다.
+  const context = await prepareSearchContext(vaultPath);
+  const lookup = context.preparedNotes.lookup;
+  const suggestions = await suggestLinks(vaultPath, options.note ?? null, { context });
+  const shaByNote = new Map();
+  const noteSha = (note) => {
+    let sha = shaByNote.get(note.id);
+    if (sha === undefined) {
+      sha = sha256(note.raw);
+      shaByNote.set(note.id, sha);
+    }
+    return sha;
+  };
   const plan = {
     version: 1,
     kind: "link",
     created_at: nowIso(),
     changes: suggestions.suggestions.map((item) => {
-      const note = findNote(notes, item.note);
+      const note = lookup(item.note);
       return {
         note: item.note,
         path: note?.relPath,
-        sha256: note ? sha256(note.raw) : null,
+        sha256: note ? noteSha(note) : null,
         target: item.target,
         replacement: `[[${item.target}]]`,
         reason: item.reason,
@@ -4697,15 +5017,22 @@ export async function linkApply(vaultPath, planPath) {
   const plan = JSON.parse(await readFile(resolve(vaultPath, planPath), "utf8"));
   const { mapping } = await readVaultConfig(vaultPath);
   const notes = await loadNotes(vaultPath, mapping);
+  const lookup = makeNoteLookup(notes);
+  const shaByNote = new Map();
   // 한 노트에 여러 변경이 걸리면 이어지는 치환은 직전 결과 위에 적용해야 한다.
   // 매번 note.raw에서 시작하면 앞선 치환이 덮여 사라진다.
   const textByNote = new Map();
   const changed = [];
   for (const change of plan.changes ?? []) {
-    const note = findNote(notes, change.note);
+    const note = lookup(change.note);
     if (!note || hasNoteName(note.links, change.target)) continue;
-    if (change.sha256 && sha256(note.raw) !== change.sha256) {
-      throw new Error(`hash guard failed for ${note.id}`);
+    if (change.sha256) {
+      let sha = shaByNote.get(note.id);
+      if (sha === undefined) {
+        sha = sha256(note.raw);
+        shaByNote.set(note.id, sha);
+      }
+      if (sha !== change.sha256) throw new Error(`hash guard failed for ${note.id}`);
     }
     const current = textByNote.get(note.id) ?? note.raw;
     const next = current.replace(change.target, `[[${change.target}]]`);
@@ -4726,18 +5053,19 @@ export async function renameNote(vaultPath, oldName, newName, apply = false) {
   const target = join(dirname(note.path), `${newName}.md`);
   if (existsSync(target)) throw new Error(`target already exists: ${newName}`);
   const changes = [{ from: note.relPath, to: toPosix(relative(vaultPath, target)) }];
+  // 치환 결과를 계획 단계에서 한 번만 계산하고, apply는 실제로 바뀐 노트만 쓴다.
+  const rewrites = [];
   for (const item of notes) {
     if (item.raw.includes(`[[${oldName}]]`) || item.raw.includes(oldName)) {
       changes.push({ path: item.relPath, replace: oldName, with: newName });
+      if (item.id === oldName) continue;
+      const next = item.raw.replaceAll(`[[${oldName}]]`, `[[${newName}]]`).replaceAll(oldName, newName);
+      if (next !== item.raw) rewrites.push({ path: item.path, text: next });
     }
   }
   if (apply) {
     await rename(note.path, target);
-    for (const item of notes) {
-      if (item.id === oldName) continue;
-      const next = item.raw.replaceAll(`[[${oldName}]]`, `[[${newName}]]`).replaceAll(oldName, newName);
-      if (next !== item.raw) await writeFile(item.path, next, "utf8");
-    }
+    for (const item of rewrites) await writeFile(item.path, item.text, "utf8");
   }
   return { kind: "rename", old: oldName, new: newName, apply, changes };
 }
@@ -4820,8 +5148,9 @@ export async function inboxTriage(vaultPath, apply = false, noteName = null) {
   }));
   const moved = [];
   if (apply) {
+    const lookup = makeNoteLookup(notes);
     for (const item of recommendations.filter((row) => row.applyable)) {
-      const note = findNote(notes, item.note);
+      const note = lookup(item.note);
       const target = join(vaultPath, item.target_folder, `${note.id}.md`);
       await mkdir(dirname(target), { recursive: true });
       await rename(note.path, target);
@@ -4855,14 +5184,24 @@ export async function redirectNotes(vaultPath, sourceNames, targetName, options 
     if (sourceIds.has(note.id)) continue;
     let next = note.raw;
     for (const source of sources) {
+      // 본문에 제목이 아예 없으면 두 치환 모두 무의미하므로 문자열 스캔만 하고 넘어간다.
+      if (!next.includes(source.id)) continue;
       next = next.split(`[[${source.id}]]`).join(`[[${target.id}]]`);
       next = next.split(`[[${source.id}|`).join(`[[${target.id}|`);
     }
     const linksChanged = next !== note.raw;
-    const withRefs = rewriteListValue(next, mapping.refs, (items) => {
-      const mapped = items.map((item) => sourceIds.has(stripWiki(item)) ? `[[${target.id}]]` : String(item));
-      return [...new Set(mapped)];
-    }, null);
+    // ref 재작성은 프론트매터를 다시 파싱한다. 링크 치환이 건드리지 않은 문자열
+    // 목록이고 중복도 없으면 결과가 입력과 같으므로 파싱 자체를 건너뛴다.
+    const currentRefs = asList(note.frontmatter[mapping.refs]);
+    const refsNeedRewrite =
+      currentRefs.some((item) => typeof item !== "string" || sources.some((source) => item.includes(source.id))) ||
+      new Set(currentRefs).size !== currentRefs.length;
+    const withRefs = refsNeedRewrite
+      ? rewriteListValue(next, mapping.refs, (items) => {
+        const mapped = items.map((item) => sourceIds.has(stripWiki(item)) ? `[[${target.id}]]` : String(item));
+        return [...new Set(mapped)];
+      }, null)
+      : next;
     const refsChanged = withRefs !== next;
     next = withRefs;
     if (next === note.raw) continue;
@@ -4899,21 +5238,22 @@ export async function redirectNotes(vaultPath, sourceNames, targetName, options 
 export async function cascadeNote(vaultPath, noteName, options = {}) {
   const context = await prepareSearchContext(vaultPath);
   const { notes, mapping } = context;
-  const note = findNote(notes, noteName);
+  const lookup = context.preparedNotes.lookup;
+  const note = lookup(noteName);
   if (!note) throw new Error(`note not found: ${noteName}`);
   const only = asList(options.only).map(String);
   const wants = (kind) => !only.length || only.includes(kind);
   const apply = Boolean(options.apply);
 
   const suggestions = wants("refs") || wants("links")
-    ? (await suggestLinks(vaultPath, note.id)).suggestions
+    ? (await suggestLinks(vaultPath, note.id, { context })).suggestions
     : [];
 
   const refSuggestions = [];
   if (wants("refs")) {
     const counts = new Map();
     for (const item of suggestions) {
-      const related = findNote(notes, item.target);
+      const related = lookup(item.target);
       for (const ref of related?.refs ?? []) {
         if (hasNoteName(note.refs, ref)) continue;
         counts.set(ref, (counts.get(ref) ?? 0) + 1);
@@ -4959,23 +5299,30 @@ export async function cascadeNote(vaultPath, noteName, options = {}) {
 
   const appliedChanges = [];
   if (apply) {
+    // 링크를 하나 쓸 때마다 볼트를 통째로 다시 읽는 대신, 노트 해석은 이미 로드한
+    // 스냅샷으로 하고 본문만 대상 파일에서 새로 읽는다(앞선 쓰기 반영은 그대로).
+    const freshNote = async (noteId) => {
+      const resolved = lookup(noteId);
+      if (!resolved) throw new Error(`note not found: ${noteId}`);
+      return { path: resolved.path, raw: await readFile(resolved.path, "utf8") };
+    };
     if (wants("refs") && !note.refs.length && refSuggestions[0]) {
-      await setNoteField(vaultPath, note.id, mapping.refs, { add: [refSuggestions[0].ref], apply: true });
+      await setNoteField(vaultPath, note.id, mapping.refs, { add: [refSuggestions[0].ref], apply: true, notes });
       appliedChanges.push({ note: note.id, kind: "ref", value: refSuggestions[0].ref });
     }
     for (const change of forwardLinks) {
-      const current = await resolveNote(vaultPath, change.note);
-      const next = current.note.raw.replace(change.target, `[[${change.target}]]`);
-      if (next !== current.note.raw) {
-        await writeFile(current.note.path, syncUpdatedAtText(next, mapping), "utf8");
+      const current = await freshNote(change.note);
+      const next = current.raw.replace(change.target, `[[${change.target}]]`);
+      if (next !== current.raw) {
+        await writeFile(current.path, syncUpdatedAtText(next, mapping), "utf8");
         appliedChanges.push({ note: change.note, kind: "link", value: change.target });
       }
     }
     for (const change of reverseLinks) {
-      const current = await resolveNote(vaultPath, change.note);
-      const next = current.note.raw.replace(note.id, `[[${note.id}]]`);
-      if (next !== current.note.raw) {
-        await writeFile(current.note.path, syncUpdatedAtText(next, mapping), "utf8");
+      const current = await freshNote(change.note);
+      const next = current.raw.replace(note.id, `[[${note.id}]]`);
+      if (next !== current.raw) {
+        await writeFile(current.path, syncUpdatedAtText(next, mapping), "utf8");
         appliedChanges.push({ note: change.note, kind: "link", value: note.id });
       }
     }
@@ -4994,9 +5341,9 @@ export async function cascadeNote(vaultPath, noteName, options = {}) {
 }
 
 export async function reviewVault(vaultPath, scope = "all", options = {}) {
-  const validation = await validateVault(vaultPath);
   const { config, mapping } = await readVaultConfig(vaultPath);
   const notes = await loadNotes(vaultPath, mapping);
+  const validation = await validateVault(vaultPath, notes, { config, mapping });
   const issues = [];
   if (scope === "all" || scope === "convention") issues.push(...validation.issues);
   if (scope === "all" || scope === "inbox") {
@@ -5032,8 +5379,19 @@ export async function reviewVault(vaultPath, scope = "all", options = {}) {
     if (patterns.length) {
       const reportTitleRe = new RegExp(`(${patterns.join("|")})`, "i");
       const candidateMin = Number(sotConfig.min ?? 4);
+      // Children per index from an inverted ref index instead of scanning every
+      // note for every index (was O(index * n * refs)). Grouping by searchableKey
+      // reproduces hasNoteName, and iterating notes in order keeps child order.
+      const notesByRefKey = new Map();
+      for (const note of notes) {
+        for (const refKey of new Set(note.refs.map((ref) => searchableKey(ref)))) {
+          let list = notesByRefKey.get(refKey);
+          if (!list) { list = []; notesByRefKey.set(refKey, list); }
+          list.push(note);
+        }
+      }
       for (const index of notes.filter((item) => item.type === "index" || item.type === "root")) {
-        const children = notes.filter((item) => item.id !== index.id && hasNoteName(item.refs, index.id));
+        const children = (notesByRefKey.get(searchableKey(index.id)) ?? []).filter((item) => item.id !== index.id);
         const reports = children.filter((item) => reportTitleRe.test(item.id));
         if (reports.length >= candidateMin) {
           issues.push({
@@ -5574,7 +5932,11 @@ async function importVaultModule(path) {
   if (typeof globalThis.__ipaImportPlugin === "function") {
     return globalThis.__ipaImportPlugin(path);
   }
-  return import(pathToFileURL(path).href + `?t=${Date.now()}`);
+  // 캐시버스팅 키는 mtime이다: 안 바뀐 플러그인은 ESM 모듈 캐시를 재사용하고
+  // (매 호출마다 모듈 레코드가 새로 쌓이는 것을 막는다), tune/dry-run이 플러그인
+  // 파일을 고치면 mtime이 바뀌어 재시작 없이 다시 로드된다.
+  const version = statSync(path, { throwIfNoEntry: false })?.mtimeMs ?? Date.now();
+  return import(pathToFileURL(path).href + `?t=${version}`);
 }
 
 // Session gate plugins ({ name, check(ctx) }) run at the harness Stop gate.
@@ -6185,7 +6547,7 @@ export async function tuneLabel(vaultPath, options = {}) {
       target: options.target,
       hit: options.hit ?? true
     };
-    await writeFile(path, `${existsSync(path) ? await readFile(path, "utf8") : ""}${JSON.stringify(row)}\n`, "utf8");
+    await appendFile(path, `${JSON.stringify(row)}\n`, "utf8");
   }
   const labels = existsSync(path)
     ? (await readFile(path, "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line))
@@ -8887,7 +9249,9 @@ export async function harnessSessionGate(vaultPath, options = {}) {
   const errors = [];
   const warnings = [];
   if (ownedTitles.length) {
-    const plan = await formatVault(vaultPath, false, { notes: ownedTitles, ruleApply: true });
+    // patchesOnly skips formatVault's internal validateVault (a second full
+    // checkNote pass): the gate reads patches, not issues.
+    const plan = await formatVault(vaultPath, false, { notes: ownedTitles, ruleApply: true, patchesOnly: true });
     if (plan.summary.patches > 0) {
       const noteArgs = ownedTitles.map((title) => JSON.stringify(title)).join(" ");
       blocks.push({
@@ -8930,12 +9294,13 @@ export async function harnessSessionGate(vaultPath, options = {}) {
         const ts = Date.parse(item?.ts ?? "");
         return Number.isNaN(ts) || ts >= cutoff;
       });
+    const gateLookup = makeNoteLookup(notes);
     const ctx = {
       vaultPath,
       config,
       mapping,
       notes,
-      lookup: (ref) => findNote(notes, ref) ?? null,
+      lookup: (ref) => gateLookup(ref) ?? null,
       session: {
         id: sessionId,
         edits: owned.map((item) => ({ title: item.title, path: item.path ?? null, updated_at: item.updated_at ?? null })),
@@ -8974,7 +9339,7 @@ export async function harnessSessionGate(vaultPath, options = {}) {
     let foreignDirty = new Set(foreignTitles);
     if (foreignTitles.length) {
       try {
-        const plan = await formatVault(vaultPath, false, { notes: foreignTitles, ruleApply: true });
+        const plan = await formatVault(vaultPath, false, { notes: foreignTitles, ruleApply: true, patchesOnly: true });
         foreignDirty = new Set(plan.patches.map((patch) => patch.note));
       } catch {
         // Fail-safe: if the foreign notes can't be verified, keep them rather than

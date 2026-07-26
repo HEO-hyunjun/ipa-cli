@@ -41,10 +41,13 @@ import {
   listProfiles,
   listRules,
   listSearchChannels,
+  loadNotes,
+  loadNotesForView,
   moveNote,
   pluginDoctor,
   pluginDryRun,
   pluginInit,
+  readVaultConfig,
   rebuildCache,
   redirectNotes,
   refactorVault,
@@ -1494,10 +1497,14 @@ function buildProgram() {
     .action(async (notes, options) => {
       await withVault(globalOptions(program), async (vault) => {
         const rendered = [];
+        // 노트 목록은 한 번만 로드해 인자마다 볼트를 다시 읽지 않게 한다.
+        const { mapping } = await readVaultConfig(vault);
+        const loaded = await loadNotesForView(vault, mapping);
         for (const note of notes) {
           rendered.push(await viewNote(vault, note, {
             full: Boolean(options.full),
-            section: options.section ?? null
+            section: options.section ?? null,
+            notes: loaded
           }));
         }
         print(rendered.join("\n\n"));
@@ -1511,10 +1518,13 @@ function buildProgram() {
     .action(async (notes, options) => {
       await withVault(globalOptions(program), async (vault) => {
         const results = [];
+        const { mapping } = await readVaultConfig(vault);
+        const loaded = await loadNotes(vault, mapping);
         for (const note of notes) {
           results.push(await digestNote(vault, note, {
             max: optionNumber(options.max),
-            snippetChars: optionNumber(options.snippetChars)
+            snippetChars: optionNumber(options.snippetChars),
+            notes: loaded
           }));
         }
         if (results.length === 1) print(results[0], jsonOutput(program));
@@ -1654,12 +1664,17 @@ function buildProgram() {
     .action(async (notes, options) => {
       await withVault(globalOptions(program), async (vault) => {
         const results = [];
+        // 스냅샷은 노트 해석에만 쓰인다 — 쓰기 경로는 대상 파일을 다시 읽으므로
+        // 같은 노트를 두 번 지정해도 앞선 변경이 유실되지 않는다.
+        const { mapping } = await readVaultConfig(vault);
+        const loaded = await loadNotes(vault, mapping);
         for (const note of notes) {
           results.push(await setNoteField(vault, note, options.field, {
             value: options.value,
             add: optionalList(options.add),
             remove: optionalList(options.remove),
-            apply: Boolean(options.apply)
+            apply: Boolean(options.apply),
+            notes: loaded
           }));
         }
         if (results.length === 1) print(results[0], jsonOutput(program));
