@@ -35,6 +35,13 @@ function rewriteNodeBuiltinImports(code: string): string {
   );
 }
 
+function hasMethod<K extends string>(
+  value: unknown,
+  method: K
+): value is Record<K, (...args: unknown[]) => unknown> {
+  return typeof (value as Record<K, unknown> | null)?.[method] === "function";
+}
+
 export default class IpaPlugin extends Plugin {
   settings!: IpaSettings;
   adapter!: ObsidianVaultAdapter;
@@ -212,15 +219,23 @@ export default class IpaPlugin extends Plugin {
       await applyFixes(this.app, this.client, [file.basename]);
       // If the validation panel is open, re-run validation so the user sees the
       // recheck after fixes (the validate → fix → validate cycle).
-      const validation = this.app.workspace.getLeavesOfType(VIEW_TYPE_VALIDATION)[0]?.view as
-        | ValidationView
-        | undefined;
-      await validation?.revalidate();
+      const validation = await this.getLoadedValidationView();
+      if (hasMethod(validation, "revalidate")) await validation.revalidate();
     } catch (error) {
       new Notice(`IPA format-on-save failed: ${errorMessage(error)}`);
     } finally {
       window.setTimeout(() => this.formatGuard.delete(file.path), 600);
     }
+  }
+
+  private async getLoadedValidationView(): Promise<unknown> {
+    const leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_VALIDATION)[0];
+    if (!leaf) return null;
+    // Obsidian 1.7.2+ can keep a background leaf as DeferredView. Materialize
+    // it before using ValidationView methods; retain compatibility with older
+    // Obsidian versions where loadIfDeferred does not exist.
+    if (hasMethod(leaf, "loadIfDeferred")) await leaf.loadIfDeferred();
+    return leaf.view;
   }
 
   async activateView(type: string): Promise<WorkspaceLeaf | null> {
@@ -356,10 +371,8 @@ export default class IpaPlugin extends Plugin {
     try {
       const result = await applyFixes(this.app, this.client, [title]);
       new Notice(result.message);
-      const view = this.app.workspace.getLeavesOfType(VIEW_TYPE_VALIDATION)[0]?.view as
-        | ValidationView
-        | undefined;
-      view?.setScope("current");
+      const view = await this.getLoadedValidationView();
+      if (hasMethod(view, "setScope")) view.setScope("current");
     } catch (error) {
       new Notice(`IPA apply failed: ${errorMessage(error)}`);
     }
