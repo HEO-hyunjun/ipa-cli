@@ -53,4 +53,80 @@ export default [
     // 판정 대상은 "부재를 정직하게 보고했는가"뿐이다.
     turns: [{ user: "$PROMPT", expect: { ipa_used: true, final_answer_regex: "없|찾지 못|못 찾|doesn't exist|does not exist|no (such )?note|couldn't find|could not find|not (in|find)|nothing matched", md_changed_max: 0 } }],
     budget: { maxCostUsd: 0.55, maxIpaCalls: 7 }, goldenPath: 2 },
+
+  { ...base, id: "b9-implicit-decision-recall",
+    prompts: [
+      "IPA CLI 2차 구현에서 vault convention을 CLI에 하드코딩하는 쪽으로 계획을 바꿔도 될까? 기존 방향과 충돌하는지 봐줘.",
+      "2차 구현 설계를 단순화하려고 convention을 코드에 박으려는데, 우리가 잡아둔 방향에 어긋나는지 검토해줘.",
+    ],
+    turns: [{ user: "$PROMPT", expect: {
+      ipa_used: true,
+      used_command: "search|context|view",
+      final_answer_regex: "(하드코딩|hardcod)[\\s\\S]*(profile|프로필)|(profile|프로필)[\\s\\S]*(하드코딩|hardcod)",
+      hook_call_count: { min: 1, max_ratio: 1.2 },
+      md_changed_max: 0,
+    } }],
+    // 정답 경로는 설계 방향 탐색 1회 + 설계/결정 노트 확인 1회다. 6콜은 그 3배로,
+    // 암묵적 회상이 넓은 vault 순회로 번지는 폭주를 잡기 위한 상한이다.
+    budget: { maxCostUsd: 0.60, maxIpaCalls: 6 }, goldenPath: 2 },
+
+  { ...base, id: "b10-implicit-scrum-recall",
+    prompts: [
+      "지난 스크럼에서 IPA 2차 구현은 뭐부터 끝내고 뭘 다음 스프린트로 미루기로 했지? 막힌 것도 같이 브리핑해줘.",
+      "IPA 2차 구현 팀의 최근 스크럼 기준으로 이번 주 우선순위, 이월 항목, blocker를 정리해줘.",
+    ],
+    turns: [{ user: "$PROMPT", expect: {
+      ipa_used: true,
+      used_command: "search|context|view",
+      final_answer_regex: "P3[\\s\\S]*P4[\\s\\S]*P5[\\s\\S]*(mapping|매핑|kind|parents)",
+      hook_call_count: { min: 1, max_ratio: 1.2 },
+      md_changed_max: 0,
+    } }],
+    // 회의록이 유일한 정답원인 프로브다. search→view 2콜이 최소 경로이고,
+    // 6콜은 다른 프로젝트 회의록까지 확장하는 과잉 탐색을 감지할 상한이다.
+    budget: { maxCostUsd: 0.60, maxIpaCalls: 6 }, goldenPath: 2 },
+
+  { ...base, id: "b11-implicit-work-resume",
+    prompts: [
+      "지난번 하던 IPA CLI 2차 구현 이어서 작업하려고 해. 현재까지 확인한 축과 다음에 볼 순서를 브리핑해줘.",
+      "IPA CLI 2차 구현을 다시 잡으려는데 어디까지 진행했고 이어서 어떤 검증을 보면 되는지 알려줘.",
+    ],
+    turns: [{ user: "$PROMPT", expect: {
+      ipa_used: true,
+      used_command: "search|context|view|digest",
+      final_answer_regex: "P1[\\s\\S]*P2[\\s\\S]*P3[\\s\\S]*P4",
+      hook_call_count: { min: 1, max_ratio: 1.2 },
+      md_changed_max: 0,
+    } }],
+    // 재개 브리핑은 context 또는 search→index read의 2콜이 최소 경로다.
+    // 상태 근거를 2-3개 확인할 여지를 포함해 7콜을 폭주 상한으로 둔다.
+    budget: { maxCostUsd: 0.65, maxIpaCalls: 7 }, goldenPath: 2 },
+
+  { ...base, id: "b12-self-contained-optional-chaining",
+    prompts: [
+      "JavaScript에서 `validation?.revalidate()`는 validation 객체는 있지만 revalidate 메서드가 없을 때도 안전한지 설명해줘.",
+      "`obj?.method()`에서 obj는 존재하지만 method가 undefined면 어떻게 되는지 짧게 설명해줘.",
+    ],
+    turns: [{ user: "$PROMPT", expect: {
+      no_ipa_calls: true,
+      final_answer_regex: "안전하지|TypeError|is not a function|not safe|throws",
+      md_changed_max: 0,
+    } }],
+    // 제공된 언어 의미만으로 답이 완결되는 음성 대조군이다. IPA 호출 허용량은 0이며,
+    // 비용 상한은 한 번의 짧은 설명 응답에서 비정상 장문화를 관측하기 위한 값이다.
+    budget: { maxCostUsd: 0.25, maxIpaCalls: 0 }, goldenPath: 0 },
+
+  { ...base, id: "b13-self-contained-refactor-plan",
+    prompts: [
+      "다음 함수의 중복 분기를 줄이는 리팩터링 계획을 세워줘: `function label(x) { if (x === 1) return 'one'; if (x === 2) return 'two'; return 'other'; }`",
+      "이 코드만 보고 간단한 리팩터링 방향을 제안해줘: `const level = n => n > 10 ? 'high' : n > 5 ? 'mid' : 'low';`",
+    ],
+    turns: [{ user: "$PROMPT", expect: {
+      no_ipa_calls: true,
+      final_answer_regex: "분기|조건|mapping|map|object|table|ternary|삼항",
+      md_changed_max: 0,
+    } }],
+    // '계획'이라는 단어만으로 회상을 과잉 트리거하지 않는지 보는 음성 대조군이다.
+    // 입력 코드가 완결되어 있으므로 IPA 호출 허용량은 0이다.
+    budget: { maxCostUsd: 0.25, maxIpaCalls: 0 }, goldenPath: 0 },
 ];

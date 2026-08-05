@@ -17,6 +17,7 @@ import {
   digestNote,
   doctor,
   formatVault,
+  graphTopology,
   inboxAdd,
   IpaNoteDocument,
   isExcalidrawMarkdownFile,
@@ -75,10 +76,10 @@ import {
 
 const root = dirname(fileURLToPath(import.meta.url)) + "/../../..";
 
-async function fixtureVault() {
+async function fixtureVault(fixture = "mini-vault") {
   const work = await mkdtemp(join(tmpdir(), "ipa-core-test-"));
   const vault = join(work, "vault");
-  await cp(join(root, "packages", "test-vaults", "fixtures", "mini-vault"), vault, { recursive: true });
+  await cp(join(root, "packages", "test-vaults", "fixtures", fixture), vault, { recursive: true });
   return vault;
 }
 
@@ -352,6 +353,49 @@ test("search, view, traversal and context work in the JS runtime", async () => {
   assert.equal(largeContext.notes[0].overview, undefined);
 });
 
+test("graphTopology builds the depth-2 golden topology around a center note", async () => {
+  const vault = await fixtureVault("graph-vault");
+  const graph = await graphTopology(vault, "Alpha Hub", { depth: 2 });
+
+  assert.equal(graph.center, "Alpha Hub");
+  assert.equal(graph.depth, 2);
+  assert.deepEqual(
+    graph.nodes.map(({ id, type, distance, parent, relations }) => ({ id, type, distance, parent, relations })),
+    [
+      { id: "Alpha Hub", type: "note", distance: 0, parent: null, relations: [] },
+      { id: "Workspace Orchestration", type: "index", distance: 1, parent: "Alpha Hub", relations: [{ kind: "ref", direction: "out" }] },
+      { id: "Dispatch Gate", type: "note", distance: 1, parent: "Alpha Hub", relations: [{ kind: "link", direction: "out" }, { kind: "ref", direction: "in" }, { kind: "link", direction: "in" }] },
+      { id: "Dispatch Preconditions", type: "note", distance: 1, parent: "Alpha Hub", relations: [{ kind: "link", direction: "out" }, { kind: "ref", direction: "in" }, { kind: "link", direction: "in" }] },
+      { id: "Standing Policies", type: "note", distance: 1, parent: "Alpha Hub", relations: [{ kind: "link", direction: "out" }] },
+      { id: "Orchestration Playbook", type: "note", distance: 1, parent: "Alpha Hub", relations: [{ kind: "link", direction: "out" }] },
+      { id: "Agent Operations", type: "note", distance: 1, parent: "Alpha Hub", relations: [{ kind: "link", direction: "out" }] },
+      { id: "Coding Agents", type: "index", distance: 2, parent: "Workspace Orchestration", relations: [{ kind: "ref", direction: "out" }] },
+      { id: "Agent Console", type: "note", distance: 2, parent: "Workspace Orchestration", relations: [{ kind: "ref", direction: "in" }] },
+      { id: "Terminology Guide", type: "note", distance: 2, parent: "Workspace Orchestration", relations: [{ kind: "ref", direction: "in" }] }
+    ]
+  );
+  assert.equal(graph.nodes.some((node) => node.id === "Technology Root"), false, "depth 3 node must be excluded");
+  assert.deepEqual(graph.cross_edges.map(({ from, to }) => [from, to]), [
+    ["Standing Policies", "Orchestration Playbook"],
+    ["Standing Policies", "Terminology Guide"],
+    ["Orchestration Playbook", "Terminology Guide"],
+    ["Orchestration Playbook", "Agent Operations"],
+    ["Agent Operations", "Agent Console"]
+  ]);
+
+  const deeper = await graphTopology(vault, "Alpha Hub", { depth: 3 });
+  assert.equal(deeper.nodes.find((node) => node.id === "Technology Root")?.distance, 3);
+
+  const capped = await graphTopology(vault, "Alpha Hub", { depth: 2, maxNodes: 2 });
+  assert.deepEqual(capped.nodes.map((node) => node.id), ["Alpha Hub", "Workspace Orchestration"]);
+  assert.ok(capped.truncated_nodes > 0);
+
+  const centerOnly = await graphTopology(vault, "Alpha Hub", { depth: 0 });
+  assert.deepEqual(centerOnly.nodes.map((node) => node.id), ["Alpha Hub"]);
+  await assert.rejects(() => graphTopology(vault, "Alpha Hub", { depth: "nope" }), /invalid graph depth/);
+  await assert.rejects(() => graphTopology(vault, "Alpha Hub", { maxNodes: 0 }), /invalid graph maxNodes/);
+});
+
 test("view uses a fresh note cache and falls back after cache stales", async () => {
   const vault = await fixtureVault();
   await rebuildCache(vault);
@@ -415,6 +459,35 @@ test("note-name search and lookup ignore emoji markers but preserve display name
   assert.equal((await validateVault(vault)).status, "ok");
   const down = await traversal(vault, "down", "🔖 Topic Index");
   assert.ok(down.tree.children.some((child) => child.note === "No Emoji Ref"));
+});
+
+test("search graph roles come from type, not title decoration", async () => {
+  const vault = await fixtureVault();
+  await writeFile(
+    join(vault, "01 Project", "Plain Hub.md"),
+    `---\ndate_created: 2026/05/10 (Sun) 00:00:00\ndate_modified: 2026/05/10 (Sun) 00:00:00\ntype: index\nref: ["[[🏷️ Topic Root]]"]\ntags: []\n---\n## Hub\n`,
+    "utf8"
+  );
+  await writeFile(
+    join(vault, "00 Inbox", "Plain Child.md"),
+    `---\ndate_created: 2026/05/10 (Sun) 00:00:00\ndate_modified: 2026/05/10 (Sun) 00:00:00\ntype: note\nref: ["[[Plain Hub]]"]\ntags: []\n---\n## Body\n\nquasar-index-evidence\n`,
+    "utf8"
+  );
+  await writeFile(
+    join(vault, "00 Inbox", "🔖 Decorative Note.md"),
+    `---\ndate_created: 2026/05/10 (Sun) 00:00:00\ndate_modified: 2026/05/10 (Sun) 00:00:00\ntype: note\nref: ["[[🔖 Topic Index]]"]\ntags: []\n---\n## Body\n`,
+    "utf8"
+  );
+  await writeFile(
+    join(vault, "00 Inbox", "Decorative Child.md"),
+    `---\ndate_created: 2026/05/10 (Sun) 00:00:00\ndate_modified: 2026/05/10 (Sun) 00:00:00\ntype: note\nref: ["[[🔖 Decorative Note]]"]\ntags: []\n---\n## Body\n\nnebula-note-evidence\n`,
+    "utf8"
+  );
+
+  const plain = await searchVault(vault, "quasar-index-evidence", { threshold: 0, maxResults: 50 });
+  assert.ok(plain.results.find((item) => item.note === "Plain Hub")?.reasons?.child_body_match);
+  const decorative = await searchVault(vault, "nebula-note-evidence", { threshold: 0, maxResults: 50 });
+  assert.equal(decorative.results.find((item) => item.note === "🔖 Decorative Note")?.reasons?.child_body_match, undefined);
 });
 
 test("core note rewrite helpers resolve notes before editing", async () => {
@@ -613,66 +686,63 @@ test("validator, cache, review and tune contracts are available", async () => {
   assert.equal(history.trim().split("\n").length, 3);
 });
 
-test("builtin linter rules are listed, applied and configurable", async () => {
+test("builtin rules keep IPA invariants and exclude vault-local style policy", async () => {
   const vault = await fixtureVault();
   const configPath = join(vault, ".ipa", "config.yaml");
-  await mkdir(join(vault, "01 Project", "Empty Project"), { recursive: true });
   await writeFile(
     join(vault, "00 Inbox", "Bad Note.md"),
-    `---\ndate_created: bad-date\ntype: note\nref: ["[[Missing Target]]"]\ntags: ["Bad Tag"]\n---\n# Bad Note\n\n[[Missing Link]]\n`,
-    "utf8"
-  );
-  await writeFile(
-    join(vault, "01 Project", "Plain Index.md"),
-    `---\ndate_created: 2026/05/10 (Sun) 00:00:00\ndate_modified: 2026/05/10 (Sun) 00:00:00\ntype: index\nref: ["[[🏷️ Topic Root]]"]\ntags: [project]\n---\n## Plain Index\n`,
-    "utf8"
-  );
-  await writeFile(
-    join(vault, "01 Project", "Plain Root Node.md"),
-    `---\ndate_created: 2026/05/10 (Sun) 00:00:00\ndate_modified: 2026/05/10 (Sun) 00:00:00\ntype: root\nref: []\ntags: [project]\n---\n## Plain Root\n`,
+    `---\ndate_created: bad-date\nref: ["[[Missing Target]]"]\ntags: ["Bad Tag"]\n---\n# Bad Note\n\n[[Missing Link]]\n`,
     "utf8"
   );
 
   const listed = await listRules(vault);
-  assert.equal(listed.rules.length, 16);
-  assert.equal(listed.rules.find((item) => item.code === "ipa.title.index_prefix").enabled, true);
+  assert.equal(listed.rules.length, 8);
+  assert.equal(listed.rules.find((item) => item.code === "ipa.frontmatter.missing_type").enabled, true);
+  assert.deepEqual(
+    listed.rules.filter((item) => item.source === "builtin").map((item) => item.code),
+    [
+      "ipa.frontmatter.missing_type",
+      "ipa.frontmatter.date_format",
+      "ipa.frontmatter.invalid_type",
+      "ipa.frontmatter.missing_ref",
+      "ipa.inbox.raw_capture",
+      "ipa.location.type_mismatch",
+      "ipa.link.ref_target_missing",
+      "ipa.link.wikilink_target_missing"
+    ]
+  );
 
   const issues = (await validateVault(vault)).issues;
   const codes = new Set(issues.map((item) => item.code));
   for (const code of [
-    "ipa.frontmatter.required_field",
+    "ipa.frontmatter.missing_type",
     "ipa.frontmatter.date_format",
-    "ipa.tag.snake_case",
-    "ipa.title.index_prefix",
-    "ipa.title.root_prefix",
-    "ipa.title.root_suffix",
     "ipa.link.ref_target_missing",
-    "ipa.link.wikilink_target_missing",
-    "ipa.root_folder.missing",
-    "ipa.heading.no_h1"
+    "ipa.link.wikilink_target_missing"
   ]) {
     assert.ok(codes.has(code), `expected ${code}`);
+  }
+  for (const policyCode of ["ipa.tag.snake_case", "ipa.title.index_prefix", "ipa.heading.no_h1", "ipa.content.absolute_path"]) {
+    assert.equal(codes.has(policyCode), false, `${policyCode} belongs in a vault plugin`);
   }
 
   await writeFile(
     configPath,
-    `${await readFile(configPath, "utf8")}\nrules:\n  enabled: true\n  builtin: true\n  plugins: true\n  items:\n    title: false\n    ipa.heading.no_h1: false\n`,
+    `${await readFile(configPath, "utf8")}\nrules:\n  enabled: true\n  builtin: true\n  plugins: true\n  items:\n    ipa.frontmatter.date_format: false\n`,
     "utf8"
   );
   const disabled = await listRules(vault);
-  assert.equal(disabled.rules.find((item) => item.code === "ipa.title.index_prefix").enabled, false);
-  assert.equal(disabled.rules.find((item) => item.code === "ipa.heading.no_h1").enabled, false);
+  assert.equal(disabled.rules.find((item) => item.code === "ipa.frontmatter.date_format").enabled, false);
   const nextCodes = new Set((await validateVault(vault)).issues.map((item) => item.code));
-  assert.equal(nextCodes.has("ipa.title.index_prefix"), false);
-  assert.equal(nextCodes.has("ipa.heading.no_h1"), false);
+  assert.equal(nextCodes.has("ipa.frontmatter.date_format"), false);
   assert.equal(nextCodes.has("ipa.link.ref_target_missing"), true);
 });
 
-test("builtin formatter uses reusable markdown and IPA note utilities", async () => {
+test("builtin formatter keeps generic date normalization while note style stays plugin-owned", async () => {
   const vault = await fixtureVault();
   await writeFile(
     join(vault, "00 Inbox", "Needs Format.md"),
-    `---\ndate_modified: 2026/05/10 (Sun) 00:00:00\nref: ["[[🔖 Topic Index]]"]\ntags: [format]\n---\n# Needs Format\n\nBody\n`,
+    `---\ndate_created: 2026/05/10 (Sun) 00:00:00\ndate_modified: 2026-06-23T06:48:04.214Z\ntype: note\nref: ["[[🔖 Topic Index]]"]\ntags: [format]\n---\n# Needs Format\n\nBody\n`,
     "utf8"
   );
   const { mapping } = await readVaultConfig(vault);
@@ -684,17 +754,14 @@ test("builtin formatter uses reusable markdown and IPA note utilities", async ()
   const plan = await formatVault(vault, false, { note: "Needs Format" });
   assert.equal(plan.patches.length, 1);
   assert.equal(plan.patches[0].plugin, "rules");
-  assert.deepEqual(plan.patches[0].rules, [
-    "ipa.frontmatter.required_field",
-    "ipa.heading.no_h1"
-  ]);
+  assert.deepEqual(plan.patches[0].rules, ["ipa.frontmatter.date_format"]);
 
   const applied = await formatVault(vault, true, { note: "Needs Format" });
   assert.deepEqual(applied.applied, [{ note: "Needs Format", path: "00 Inbox/Needs Format.md", patches: 1 }]);
   const text = await readFile(join(vault, "00 Inbox", "Needs Format.md"), "utf8");
-  assert.match(text, /date_created: \d{4}\/\d{2}\/\d{2} \([A-Z][a-z]{2}\) \d{2}:\d{2}:\d{2}/);
+  assert.match(text, /date_created: 2026\/05\/10/);
   assert.match(text, /type: note/);
-  assert.doesNotMatch(text, /^# Needs Format/m);
+  assert.match(text, /^# Needs Format/m, "H1 style is left to vault-local plugins");
 });
 
 test("MarkdownDocument exposes Obsidian structures for plugin rules", () => {
@@ -938,18 +1005,20 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   assert.equal((await harnessDoctor(vault, options)).status, "ok");
   const skill = await readFile(join(home, ".codex", "skills", "ipa", "SKILL.md"), "utf8");
   assert.ok(skill.startsWith("---\nname: ipa\n"), "skill YAML frontmatter must be first");
-  assert.match(skill, /ipa context "keyword" --size medium --format markdown/);
-  assert.match(skill, /ipa search "keyword"/);
-  assert.match(skill, /IPA Command Selection/);
-  assert.match(skill, /ipa link suggest "Note Title"/);
+  assert.match(skill, /## Evidence Recall/);
+  assert.match(skill, /## Command Pointers/);
+  assert.match(skill, /private vault knowledge even when notes are not mentioned/);
+  assert.match(skill, /Meeting and scrum records may be the only source/);
+  assert.match(skill, /Skip IPA when the request is self-contained or current code and git are sufficient/);
+  assert.match(skill, /one `ipa search "facet A" "facet B"` call with 2-3 short lexical angles/);
+  assert.match(skill, /Rank evidence by authority and freshness/);
+  assert.match(skill, /use dated meeting or scrum notes when they are newer or the sole source/);
+  assert.match(skill, /batch them in one `ipa view "A" "B" --full` call/);
+  assert.match(skill, /do not reopen an overview in full unless a specific missing section is necessary/);
+  assert.match(skill, /If code or git conflicts with the vault, report the drift/);
+  assert.match(skill, /ipa graph "Note Title" --depth 2/);
   assert.match(skill, /ipa <command> --help/);
   assert.match(skill, /within ~3 ipa calls/);
-  assert.match(skill, /ipa digest "Index Note"/);
-  assert.match(skill, /ipa config init/);
-  // Command Selection surfaces the plain rename (note stays, links rewired) and
-  // the onboarding close that points at the operating-rules fragment.
-  assert.match(skill, /ipa rename "Old" "New" --apply/);
-  assert.match(skill, /\.ipa\/harness\/fragments\/prompt\.md/);
   assert.match(skill, /Never edit the time fields \(`date_created`\/`date_modified`\) by hand/);
   assert.match(skill, /ipa convention/);
   assert.doesNotMatch(skill, /current prompt context/);
@@ -961,19 +1030,11 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   assert.match(skill, /## Scripted Edits/);
   assert.match(skill, /ipa note replace "Note Title"/);
   assert.match(skill, /ipa note set "Note Title" --field ref --add "Index Note" --apply/);
-  // Command Selection leads the "relate notes" answer with the write path and
-  // demotes link suggest/traversal to read-only discovery (bench g30).
-  assert.match(skill, /Relate a note to an index \(make it belong\): `ipa note set "Note" --field ref --add "Index Note" --apply`/);
-  assert.match(skill, /only wikify a title already present verbatim in the note body/);
-  assert.match(skill, /Read-only discovery only:/);
-  // Counting an index's children routes to digest/traversal, not view|grep loops.
-  assert.match(skill, /Count or list an index's children\/backlinks:/);
-  assert.match(skill, /ipa traversal --down "Index Note"/);
-  // context --by-note distinction rides on the existing context line.
-  assert.match(skill, /ipa context --by-note "Note Title"/);
-  // Archive→project reactivation move with folder-independent link framing.
-  assert.match(skill, /Reactivate an archived topic[^\n]*ipa move "Note" "01 Project" --apply/);
-  assert.match(skill, /inbound wikilinks keep resolving/);
+  // Detailed command syntax comes from the registry-generated help surface,
+  // not from a duplicated catalog in the skill.
+  assert.doesNotMatch(skill, /IPA Command Selection/);
+  assert.doesNotMatch(skill, /Relate a note to an index/);
+  assert.doesNotMatch(skill, /Reactivate an archived topic/);
   // Generalized "preview is not the deliverable" mutation cue in Safe Writes.
   assert.match(skill, /a preview or plan is not the deliverable — re-run the same command with `--apply`/);
   // c12: the single-note apply cue and the bulk-confirm exception are scoped by
@@ -996,7 +1057,11 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   // points at the skill/convention/help surfaces instead of duplicating them.
   const globalPrompt = await readFile(join(home, ".codex", "AGENTS.md"), "utf8");
   assert.match(globalPrompt, /Evidence-Based Work/);
-  assert.match(globalPrompt, /answer from vault evidence/);
+  assert.match(globalPrompt, /even if the user did not mention notes/);
+  assert.match(globalPrompt, /Meeting or scrum records may be the only source/);
+  assert.match(globalPrompt, /Skip IPA for self-contained questions/);
+  assert.match(globalPrompt, /Code and git are authoritative for current implementation behavior/);
+  assert.match(globalPrompt, /Report drift when they conflict/);
   assert.match(globalPrompt, /ipa search "keyword"/);
   assert.match(globalPrompt, /ipa <command> --help/);
   assert.match(globalPrompt, /ipa convention/);
@@ -1006,7 +1071,7 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   // it. Distinct wording from the skill's fuller version, not copy-pasted into it.
   assert.match(globalPrompt, /ipa digest/);
   assert.match(globalPrompt, /before opening/);
-  assert.match(globalPrompt, /converge/);
+  assert.match(globalPrompt, /use the evidence in the answer/);
   assert.doesNotMatch(skill, /digesting ones you already read/, "the global efficiency bullet must not be copy-pasted into the skill's command selection");
   assert.doesNotMatch(globalPrompt, /ipa link suggest/, "global block must not duplicate the command catalog");
   assert.match(await readFile(join(home, ".codex", "hooks", "ipa-inbox-guard.mjs"), "utf8"), /shared IPA inbox creation guard/);
@@ -1037,9 +1102,10 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   assert.match(agentsPrompt, /inbox `00 Inbox`/);
   assert.match(agentsPrompt, /ipa convention/);
   assert.match(agentsPrompt, /ipa <command> --help/);
-  assert.match(agentsPrompt, /\.agents\/skills/);
+  assert.match(agentsPrompt, /vault-local skills for each installed harness target/);
+  assert.doesNotMatch(agentsPrompt, /installed for codex|installed for opencode|\.agents\/skills|\.opencode\/skills/);
   assert.match(agentsPrompt, /ipa plugin validate/);
-  assert.match(agentsPrompt, /routing map in the global `ipa` skill/);
+  assert.match(agentsPrompt, /routing map are in that target's global `ipa` skill/);
   assert.doesNotMatch(agentsPrompt, /IPA Command Selection/, "vault block must not duplicate the skill's command selection");
   assert.doesNotMatch(agentsPrompt, /ipa link suggest/, "vault block must not duplicate the command catalog");
   assert.doesNotMatch(agentsPrompt, /formatter apply --note/, "vault block must not restate the formatter loop (global prompt + skill own it)");
@@ -1098,16 +1164,16 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   assert.match(triageSkill, /a single-note capture or edit needs no such round-trip/);
   const reviewSkill = await readFile(join(vault, ".agents", "skills", "ipa-review", "SKILL.md"), "utf8");
   assert.match(reviewSkill, /name: ipa-review/);
-  assert.match(reviewSkill, /ipa review all --suggest-refactor/);
+  assert.match(reviewSkill, /ipa review all\s+# convention, inbox, duplicates/);
   assert.match(reviewSkill, /ipa refactor ref-replace/);
   assert.match(reviewSkill, /Apply any fix without user approval/);
   // P7: phantom narrowing flags are gone; the recipe list is the real set.
   assert.doesNotMatch(reviewSkill, /--scope-ref|--filter/);
   assert.match(reviewSkill, /also supports `ref-add`, `ref-remove`, `tag-remove`, and `tag-add`/);
-  // P8(b): the review-all comment names the real scopes and the sot config key.
-  assert.match(reviewSkill, /# convention, inbox, duplicates, tags, sot/);
-  assert.match(reviewSkill, /review\.sot\.title_patterns/);
-  assert.doesNotMatch(reviewSkill, /tags, indexes, duplicates, inbox issues/);
+  assert.match(reviewSkill, /Builtin review scopes cover only generic IPA mechanics/);
+  assert.match(reviewSkill, /Vault-specific checks/);
+  assert.match(reviewSkill, /ipa graph "Root Note" --depth 2/);
+  assert.doesNotMatch(reviewSkill, /--suggest-refactor|review\.sot|# convention, inbox, duplicates, tags/);
   const consultSkill = await readFile(join(vault, ".agents", "skills", "ipa-consult", "SKILL.md"), "utf8");
   assert.match(consultSkill, /name: ipa-consult/);
   assert.match(consultSkill, /ipa convention/);
@@ -1188,7 +1254,7 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
 
   await writeFile(
     join(vault, "00 Inbox", "Needs Format.md"),
-    `---\ndate_modified: 2026/05/10 (Sun) 00:00:00\nref: ["[[🔖 Topic Index]]"]\ntags: [format]\n---\n# Needs Format\n\nBody\n`,
+    `---\ndate_created: 2026/05/10 (Sun) 00:00:00\ndate_modified: 2026-06-23T06:48:04.214Z\ntype: note\nref: ["[[🔖 Topic Index]]"]\ntags: [format]\n---\n# Needs Format\n\nBody\n`,
     "utf8"
   );
   const needsFormatNudge = spawnSync(process.execPath, [join(home, ".codex", "hooks", "ipa-md-write-nudge.mjs")], {
@@ -1219,7 +1285,7 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   // Session-scoped gating: pending notes from another session must not block.
   await writeFile(
     join(vault, "00 Inbox", "Needs Format.md"),
-    `---\ndate_modified: 2026/05/10 (Sun) 00:00:00\nref: ["[[🔖 Topic Index]]"]\ntags: [format]\n---\n# Needs Format\n\nBody\n`,
+    `---\ndate_created: 2026/05/10 (Sun) 00:00:00\ndate_modified: 2026-06-23T06:48:04.214Z\ntype: note\nref: ["[[🔖 Topic Index]]"]\ntags: [format]\n---\n# Needs Format\n\nBody\n`,
     "utf8"
   );
   const sessionNudge = spawnSync(process.execPath, [join(home, ".codex", "hooks", "ipa-md-write-nudge.mjs")], {
@@ -1414,16 +1480,17 @@ test("harness install opencode creates OpenCode-native managed artifacts and uni
   assert.ok(existsSync(join(vault, ".ipa", "harness", "opencode", "manifest.json")));
   assert.ok(existsSync(join(vault, ".ipa", "harness", "manifest.json")));
 
-  // Then: the global OpenCode skill has IPA frontmatter and command guidance.
+  // Then: the global OpenCode skill has IPA frontmatter and recall guidance.
   const skill = await readFile(join(opencodeHome, "skills", "ipa", "SKILL.md"), "utf8");
   assert.ok(skill.startsWith("---\nname: ipa\n"), "skill YAML frontmatter must be first");
-  assert.match(skill, /ipa context "keyword" --size medium --format markdown/);
-  assert.match(skill, /ipa search "keyword"/);
+  assert.match(skill, /## Evidence Recall/);
+  assert.match(skill, /private vault knowledge could materially change the answer/);
+  assert.match(skill, /Discovery or broad history: `ipa search` and `ipa context`/);
 
   // Then: the global OpenCode AGENTS.md prompt has evidence-based guidance.
   const globalPrompt = await readFile(join(opencodeHome, "AGENTS.md"), "utf8");
   assert.match(globalPrompt, /Evidence-Based Work/);
-  assert.match(globalPrompt, /answer from vault evidence/);
+  assert.match(globalPrompt, /Meeting or scrum records may be the only source/);
 
   // Then: the OpenCode plugin file is valid JavaScript with the harness marker.
   const pluginSource = await readFile(join(opencodeHome, "plugins", "ipa-harness.js"), "utf8");
@@ -1887,14 +1954,9 @@ test("harness prompt surfaces render field and folder names from the config mapp
   // Then: the skill teaches the vault's real field names, not IPA defaults.
   const skill = await readFile(join(home, ".claude", "skills", "ipa", "SKILL.md"), "utf8");
   assert.match(skill, /--field link --add "Index Note" --apply/);
-  // P1: the "relate notes" write path leads and renders the mapped refs field.
-  assert.match(skill, /Relate a note to an index \(make it belong\): `ipa note set "Note" --field link --add "Index Note" --apply`/);
-  // P9: the reactivation move line renders the mapped project folder.
-  assert.match(skill, /Reactivate an archived topic[^\n]*ipa move "Note" "20 Active" --apply/);
   assert.match(skill, /`created`\/`modified`/);
   assert.match(skill, /`link`\/`keywords`\) at capture time/);
-  // The rename router row names the mapped refs field for the inbound rewire.
-  assert.match(skill, /inbound link\/wikilinks auto-rewired/);
+  assert.match(skill, /`10 Intake\/`, `20 Active\/`/);
   assert.doesNotMatch(skill, /--field ref --add/);
   assert.doesNotMatch(skill, /date_created/);
 
@@ -1932,7 +1994,7 @@ test("harness prompt surfaces render field and folder names from the config mapp
   // references no folder/field, so it stays mapping-safe).
   const globalPrompt = await readFile(join(home, ".claude", "CLAUDE.md"), "utf8");
   assert.match(globalPrompt, /ipa digest/);
-  assert.match(globalPrompt, /converge/);
+  assert.match(globalPrompt, /use the evidence in the answer/);
 
   await harnessUninstall(vault, "claude", options);
 });
@@ -2513,7 +2575,7 @@ test("opencode full install reports plugin-backed hook components as present in 
   await harnessUninstall(vault, "opencode", options);
 });
 
-test("call-counter hook counts ipa Bash calls per session and nudges at the threshold", async () => {
+test("call-counter hook counts actual ipa commands per session and nudges when a chained call crosses the threshold", async () => {
   const vault = await fixtureVault();
   const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
   const options = { homeDir: home, profile: "ipa-test" };
@@ -2534,17 +2596,18 @@ test("call-counter hook counts ipa Bash calls per session and nudges at the thre
   assert.equal(ignored.stdout.trim(), "");
   assert.equal(existsSync(join(vault, ".ipa", "harness", "call-counter.json")), false);
 
-  // ipa calls 1..9 count silently; the 10th emits a convergence nudge.
+  // ipa calls 1..9 count silently; one Bash tool_use containing two chained ipa
+  // commands crosses the threshold at 11 and must emit a convergence nudge.
   for (let index = 1; index <= 9; index += 1) {
     const silent = runHook(`ipa search "query ${index}"`);
     assert.equal(silent.status, 0);
     assert.equal(silent.stdout.trim(), "", `call ${index} must stay silent`);
   }
-  const nudged = runHook('ipa view "Some Note" --full');
+  const nudged = runHook('ipa view "Some Note" --full && ipa view "Other Note" --full');
   assert.equal(nudged.status, 0);
   const payload = JSON.parse(nudged.stdout);
   assert.equal(payload.hookSpecificOutput.hookEventName, "PostToolUse");
-  assert.match(payload.hookSpecificOutput.additionalContext, /10 ipa calls/);
+  assert.match(payload.hookSpecificOutput.additionalContext, /11 ipa calls/);
   assert.match(payload.hookSpecificOutput.additionalContext, /converging/);
 
   // Counts are per session: a different session starts from zero.
@@ -2816,72 +2879,14 @@ test("write paths stamp vault-format dates and formatter fixes mixed ISO polluti
   assert.match(mixed, /date_modified: "?\d{4}\/\d{2}\/\d{2} \([A-Z][a-z]{2}\)/);
 });
 
-test("absolute_path rule is config-gated and fixes aliased paths", async () => {
+test("review exposes only generic IPA audit scopes", async () => {
   const vault = await fixtureVault();
-  await writeFile(
-    join(vault, "00 Inbox", "Paths.md"),
-    "---\ndate_created: 2026/05/10 (Sun) 00:00:00\ndate_modified: 2026/05/10 (Sun) 00:00:00\nref: [\"[[🔖 Topic Index]]\"]\ntags: []\ntype: note\n---\n# Paths\n\nSee /Users/someone/workspace/acme/packages/core/index.ts for details.\n",
-    "utf8"
-  );
-
-  // Without path_aliases config the rule stays silent.
-  const silent = await validateVault(vault);
-  assert.ok(!silent.issues.some((item) => item.code === "ipa.content.absolute_path"));
-
-  const configPath = join(vault, ".ipa", "config.yaml");
-  await writeFile(configPath, (await readFile(configPath, "utf8")) + "path_aliases:\n  acme: /Users/someone/workspace/acme\n", "utf8");
-
-  const flagged = await validateVault(vault);
-  assert.ok(flagged.issues.some((item) => item.code === "ipa.content.absolute_path" && item.note === "Paths"));
-
-  await formatVault(vault, true, { notes: ["Paths"] });
-  const fixed = await readFile(join(vault, "00 Inbox", "Paths.md"), "utf8");
-  assert.doesNotMatch(fixed, /\/Users\/someone\/workspace\/acme/);
-  assert.match(fixed, /See acme\/packages\/core\/index\.ts/);
-});
-
-test("review sot is config-gated and flags report-style pileups under one index", async () => {
-  const vault = await fixtureVault();
-  for (const title of ["TICKET-1 구현 계획", "TICKET-1 구현 결과", "TICKET-2 검증 결과", "TICKET-2 최종 보고서"]) {
-    await writeFile(
-      join(vault, "00 Inbox", `${title}.md`),
-      `---\ndate_created: 2026/05/10 (Sun) 00:00:00\ndate_modified: 2026/05/10 (Sun) 00:00:00\nref: ["[[🔖 Topic Index]]"]\ntags: []\ntype: note\n---\n# ${title}\n\nBody\n`,
-      "utf8"
-    );
+  for (const scope of ["all", "convention", "inbox", "duplicates"]) {
+    const review = await reviewVault(vault, scope);
+    assert.equal(review.scope, scope);
   }
-  // The report-title vocabulary is operating policy: without config the scope
-  // stays silent.
-  const silent = await reviewVault(vault, "sot");
-  assert.equal(silent.issues.filter((item) => item.code === "review.sot.consolidation_candidate").length, 0);
-
-  const configPath = join(vault, ".ipa", "config.yaml");
-  await writeFile(
-    configPath,
-    `${await readFile(configPath, "utf8")}review:\n  sot:\n    title_patterns: [계획, 결과, 보고서?, report]\n    min: 4\n`,
-    "utf8"
-  );
-  const review = await reviewVault(vault, "sot");
-  const candidate = review.issues.find((item) => item.code === "review.sot.consolidation_candidate");
-  assert.ok(candidate, "consolidation candidate reported");
-  assert.equal(candidate.note, "🔖 Topic Index");
-  assert.ok(candidate.notes.length >= 4);
-});
-
-test("review sot hints when title_patterns is unconfigured; review all stays quiet", async () => {
-  const vault = await fixtureVault();
-  // P8: an explicit `review sot` on a vault without title_patterns nudges the
-  // user to configure the scope, but `review all` must not emit that hint.
-  const sot = await reviewVault(vault, "sot");
-  assert.ok(
-    sot.issues.some((item) => item.code === "review.sot.unconfigured"),
-    "review sot must hint when review.sot.title_patterns is unset"
-  );
-  const all = await reviewVault(vault, "all");
-  assert.equal(
-    all.issues.filter((item) => item.code === "review.sot.unconfigured").length,
-    0,
-    "review all must stay quiet on an unconfigured default vault"
-  );
+  await assert.rejects(() => reviewVault(vault, "tags"), /unknown review scope: tags/);
+  await assert.rejects(() => reviewVault(vault, "sot"), /unknown review scope: sot/);
 });
 
 test("formatter apply keeps plan clean afterwards even when non-date patches move mtime", async () => {
@@ -3109,7 +3114,7 @@ test("session gate clears a clean note whose ledger entry carries a foreign sess
   // But: a genuinely pending foreign note is kept — ownership never drops real work.
   await writeFile(
     join(vault, "00 Inbox", "Needs Format.md"),
-    `---\ndate_modified: 2026/05/10 (Sun) 00:00:00\nref: ["[[🔖 Topic Index]]"]\ntags: [format]\n---\n# Needs Format\n\nBody\n`,
+    `---\ndate_created: 2026/05/10 (Sun) 00:00:00\ndate_modified: 2026-06-23T06:48:04.214Z\ntype: note\nref: ["[[🔖 Topic Index]]"]\ntags: [format]\n---\n# Needs Format\n\nBody\n`,
     "utf8"
   );
   await seed([{ title: "Needs Format", path: "00 Inbox/Needs Format.md", session_id: "sess-writer", updated_at: new Date().toISOString() }]);
@@ -3835,10 +3840,10 @@ test("shipped over-full index example rule fires via ctx.childCount", async () =
 
 test("validateVault --note scoping filters issues to the requested notes", async () => {
   const vault = await fixtureVault();
-  // A note with a guaranteed issue: tag not in snake_case
+  // A note with a guaranteed IPA invariant issue: unresolved ref target.
   await writeFile(
     join(vault, "00 Inbox", "Scoped.md"),
-    `---\ndate_created: 2026/05/10 (Sun) 00:00:00\ndate_modified: 2026/05/10 (Sun) 00:00:00\nref: ["[[🔖 Topic Index]]"]\ntags: ["BadTag"]\ntype: note\n---\n# Scoped\n\nBody\n`,
+    `---\ndate_created: 2026/05/10 (Sun) 00:00:00\ndate_modified: 2026/05/10 (Sun) 00:00:00\nref: ["[[Missing Target]]"]\ntags: []\ntype: note\n---\n# Scoped\n\nBody\n`,
     "utf8"
   );
   const scoped = await validateVault(vault, null, { notes: ["Scoped"] });

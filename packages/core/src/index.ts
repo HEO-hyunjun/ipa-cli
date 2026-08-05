@@ -45,22 +45,14 @@ export const CHANNELS = [
 ];
 
 export const RULES = [
-  { code: "ipa.frontmatter.required_field", category: "frontmatter", severity: "warn", scope: "note", fixable: true },
+  { code: "ipa.frontmatter.missing_type", category: "frontmatter", severity: "warn", scope: "note" },
   { code: "ipa.frontmatter.date_format", category: "frontmatter", severity: "warn", scope: "note", fixable: true },
-  { code: "ipa.content.absolute_path", category: "content", severity: "warn", scope: "note", fixable: true },
   { code: "ipa.frontmatter.invalid_type", category: "frontmatter", severity: "error", scope: "note" },
   { code: "ipa.frontmatter.missing_ref", category: "frontmatter", severity: "warn", scope: "note" },
   { code: "ipa.inbox.raw_capture", category: "inbox", severity: "warn", scope: "note" },
-  { code: "ipa.tag.snake_case", category: "tag", severity: "warn", scope: "note" },
-  { code: "ipa.title.root_prefix", category: "title", severity: "warn", scope: "note" },
-  { code: "ipa.title.root_suffix", category: "title", severity: "warn", scope: "note" },
-  { code: "ipa.title.index_prefix", category: "title", severity: "warn", scope: "note" },
   { code: "ipa.location.type_mismatch", category: "location", severity: "warn", scope: "note" },
   { code: "ipa.link.ref_target_missing", category: "link", severity: "warn", scope: "vault" },
-  { code: "ipa.link.wikilink_target_missing", category: "link", severity: "warn", scope: "vault" },
-  { code: "ipa.root_folder.duplicate", category: "root_folder", severity: "warn", scope: "vault" },
-  { code: "ipa.root_folder.missing", category: "root_folder", severity: "warn", scope: "vault" },
-  { code: "ipa.heading.no_h1", category: "heading", severity: "info", scope: "note", fixable: true }
+  { code: "ipa.link.wikilink_target_missing", category: "link", severity: "warn", scope: "vault" }
 ];
 
 export const REFACTORS = [
@@ -1604,9 +1596,9 @@ export function scoreNote(note, query, notes, weights = {}, mapping = DEFAULT_MA
   if (shared) reasons.related = { shared: true };
 
   const projectDir = mapping.project_dir ?? DEFAULT_MAPPING.project_dir;
-  const childBody = note.type === "index" || note.type === "root" || note.id.startsWith("🔖")
+  const childBody = note.type === "index" || note.type === "root"
     ? Math.max(0, ...notes
-      .filter((candidate) => candidate.type !== "index" && candidate.type !== "root" && !candidate.id.startsWith("🔖"))
+      .filter((candidate) => candidate.type !== "index" && candidate.type !== "root")
       .filter((candidate) => hasNoteName(candidate.refs, note.id))
       .map((candidate) => {
         const candidateBody = searchableTitle(candidate.body).toLowerCase();
@@ -1775,7 +1767,7 @@ function prepareSearchNotes(notes, mapping = DEFAULT_MAPPING, options = {}) {
   const noteById = new Map(notes.map((note) => [note.id, note]));
   const lookup = makeNoteLookup(notes);
   const inProjectDir = (folder) => folder === projectDir || folder.startsWith(`${projectDir}/`);
-  const isIndexLike = (note) => note.type === "index" || note.type === "root" || note.id.startsWith("🔖");
+  const isIndexLike = (note) => note.type === "index" || note.type === "root";
   const prepared = notes.map((note) => {
     const names = [note.id, ...note.aliases];
     const searchNames = names.map(searchableTitle).filter(Boolean);
@@ -3257,29 +3249,43 @@ function syncUpdatedAtText(text, mapping = DEFAULT_MAPPING, now = new Date()) {
 
 function noteSnippet(note, maxChars = 100) {
   const body = String(note.body ?? "");
+  // Body prose first, callout as fallback. Callout-first taught vaults to stuff
+  // the whole note into the top callout and leave the body empty; the snippet
+  // should reward real body text. Document order already puts the paragraph
+  // under H1 before H2, so no explicit heading priority is needed.
   let text = "";
-  const callout = body.match(/^>\s*\[!\w+\][+-]?[ \t]*([^\n]*)((?:\n>[^\n]*)*)/m);
-  if (callout) {
-    const block = String(callout[2] ?? "")
-      .split("\n")
-      .map((line) => line.replace(/^>\s?/, "").replace(/^[-*]\s+/, "").trim())
-      .filter(Boolean)
-      .join(" ");
-    text = [String(callout[1] ?? "").trim(), block].filter(Boolean).join(" — ");
+  let inFence = false;
+  const paragraph = [];
+  for (const raw of body.split("\n")) {
+    const trimmed = raw.trim();
+    if (trimmed.startsWith("```")) {
+      if (paragraph.length) break;
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) continue;
+    if (!trimmed) {
+      if (paragraph.length) break;
+      continue;
+    }
+    if (trimmed.startsWith("#") || trimmed.startsWith(">") || trimmed.startsWith("---")
+      || trimmed.startsWith("![") || trimmed.startsWith("|")) {
+      if (paragraph.length) break;
+      continue;
+    }
+    paragraph.push(trimmed.replace(/^[-*+]\s+/, "").replace(/^\d+[.)]\s+/, ""));
   }
+  text = paragraph.join(" ");
   if (!text) {
-    const line = body.split("\n").find((candidate) => {
-      const trimmed = candidate.trim();
-      return trimmed
-        && !trimmed.startsWith("#")
-        && !trimmed.startsWith("```")
-        && !trimmed.startsWith("---")
-        && !trimmed.startsWith("![");
-    });
-    text = String(line ?? "").trim()
-      .replace(/^(?:>\s?)+/, "")
-      .replace(/^\[!\w+\][+-]?\s*/, "")
-      .replace(/^[-*]\s+/, "");
+    const callout = body.match(/^>\s*\[!\w+\][+-]?[ \t]*([^\n]*)((?:\n>[^\n]*)*)/m);
+    if (callout) {
+      const block = String(callout[2] ?? "")
+        .split("\n")
+        .map((line) => line.replace(/^>\s?/, "").replace(/^[-*]\s+/, "").trim())
+        .filter(Boolean)
+        .join(" ");
+      text = [String(callout[1] ?? "").trim(), block].filter(Boolean).join(" — ");
+    }
   }
   text = text
     .replace(/\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g, "$1")
@@ -3418,6 +3424,115 @@ export async function traversalAll(vaultPath, noteName, notes = null) {
     tree: downwardTree(note.id, notes),
     siblings: siblings(note, notes).map((item) => item.id),
     roots: paths.map((path) => path[path.length - 1]).filter(Boolean)
+  };
+}
+
+export async function graphTopology(vaultPath, noteName, options = {}) {
+  const { mapping } = await readVaultConfig(vaultPath);
+  const notes = options.notes ?? await loadNotesForView(vaultPath, mapping);
+  const center = findNote(notes, noteName);
+  if (!center) throw new Error(`note not found: ${noteName}`);
+
+  const depthValue = Number(options.depth ?? 2);
+  const maxNodesValue = Number(options.maxNodes ?? 100);
+  if (!Number.isFinite(depthValue) || depthValue < 0) throw new Error(`invalid graph depth: ${options.depth}`);
+  if (!Number.isFinite(maxNodesValue) || maxNodesValue < 1) throw new Error(`invalid graph maxNodes: ${options.maxNodes}`);
+  const depth = Math.floor(depthValue);
+  const maxNodes = Math.floor(maxNodesValue);
+  const index = noteGraphIndex(notes);
+  const reverseRefs = new Map();
+  const reverseLinks = new Map();
+
+  const addReverse = (map, target, source) => {
+    const key = graphKey(target);
+    if (!key) return;
+    const list = map.get(key) ?? [];
+    if (!list.some((item) => item.id === source.id)) list.push(source);
+    map.set(key, list);
+  };
+  for (const note of notes) {
+    for (const ref of note.refs) addReverse(reverseRefs, ref, note);
+    for (const link of note.links) addReverse(reverseLinks, link, note);
+  }
+
+  const neighborsFor = (note) => {
+    const grouped = new Map();
+    const add = (target, kind, direction) => {
+      const neighbor = typeof target === "string" ? index.lookup(target) : target;
+      if (!neighbor || neighbor.id === note.id) return;
+      let entry = grouped.get(neighbor.id);
+      if (!entry) {
+        entry = { note: neighbor, relations: [] };
+        grouped.set(neighbor.id, entry);
+      }
+      if (!entry.relations.some((item) => item.kind === kind && item.direction === direction)) {
+        entry.relations.push({ kind, direction });
+      }
+    };
+    for (const ref of note.refs) add(ref, "ref", "out");
+    for (const link of note.links) add(link, "link", "out");
+    for (const source of reverseRefs.get(graphKey(note.id)) ?? []) add(source, "ref", "in");
+    for (const source of reverseLinks.get(graphKey(note.id)) ?? []) add(source, "link", "in");
+    return [...grouped.values()];
+  };
+
+  const discovered = new Map([[center.id, {
+    id: center.id,
+    type: center.type || "note",
+    distance: 0,
+    parent: null,
+    relations: []
+  }]]);
+  const queue = [center];
+  const omitted = new Set();
+  for (let cursor = 0; cursor < queue.length; cursor += 1) {
+    const note = queue[cursor];
+    const current = discovered.get(note.id);
+    if (current.distance >= depth) continue;
+    for (const neighbor of neighborsFor(note)) {
+      if (discovered.has(neighbor.note.id)) continue;
+      if (discovered.size >= maxNodes) {
+        omitted.add(neighbor.note.id);
+        continue;
+      }
+      discovered.set(neighbor.note.id, {
+        id: neighbor.note.id,
+        type: neighbor.note.type || "note",
+        distance: current.distance + 1,
+        parent: note.id,
+        relations: neighbor.relations
+      });
+      queue.push(neighbor.note);
+    }
+  }
+
+  const crossEdges = [];
+  const seenPairs = new Set();
+  for (const note of queue) {
+    const current = discovered.get(note.id);
+    if (current.distance >= depth) continue;
+    for (const neighbor of neighborsFor(note)) {
+      const target = discovered.get(neighbor.note.id);
+      if (!target || target.parent === note.id || current.parent === neighbor.note.id) continue;
+      const pair = [note.id, neighbor.note.id].sort().join("\u0000");
+      if (seenPairs.has(pair)) continue;
+      seenPairs.add(pair);
+      crossEdges.push({
+        from: note.id,
+        to: neighbor.note.id,
+        relations: neighbor.relations
+      });
+    }
+  }
+
+  return {
+    operation: "graph",
+    center: center.id,
+    depth,
+    max_nodes: maxNodes,
+    nodes: [...discovered.values()],
+    cross_edges: crossEdges,
+    truncated_nodes: omitted.size
   };
 }
 
@@ -3589,15 +3704,6 @@ function mixedIsoDateFields(note, mapping) {
   return fields.filter((field, index) => ISO_DATE_RE.test(values[index]));
 }
 
-function pathAliasEntries(config) {
-  const aliases = config?.path_aliases;
-  if (!aliases || typeof aliases !== "object" || Array.isArray(aliases)) return [];
-  return Object.entries(aliases)
-    .map(([alias, prefix]) => [String(alias), String(prefix ?? "").replace(/\/+$/, "")])
-    .filter(([alias, prefix]) => alias && prefix.startsWith("/"))
-    .sort((a, b) => b[1].length - a[1].length);
-}
-
 const BUILTIN_RULES = [
   builtinRule("ipa.inbox.raw_capture", {
     checkNote(note, ctx) {
@@ -3606,30 +3712,11 @@ const BUILTIN_RULES = [
         : [];
     }
   }),
-  builtinRule("ipa.frontmatter.required_field", {
+  builtinRule("ipa.frontmatter.missing_type", {
     checkNote(note, ctx) {
-      return [ctx.mapping.created_at, ctx.mapping.updated_at, ctx.mapping.tags, ctx.mapping.note_type]
-        .filter((field) => note.frontmatter[field] === undefined)
-        .map((field) => noteIssue(this.code, note, `missing frontmatter field: ${field}`));
-    },
-    async fixNote(note, ctx) {
-      if (!hasFrontmatterBlock(note.raw)) return note.raw;
-      let text = note.raw;
-      const required = [
-        [ctx.mapping.created_at, async () => {
-          const fileStat = await stat(note.path).catch(() => null);
-          return formatVaultDate(fileStat?.birthtime ?? new Date(), ctx.mapping.date_format);
-        }],
-        [ctx.mapping.updated_at, () => formatVaultDate(new Date(), ctx.mapping.date_format)],
-        [ctx.mapping.tags, () => []],
-        [ctx.mapping.note_type, () => inferNoteType(note.id)]
-      ];
-      for (const [field, valueFactory] of required) {
-        const current = readFrontmatter(text).frontmatter;
-        if (current[field] !== undefined) continue;
-        text = insertFrontmatterField(text, field, await valueFactory());
-      }
-      return text;
+      return note.frontmatter[ctx.mapping.note_type] === undefined
+        ? [noteIssue(this.code, note, `missing frontmatter field: ${ctx.mapping.note_type}`)]
+        : [];
     }
   }),
   builtinRule("ipa.frontmatter.date_format", {
@@ -3652,33 +3739,6 @@ const BUILTIN_RULES = [
       return text;
     }
   }),
-  // Active only when the vault config declares path_aliases, e.g.
-  //   path_aliases:
-  //     ipa-cli: /Users/me/workspace/ipa-cli
-  // Notes then use "ipa-cli/packages/..." instead of machine-specific paths.
-  builtinRule("ipa.content.absolute_path", {
-    checkNote(note, ctx) {
-      const aliases = ctx.pathAliases ?? pathAliasEntries(ctx.config);
-      if (!aliases.length) return [];
-      const issues = [];
-      for (const [alias, prefix] of aliases) {
-        if (note.raw.includes(prefix)) {
-          issues.push(noteIssue(this.code, note, `absolute path for alias '${alias}': ${prefix}`));
-        }
-      }
-      return issues;
-    },
-    fixNote(note, ctx) {
-      const aliases = ctx.pathAliases ?? pathAliasEntries(ctx.config);
-      if (!aliases.length) return note.raw;
-      let text = note.raw;
-      for (const [alias, prefix] of aliases) {
-        text = text.split(`${prefix}/`).join(`${alias}/`);
-        text = text.split(prefix).join(alias);
-      }
-      return text;
-    }
-  }),
   builtinRule("ipa.frontmatter.invalid_type", {
     checkNote(note) {
       return note.type && !VALID_NOTE_TYPES.has(String(note.type))
@@ -3690,34 +3750,6 @@ const BUILTIN_RULES = [
     checkNote(note) {
       return ["note", "index"].includes(String(note.type)) && note.refs.length === 0
         ? [noteIssue(this.code, note, "note/index should have at least one ref")]
-        : [];
-    }
-  }),
-  builtinRule("ipa.tag.snake_case", {
-    checkNote(note) {
-      return note.tags
-        .filter((tag) => !/^[a-z0-9_/-]+$/.test(tag))
-        .map((tag) => noteIssue(this.code, note, `tag should be snake_case: ${tag}`));
-    }
-  }),
-  builtinRule("ipa.title.root_prefix", {
-    checkNote(note) {
-      return note.type === "root" && !note.id.startsWith("🏷️")
-        ? [noteIssue(this.code, note, "root title should start with 🏷️")]
-        : [];
-    }
-  }),
-  builtinRule("ipa.title.root_suffix", {
-    checkNote(note) {
-      return note.type === "root" && !note.id.endsWith("Root")
-        ? [noteIssue(this.code, note, "root title should end with Root")]
-        : [];
-    }
-  }),
-  builtinRule("ipa.title.index_prefix", {
-    checkNote(note) {
-      return note.type === "index" && !note.id.startsWith("🔖")
-        ? [noteIssue(this.code, note, "index title should start with 🔖")]
         : [];
     }
   }),
@@ -3749,55 +3781,8 @@ const BUILTIN_RULES = [
         )
         .map((link) => noteIssue(this.code, note, `wikilink target missing: ${link}`));
     }
-  }),
-  builtinRule("ipa.root_folder.duplicate", {
-    checkVault(ctx) {
-      const byFolder = rootNotesByProjectFolder(ctx.notes, ctx.mapping);
-      const issues = [];
-      for (const [folder, notes] of byFolder.entries()) {
-        if (notes.length > 1) {
-          for (const note of notes) issues.push(noteIssue(this.code, note, `multiple root notes in project folder: ${folder}`));
-        }
-      }
-      return issues;
-    }
-  }),
-  builtinRule("ipa.root_folder.missing", {
-    async checkVault(ctx) {
-      const byFolder = rootNotesByProjectFolder(ctx.notes, ctx.mapping);
-      const projectRoot = join(ctx.vaultPath, ctx.mapping.project_dir);
-      if (!existsSync(projectRoot)) return [];
-      const entries = await readdir(projectRoot, { withFileTypes: true });
-      return entries
-        .filter((entry) => entry.isDirectory())
-        .map((entry) => toPosix(relative(ctx.vaultPath, join(projectRoot, entry.name))))
-        .filter((folder) => !byFolder.has(folder))
-        .map((folder) => vaultIssue(this.code, folder, `project folder has no root note: ${folder}`));
-    }
-  }),
-  builtinRule("ipa.heading.no_h1", {
-    checkNote(note) {
-      // 로드 시 파싱해 둔 headings로 판정한다 — 문서를 다시 파싱한 hasH1()과 같다.
-      return (note.headings ?? []).some((heading) => heading.level === 1)
-        ? [noteIssue(this.code, note, "note body should not contain H1 headings")]
-        : [];
-    },
-    fixNote(note, ctx) {
-      return IpaNoteDocument.fromNote(note, ctx.mapping).withoutDuplicateTitleH1();
-    }
   })
 ];
-
-function rootNotesByProjectFolder(notes, mapping) {
-  const byFolder = new Map();
-  for (const note of notes) {
-    if (note.type !== "root" || !isInFolder(note, mapping.project_dir)) continue;
-    const list = byFolder.get(note.folder) ?? [];
-    list.push(note);
-    byFolder.set(note.folder, list);
-  }
-  return byFolder;
-}
 
 function normalizeRulePlugin(plugin) {
   const exported = plugin.module.rules ?? plugin.module.rule ?? plugin.module.default ?? (
@@ -3857,8 +3842,6 @@ export async function validateVault(vaultPath, notes = null, options = {}) {
     notes,
     vaultPath,
     ...ruleGraphContext(notes),
-    // 노트마다 다시 만들지 않도록 규칙 컨텍스트에 한 번만 실어 보낸다.
-    pathAliases: pathAliasEntries(config),
     noteTitles: noteTitleSet(notes),
     ...await loadLinkTargetTitles(vaultPath, mapping, notes)
   };
@@ -4001,12 +3984,6 @@ function insertFrontmatterField(text, key, value) {
   return `${normalized.slice(0, end + 1)}${line}${normalized.slice(end + 1)}`;
 }
 
-function inferNoteType(title) {
-  if (String(title).startsWith("🏷️") || String(title).endsWith("Root")) return "root";
-  if (String(title).startsWith("🔖")) return "index";
-  return "note";
-}
-
 function formatVaultDate(date, format = DEFAULT_MAPPING.date_format) {
   const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
   const pad = (value) => String(value).padStart(2, "0");
@@ -4128,7 +4105,6 @@ export async function formatVault(vaultPath, apply = false, options = {}) {
     mapping,
     vaultPath,
     ...ruleGraphContext(allNotes),
-    pathAliases: pathAliasEntries(config),
     // apply-gated rules (e.g. date_modified) need apply context to emit a patch.
     // ruleApply lets a host run them at plan time even when fs apply is off —
     // Obsidian writes patches via its Vault API, not core's fs writer.
@@ -4949,7 +4925,7 @@ export async function suggestLinks(vaultPath, noteName = null, options = {}) {
         result.results.forEach((hit, index) => {
           const target = lookup(hit.note);
           if (!target || target.id === note.id || alreadyLinked(target.id, searchableKey(target.id))) return;
-          if (target.type === "index" || target.type === "root" || target.id.startsWith("🔖")) return;
+          if (target.type === "index" || target.type === "root") return;
           if ((hit.score ?? 0) <= 0) return;
           const rank = (hit.score ?? 0) * query.score * semanticLinkContextBoost(note, target, rootSets) / (index + 1);
           if (rank < LINK_SUGGEST_MIN_SEMANTIC_RANK) return;
@@ -5340,7 +5316,9 @@ export async function cascadeNote(vaultPath, noteName, options = {}) {
   };
 }
 
-export async function reviewVault(vaultPath, scope = "all", options = {}) {
+export async function reviewVault(vaultPath, scope = "all") {
+  const scopes = new Set(["all", "convention", "inbox", "duplicates"]);
+  if (!scopes.has(scope)) throw new Error(`unknown review scope: ${scope}`);
   const { config, mapping } = await readVaultConfig(vaultPath);
   const notes = await loadNotes(vaultPath, mapping);
   const validation = await validateVault(vaultPath, notes, { config, mapping });
@@ -5356,60 +5334,6 @@ export async function reviewVault(vaultPath, scope = "all", options = {}) {
     for (const note of notes) {
       if (seen.has(note.id)) issues.push({ code: "review.duplicate.basename", severity: "warn", note: note.id, message: `duplicate basename: ${note.id}` });
       seen.set(note.id, note);
-    }
-  }
-  if (scope === "all" || scope === "tags") {
-    const counts = {};
-    for (const note of notes) for (const tag of note.tags) counts[tag] = (counts[tag] ?? 0) + 1;
-    for (const [tag, count] of Object.entries(counts)) {
-      if (count === 1) issues.push({ code: "review.tag.low_usage", severity: "info", tag, message: "tag appears once" });
-    }
-  }
-  if (scope === "all" || scope === "sot") {
-    // Report-style note pileups under one index usually mean the knowledge
-    // has no single source of truth. The report-title vocabulary is an
-    // operating policy, so it lives in config; without it this scope is
-    // silent, e.g.
-    //   review:
-    //     sot:
-    //       title_patterns: [계획, 결과, 보고서?, report, plan]
-    //       min: 4
-    const sotConfig = config.review?.sot ?? {};
-    const patterns = asList(sotConfig.title_patterns).filter(Boolean);
-    if (patterns.length) {
-      const reportTitleRe = new RegExp(`(${patterns.join("|")})`, "i");
-      const candidateMin = Number(sotConfig.min ?? 4);
-      // Children per index from an inverted ref index instead of scanning every
-      // note for every index (was O(index * n * refs)). Grouping by searchableKey
-      // reproduces hasNoteName, and iterating notes in order keeps child order.
-      const notesByRefKey = new Map();
-      for (const note of notes) {
-        for (const refKey of new Set(note.refs.map((ref) => searchableKey(ref)))) {
-          let list = notesByRefKey.get(refKey);
-          if (!list) { list = []; notesByRefKey.set(refKey, list); }
-          list.push(note);
-        }
-      }
-      for (const index of notes.filter((item) => item.type === "index" || item.type === "root")) {
-        const children = (notesByRefKey.get(searchableKey(index.id)) ?? []).filter((item) => item.id !== index.id);
-        const reports = children.filter((item) => reportTitleRe.test(item.id));
-        if (reports.length >= candidateMin) {
-          issues.push({
-            code: "review.sot.consolidation_candidate",
-            severity: "info",
-            note: index.id,
-            message: `${reports.length} plan/report-style children of ${children.length}; consider consolidating into a single source of truth (ipa note redirect ... --to "SoT")`,
-            notes: reports.map((item) => item.id)
-          });
-        }
-      }
-    } else if (scope === "sot") {
-      issues.push({ code: "review.sot.unconfigured", severity: "info", message: "configure review.sot.title_patterns in .ipa/config.yaml to enable this scope" });
-    }
-  }
-  if (options.suggestRefactor) {
-    for (const item of issues) {
-      if (item.code === "ipa.tag.snake_case") item.refactor = `ipa refactor tag-rename ${item.message.split(": ").pop()} <snake_case>`;
     }
   }
   return { scope, issues, status: issues.some((item) => item.severity === "error") ? "error" : "ok" };
@@ -7100,20 +7024,24 @@ function harnessTargetSpec(target = "codex", options = {}) {
   };
 }
 
-function ipaCommandSelection(prefix = "ipa", mapping = DEFAULT_MAPPING) {
-  return `## IPA Command Selection
+function ipaEvidenceRecall(prefix = "ipa") {
+  return `## Evidence Recall
 
-- Exact note title known: \`${prefix} view "Note Title"\` (overview first), then \`--section\`/\`--full\` for the parts you actually need. Several notes: \`${prefix} view "A" "B" --full\` in one call.
-- Index/root summary: \`${prefix} digest "Index Note"\` (children + snippets + dates), then \`view --full\` on at most the 2-3 most relevant children — never open every child.
-- Count or list an index's children/backlinks: \`${prefix} digest "Index Note"\` or \`${prefix} traversal --down "Index Note"\` — read the count from their output instead of hand-rolling \`view | grep\` loops.
-- Broad prior context or user-specific background: \`${prefix} context "keyword" --size medium --format markdown\`; widen with \`${prefix} search "other angle"\` only when context missed something. Several search angles go in one call — \`${prefix} search "A" "B" "C"\` (vault loads once). Results already carry snippets and dates — judge relevance from them before opening notes. Center context on one note instead of a free-text query with \`${prefix} context --by-note "Note Title"\`.
-- Relate a note to an index (make it belong): \`${prefix} note set "Note" --field ${mapping.refs} --add "Index Note" --apply\` — the reliable belongs-to mechanism. \`${prefix} link apply\`/\`${prefix} cascade apply\` only wikify a title already present verbatim in the note body (a silent no-op otherwise); when the body has no plaintext mention of the target, use \`note set --field ${mapping.refs} --add\`. Read-only discovery only: \`${prefix} link suggest "Note Title"\` for candidate targets, \`${prefix} traversal --up|--down|--siblings "Note Title"\` for graph shape.
-- New/empty vault with no \`.ipa/config.yaml\`: \`${prefix} config init\` (absorb existing folders with \`--inbox/--project/--archive\`, then edit to match), verify with \`${prefix} doctor\`. Closing setup: optionally confirm folder/field mapping (config.yaml) and operating rules (\`.ipa/harness/fragments/prompt.md\` → \`${prefix} harness update <target>\`) — the ipa-config skill has the interview. Never rename the user's folders or do vault-wide moves/backfills to fit defaults; absorb existing structure via mapping.
-- New note: \`${prefix} inbox add ...\`. Body edit: \`${prefix} note replace ...\`. Frontmatter edit: \`${prefix} note set "Note" --field ${mapping.refs} --add "Index Note" --apply\`.
-- Rename a note/index (note stays, inbound ${mapping.refs}/wikilinks auto-rewired): \`${prefix} rename "Old" "New" --apply\` (drop \`--apply\` for preview). Only when merging several notes into one: \`${prefix} note redirect\`.
-- Reactivate an archived topic (move its root/index back to the project folder): \`${prefix} move "Note" "${mapping.project_dir}" --apply\` — inbound wikilinks keep resolving (they are folder-independent, so nothing needs rewiring; unlike rename, move does not rewrite link text).
-- During note work always scope \`validator\`/\`formatter plan\` with \`--note\`; without it they are vault-wide maintenance sweeps.
-- Unsure command or syntax: \`${prefix} help\` or \`${prefix} <command> --help\`.
+Use IPA when private vault knowledge could materially change the answer, even if the user did not mention notes. This includes prior rationale and decisions, team direction, meeting or scrum agreements, current work status, blockers, ownership, resumptions, and handoffs. Meeting and scrum records may be the only source for an operational fact; do not treat them as merely secondary evidence.
+
+1. Decide whether recall is needed. Skip IPA when the request is self-contained or current code and git are sufficient. For current implementation facts, inspect code and git first; use vault evidence for intent, organizational context, and facts that are not represented there.
+2. Find the center. If a note or index is known, use \`${prefix} view\` or \`${prefix} context --by-note\`. Otherwise run one \`${prefix} search "facet A" "facet B"\` call with 2-3 short lexical angles. Never submit a file path or the whole user prompt as a query.
+3. Rank evidence by authority and freshness. Prefer current status/architecture notes and explicit decision records when they exist, but use dated meeting or scrum notes when they are newer or the sole source. Distinguish a confirmed decision from a proposal or provisional update.
+4. Expand only after finding a center. Use \`${prefix} digest\` for an index, \`${prefix} graph "Note Title" --depth 2\` for a centered neighborhood, or \`${prefix} traversal\` for a directional walk. Once titles are selected, batch them in one \`${prefix} view "A" "B" --full\` call; do not reopen an overview in full unless a specific missing section is necessary. Open at most 2-3 full notes, then converge.
+5. Use the evidence in the answer. State the applicable fact or decision, its rationale or status, and the note title/date when freshness matters. If code or git conflicts with the vault, report the drift instead of silently choosing one.
+
+## Command Pointers
+
+- Discovery or broad history: \`${prefix} search\` and \`${prefix} context\`.
+- Exact note: \`${prefix} view\`. Index summary: \`${prefix} digest\`.
+- Relationships: \`${prefix} graph\` for a centered neighborhood; \`${prefix} traversal\` for direction.
+- IPA concepts and active vault rules: \`${prefix} convention\`.
+- Command discovery and exact syntax: \`${prefix} help\` and \`${prefix} <command> --help\`.
 `;
 }
 
@@ -7125,11 +7053,12 @@ function globalPromptContent(spec) {
   const skillPath = spec.name === "opencode" ? "~/.config/opencode/skills/ipa/SKILL.md" : `~/.${spec.name}/skills/ipa/SKILL.md`;
   return `## IPA Vault — Evidence-Based Work
 
-This ${tool} environment has the IPA CLI installed for the user's IPA note vault (prior work, decisions, project history, user-specific context).
+This ${tool} environment has the IPA CLI installed for the user's private note vault: decisions and rationale, project history, team direction, meeting and scrum records, current work status, and user-specific context.
 
-- When a request touches the vault, vault notes, or the user's prior work/decisions, answer from vault evidence: drive the work through \`ipa\` commands from the first turn instead of answering from memory or reading vault files directly.
-- Entry points: \`ipa search "keyword"\` (discovery; several quoted queries in one call: \`ipa search "A" "B"\`), \`ipa view "Note Title"\` (read), \`ipa context "keyword" --size medium --format markdown\` (broad/history bootstrap). Full workflow: the \`ipa\` skill at \`${skillPath}\`; exact syntax: \`ipa <command> --help\`.
-- On an index or root note, run \`ipa digest\` before opening any child, then read at most 2-3 in full — and once you already have enough evidence, converge on the answer instead of opening more notes or digesting ones you already read.
+- Use vault evidence whenever a request explicitly concerns IPA/notes, or when planning, architecture/spec interpretation, regression history, resuming work, or a handoff could depend on private context — even if the user did not mention notes. Meeting or scrum records may be the only source for an operational fact.
+- Skip IPA for self-contained questions when the supplied context, current code, and git are enough. Code and git are authoritative for current implementation behavior; IPA is evidence for intent, decisions, organizational context, and facts absent from the repository. Report drift when they conflict.
+- Entry points: \`ipa search "keyword"\` (discovery; several short facets in one call), \`ipa view "Note Title"\` (exact read), and \`ipa context "keyword" --size medium --format markdown\` (broad/history bootstrap). Full workflow: the \`ipa\` skill at \`${skillPath}\`; exact syntax: \`ipa <command> --help\`.
+- On an index or root note, run \`ipa digest\` before opening children, read at most 2-3 full notes, then use the evidence in the answer instead of continuing to explore.
 - IPA concepts and this vault's operating rules: \`ipa convention\`.
 - Create new vault notes only through \`ipa inbox add\` — a guard hook blocks new markdown outside the inbox.
 - After editing vault markdown, finish the note-scoped loop: \`ipa validator --note ...\`, \`ipa formatter plan --note ...\`, \`ipa formatter apply --note ...\`. A Stop gate blocks final responses while formatter patches remain.`;
@@ -7320,16 +7249,16 @@ Diagnose vault structure, report by category, and fix only what the user approve
 
 ## Workflow
 
-1. Scope: vault-wide by default; when the user names a root/index, limit the review to its subtree (\`ipa traversal --down "Root Note"\`).
+1. Scope: vault-wide by default; when the user names a root/index, inspect its centered neighborhood with \`ipa graph "Root Note" --depth 2\` and use \`ipa traversal --down "Root Note"\` when a directional subtree is needed.
 2. Scan:
 
 \`\`\`bash
-ipa review all --suggest-refactor   # convention, inbox, duplicates, tags, sot
+ipa review all                      # convention, inbox, duplicates
 ipa validator                       # frontmatter, broken links, orphan notes
 \`\`\`
 
-   The \`sot\` scope (report-style pileups under one index) stays silent until \`review.sot.title_patterns\` is set in \`.ipa/config.yaml\`.
-   Categories to cover: tag health (near-duplicate or one-off tags), index structure (overcrowded, empty, or overlapping indexes), root structure (areas missing a root), link health (orphan notes without \`${mapping.refs}\`, broken wikilinks, notes pointing directly at a root), and frontmatter consistency.
+   Builtin review scopes cover only generic IPA mechanics. Vault-specific checks such as tag vocabulary, title conventions, index thresholds, and single-source-of-truth policy come from \`.ipa/plugins/rules/*.js\` and the vault's harness fragments.
+   Categories to cover: active vault-rule findings, index/root structure, link health (orphan notes without \`${mapping.refs}\`, broken wikilinks, notes pointing directly at a root), and frontmatter consistency.
 3. Report a chat summary per category with issue counts and affected notes, then ask which items to fix.
 4. Fix approved items only:
 
@@ -7630,7 +7559,7 @@ function harnessSkillContent(vaultPath, spec, mapping = DEFAULT_MAPPING, options
   const prefix = commandPrefix(vaultPath, options);
   return `---
 name: ipa
-description: Entry point for every IPA vault task — search, read, validate, format, and safely write vault notes with the ipa CLI, and route focused work (concept questions, triage, review, tuning, rules, config) to the vault's helper skills. Use when a task mentions IPA, the vault, a vault note, inbox capture, note search, note validation, note formatting, asks what an IPA concept means, or references a note path under the vault folders (\`${mapping.inbox_dir}/\`, \`${mapping.project_dir}/\`, \`${mapping.archive_dir}/\`, or \`.md\` files in ${vaultPath}).
+description: Use IPA for explicit vault and note work, and whenever planning, architecture or spec interpretation, regression history, work resumption, handoff, team direction, meetings, scrums, status, blockers, or ownership may depend on private vault knowledge even when notes are not mentioned. Also use for note paths under \`${mapping.inbox_dir}/\`, \`${mapping.project_dir}/\`, \`${mapping.archive_dir}/\`, or \`.md\` files in ${vaultPath}. Skip self-contained implementation questions; code and git remain authoritative for current behavior.
 ---
 
 <!-- ${HARNESS_MARKER} -->
@@ -7660,18 +7589,8 @@ This skill is the single entry point for vault requests from any directory. Focu
 
 Inside the vault these load as invocable skills — invoke the matching one. Outside the vault they are not auto-loaded: read the matching \`SKILL.md\` at the path above and follow its workflow with \`${prefix}\` commands. If the skill file does not exist, fall back to \`${prefix} convention\` and the commands below.
 
-## Read First
-
-\`\`\`bash
-${prefix} view "Note Title"
-${prefix} digest "Index Note"
-${prefix} context "keyword" --size medium --format markdown
-${prefix} search "keyword"
-${prefix} search "keyword A" "keyword B" "keyword C"   # several queries, one call
-\`\`\`
-
-${ipaCommandSelection(prefix, mapping)}
-Keep exploration proportional to the question: simple lookups within ~3 ipa calls, broad questions within ~8. At the budget, answer from the evidence gathered and state what was not checked. Pick short keywords or exact titles — never paste file paths or the full user prompt as a query.
+${ipaEvidenceRecall(prefix)}
+Keep exploration proportional to the question: simple lookups within ~3 ipa calls, broad questions within ~8. At the budget, answer from the evidence gathered and state what was not checked.
 
 If search results look stale after external (Obsidian) edits, diagnose the index fingerprint with \`${prefix} cache doctor\` and force a rebuild with \`${prefix} cache rebuild\`.
 
@@ -7722,17 +7641,16 @@ Vault-specific conventions are code, not prose: convention checks live in \`.ipa
 // queryable via `ipa convention` — do not duplicate them here.
 function localPromptContent(vaultPath, spec, mapping, options = {}) {
   const prefix = commandPrefix(vaultPath, options, true);
-  const skillRoot = vaultLocalSkillRootRel(spec);
   return `## IPA CLI Harness
 
-This vault has an IPA CLI harness installed for ${spec.name}. Vault work goes through the \`${prefix}\` CLI — full workflow and safe-write rules in the global \`ipa\` skill, IPA concepts and this vault's operating rules via \`${prefix} convention\`, exact syntax via \`${prefix} <command> --help\`.
+This vault has an IPA CLI harness installed. Vault work goes through the \`${prefix}\` CLI — full workflow and safe-write rules in the global \`ipa\` skill, IPA concepts and this vault's operating rules via \`${prefix} convention\`, exact syntax via \`${prefix} <command> --help\`.
 
 - Folders: inbox \`${mapping.inbox_dir}\`, project \`${mapping.project_dir}\`, archive \`${mapping.archive_dir}\`
 - Vault config: .ipa/config.yaml; profile registry: ${profileRegistryDisplay()}
 - Vault-specific conventions are enforced by \`.ipa/plugins/rules/*.js\`, retrieval boosts by \`.ipa/plugins/search/*.js\`, session-end policy by \`.ipa/plugins/gates/*.js\`; verify with \`${prefix} plugin validate\` and \`${prefix} plugin dry-run\`.
 - In harness sessions plain \`${prefix} search "keyword"\` calls are logged as tune evidence automatically.
 
-Focused workflows live as skills under \`${skillRoot}/\` — routing map in the global \`ipa\` skill.
+Focused workflows live as vault-local skills for each installed harness target — the exact path and routing map are in that target's global \`ipa\` skill.
 `;
 }
 
@@ -8173,7 +8091,15 @@ function firstString(values) {
 const input = inputJson();
 const toolInput = input.tool_input ?? input.toolInput ?? input.input ?? {};
 const command = firstString([toolInput.command, input.command]);
-if (!command || !/(^|[\\s;|&(])ipa\\s/.test(command)) process.exit(0);
+function ipaCommandCount(value) {
+  let total = 0;
+  for (const segment of String(value ?? "").split(/&&|\\|\\||;/)) {
+    total += [...segment.matchAll(/(?:^|\\n)\\s*ipa\\s+[a-z-]/g)].length;
+  }
+  return total;
+}
+const commandCount = ipaCommandCount(command);
+if (!commandCount) process.exit(0);
 
 const sessionId = firstString([
   input.session_id,
@@ -8205,7 +8131,8 @@ for (const key of Object.keys(state.sessions)) {
   if (Number.isNaN(stamp) || stamp < cutoff) delete state.sessions[key];
 }
 const entry = state.sessions[sessionId] ?? { count: 0 };
-entry.count += 1;
+const previousCount = entry.count;
+entry.count += commandCount;
 entry.updated_at = new Date().toISOString();
 state.sessions[sessionId] = entry;
 try {
@@ -8216,7 +8143,10 @@ try {
 }
 
 const count = entry.count;
-if (count < WARN_AT || (count - WARN_AT) % REPEAT_EVERY !== 0) process.exit(0);
+const nextNudgeAt = previousCount < WARN_AT
+  ? WARN_AT
+  : WARN_AT + (Math.floor((previousCount - WARN_AT) / REPEAT_EVERY) + 1) * REPEAT_EVERY;
+if (count < nextNudgeAt) process.exit(0);
 
 const message = [
   \`[IPA CLI] This session has run \${count} ipa calls.\`,

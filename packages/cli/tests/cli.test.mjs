@@ -56,41 +56,47 @@ test("CLI help and key smoke commands run through ipa-test profile", async () =>
   assert.match(help, /Core commands:/);
   assert.match(help, /convention/);
   assert.match(help, /doctor/);
-  assert.match(help, /list-channels \/ list-rules \/ list-refactors/);
+  assert.match(help, /--version\s+Show version information/);
+  assert.match(help, /help\s+Show help for any registered command path/);
+  assert.match(help, /list-channels\s+List active search channels/);
+  assert.match(help, /list-rules\s+List active builtin and vault-local rules/);
+  assert.match(help, /list-refactors\s+List registered refactor recipes/);
   const tuneHelp = run(env, ["tune", "--help"]);
   assert.match(tuneHelp, /Usage: ipa \[OPTIONS\] tune/);
-  assert.match(tuneHelp, /ipa tune --trials 100/);
-  assert.match(tuneHelp, /ipa tune label --query Q --target NOTE/);
-  assert.match(tuneHelp, /testset add --query Q --target NOTE/);
-  assert.match(tuneHelp, /Progress:/);
+  assert.match(tuneHelp, /testset\s+Manage vault-local search testsets/);
+  assert.match(tuneHelp, /--trials <number>/);
+  const tuneAddHelp = run(env, ["help", "tune", "testset", "add"]);
+  assert.match(tuneAddHelp, /Usage: ipa \[OPTIONS\] tune testset add/);
+  assert.match(tuneAddHelp, /--query <query>/);
+  assert.match(tuneAddHelp, /--target <target>/);
   const contextHelp = run(env, ["context", "--help"]);
-  assert.match(contextHelp, /--include MODE/);
-  const inboxHelp = run(env, ["inbox", "--help"]);
-  assert.match(inboxHelp, /add --ref REF/);
-  assert.match(inboxHelp, /triage --apply/);
-  const linkHelp = run(env, ["link", "--help"]);
-  assert.match(linkHelp, /plan --output PATH/);
+  assert.match(contextHelp, /--include <mode>/);
+  const inboxHelp = run(env, ["help", "inbox", "add"]);
+  assert.match(inboxHelp, /--ref <ref>/);
+  const triageHelp = run(env, ["help", "inbox", "triage"]);
+  assert.match(triageHelp, /--apply/);
+  const linkHelp = run(env, ["help", "link", "plan"]);
+  assert.match(linkHelp, /--output <path>/);
   const refactorHelp = run(env, ["refactor", "--help"]);
-  assert.match(refactorHelp, /ipa refactor tag-remove TAG/);
-  assert.match(refactorHelp, /ipa refactor tag-add TAG/);
-  assert.match(refactorHelp, /ipa refactor ref-add REF/);
-  assert.match(refactorHelp, /`refactor` is vault-wide/);
-  assert.match(refactorHelp, /ipa list-refactors/);
+  assert.match(refactorHelp, /<subcommand>/);
+  assert.match(refactorHelp, /This command is vault-wide/);
   const reviewHelp = run(env, ["review", "--help"]);
-  assert.match(reviewHelp, /all\|convention\|inbox\|duplicates\|tags\|sot/);
-  assert.doesNotMatch(reviewHelp, /indexes/);
-  assert.doesNotMatch(reviewHelp, /--content/);
-  const contractHelp = run(env, ["contract", "--help"]);
-  assert.match(contractHelp, /export-fixtures --target DIR/);
-  const noteHelp = run(env, ["note", "--help"]);
+  assert.match(reviewHelp, /all, convention, inbox, or duplicates/);
+  assert.doesNotMatch(reviewHelp, /SoT|sot|tags/);
+  const contractHelp = run(env, ["help", "contract", "export-fixtures"]);
+  assert.match(contractHelp, /--target <path>/);
+  const noteHelp = run(env, ["help", "note", "replace"]);
   assert.match(noteHelp, /Usage: ipa \[OPTIONS\] note replace/);
-  assert.match(noteHelp, /--old-file PATH/);
+  assert.match(noteHelp, /--old-file <path>/);
   assert.match(noteHelp, /--allow-multiple/);
+  const unknownHelp = runRaw(env, ["help", "not-a-command"]);
+  assert.notEqual(unknownHelp.status, 0);
+  assert.match(unknownHelp.stderr, /unknown command: not-a-command/);
   const channels = run(env, ["--profile", "ipa-test", "list-channels"]);
   assert.match(channels, /search channels \(9\)/);
   assert.match(channels, /body_match\s+0\.3630/);
   const rules = run(env, ["--profile", "ipa-test", "list-rules"]);
-  assert.match(rules, /validator rules \(16\)/);
+  assert.match(rules, /validator rules \(8\)/);
   assert.match(rules, /ipa\.link\.wikilink_target_missing/);
   await writeFile(join(vault, "00 Inbox", "Broken.md"), "# Broken\n", "utf8");
   const validator = run(env, ["--profile", "ipa-test", "validator"]);
@@ -177,6 +183,34 @@ test("CLI help and key smoke commands run through ipa-test profile", async () =>
   const unknownPackCommand = runRaw(env, ["--profile", "ipa-test", "tune", "pack", "foo", "--json"]);
   assert.notEqual(unknownPackCommand.status, 0);
   assert.match(unknownPackCommand.stderr, /too many arguments|unknown command/i);
+});
+
+test("graph renders the depth-2 golden ASCII topology around its center note", async () => {
+  const { env } = await fixtureProfile("graph-vault");
+  const output = run(env, ["--profile", "ipa-test", "graph", "Alpha Hub", "--depth", "2"]);
+  assert.equal(output, `Graph from 'Alpha Hub' (depth 2)
+
+◎ [Alpha Hub] (note)
+├── ref → Workspace Orchestration (index)
+│   ├── ref → Coding Agents (index)
+│   ├── ref ← Agent Console (note)
+│   └── ref ← Terminology Guide (note)
+├── link ↔ · ref ← Dispatch Gate (note)
+├── link ↔ · ref ← Dispatch Preconditions (note)
+├── link → Standing Policies (note)
+│   ├── link → Orchestration Playbook (note)  ↩ already shown
+│   └── link → Terminology Guide (note)  ↩ already shown
+├── link → Orchestration Playbook (note)
+│   ├── link → Terminology Guide (note)  ↩ already shown
+│   └── link → Agent Operations (note)  ↩ already shown
+└── link → Agent Operations (note)
+    └── link ↔ Agent Console (note)  ↩ already shown
+`);
+
+  const json = JSON.parse(run(env, ["--profile", "ipa-test", "--json", "graph", "Alpha Hub", "--depth", "2"]));
+  assert.equal(json.operation, "graph");
+  assert.equal(json.nodes.some((node) => node.id === "Technology Root"), false);
+  assert.equal(json.cross_edges.length, 5);
 });
 
 test("profile init and new manage machine-local profile registry", async () => {
@@ -315,8 +349,8 @@ test("config init writes .ipa/config.yaml, refuses without --force, and lists in
   const forced = JSON.parse(run(env, ["--vault", vault, "--json", "config", "init", "--force"]));
   assert.equal(forced.overwritten, true);
 
-  const help = run(env, ["config", "--help"]);
-  assert.match(help, /config init/);
+  const help = run(env, ["help", "config", "init"]);
+  assert.match(help, /Usage: ipa \[OPTIONS\] config init/);
 });
 
 test("legacy surface fixture is covered by JS fixtures", async () => {
@@ -370,8 +404,8 @@ test("legacy surface fixture is covered by JS fixtures", async () => {
   assert.match(channels, /fuzzy\s+0\.2680\s+0\.2680\s+Graded fuzzy match/);
   assert.match(channels, /project\s+0\.0330\s+0\.0330\s+Project folder\/ref boost/);
   const rules = run(env, [...profile, "list-rules"]);
-  assert.match(rules, /validator rules \(16\)/);
-  assert.match(rules, /ipa\.heading\.no_h1\s+heading\s+info\s+note\s+yes\s+on\s+builtin/);
+  assert.match(rules, /validator rules \(8\)/);
+  assert.match(rules, /ipa\.frontmatter\.missing_type\s+frontmatter\s+warn\s+note\s+no\s+on\s+builtin/);
   const refactors = run(env, [...profile, "list-refactors"]);
   assert.match(refactors, /refactor commands \(7\)/);
   assert.match(refactors, /ref-replace\s+frontmatter ref 교체 \(전체 vault\)/);
@@ -380,19 +414,15 @@ test("legacy surface fixture is covered by JS fixtures", async () => {
 
 test("harness help lists opencode target, selector options, and default install", async () => {
   const { env } = await fixtureProfile();
-  const help = run(env, ["harness", "--help"]);
-  assert.match(help, /ipa harness install opencode/);
-  assert.match(help, /ipa harness install opencode --with hook:evidence/);
-  assert.match(help, /ipa harness install opencode --only skill,prompt/);
-  assert.match(help, /ipa harness install codex --only hook:guard/);
+  const help = run(env, ["help", "harness", "install"]);
+  assert.match(help, /Usage: ipa \[OPTIONS\] harness install/);
+  assert.match(help, /\[target\]/);
   assert.match(help, /--only <component\.\.\.>/);
   assert.match(help, /--with <component\.\.\.>/);
   assert.match(help, /--without <component\.\.\.>/);
-  assert.match(help, /all components except hook:evidence/i);
-  assert.match(help, /hook:evidence \(opt-in\)/);
-  assert.match(help, /hook:call-counter/);
-  assert.match(help, /hook:vault-ref/);
-  assert.match(help, /gate \(hook-invoked\)/);
+  const parent = run(env, ["harness", "--help"]);
+  assert.match(parent, /gate\s+Run the session-end formatter gate/);
+  assert.match(parent, /guard\s+Inspect or evaluate the inbox write guard/);
 });
 
 test("harness install accepts component selectors for opencode and codex", async () => {
@@ -504,7 +534,7 @@ test("agent-efficiency surface: snippets, digest, multi-view, note set, replace 
 
   // formatter plan surfaces apply-gated rule patches without writing.
   const planHelp = run(env, ["digest", "--help"]);
-  assert.match(planHelp, /Summarize an index\/root note/);
+  assert.match(planHelp, /Summarize an index or root note/);
 });
 
 test("multi-title set/digest, note redirect, and cascade run through the CLI", async () => {
@@ -530,7 +560,7 @@ test("multi-title set/digest, note redirect, and cascade run through the CLI", a
   assert.equal(existsSync(join(vault, "02 Archive", "Alpha.md")), true);
   assert.doesNotMatch(await readFile(join(vault, "01 Project", "🔖 Topic Index.md"), "utf8"), /\[\[Alpha\]\]/);
 
-  const reviewOut = run(env, ["--profile", "ipa-test", "review", "sot"]);
+  const reviewOut = run(env, ["--profile", "ipa-test", "review", "duplicates"]);
   assert.match(reviewOut, /Issues|No issues\./);
 });
 
@@ -643,9 +673,13 @@ test("harness status lists selected and omitted components per target", async ()
   const harnessEnv = { ...env, IPA_HARNESS_HOME: home };
   run(harnessEnv, ["--json", "harness", "install", "codex"]);
   run(harnessEnv, ["--json", "harness", "install", "claude", "--without", "hook:evidence"]);
+  run(harnessEnv, ["--json", "harness", "install", "opencode"]);
   const text = run(harnessEnv, ["harness", "status"]);
   assert.match(text, /omitted \(codex\)\s+-/);
   assert.match(text, /omitted \(claude\)\s+hook:evidence/);
+  const json = JSON.parse(run(harnessEnv, ["--json", "harness", "status"]));
+  assert.equal(json.global.codex.outdated_components.includes("local-prompt"), false);
+  assert.equal(json.global.opencode.outdated_components.includes("local-prompt"), false);
 });
 
 test("harness status prompt column reflects the global prompt block, not the evidence hook", async () => {
@@ -679,7 +713,7 @@ test("validator --note restricts reported issues to the edited notes", async () 
   const { vault, env } = await fixtureProfile();
   await writeFile(
     join(vault, "00 Inbox", "Scoped.md"),
-    `---\ndate_created: 2026/05/10 (Sun) 00:00:00\ndate_modified: 2026/05/10 (Sun) 00:00:00\nref: ["[[🔖 Topic Index]]"]\ntags: ["BadTag"]\ntype: note\n---\n# Scoped\n\nBody\n`,
+    `---\ndate_created: 2026/05/10 (Sun) 00:00:00\ndate_modified: 2026/05/10 (Sun) 00:00:00\nref: ["[[Missing Target]]"]\ntags: []\ntype: note\n---\n# Scoped\n\nBody\n`,
     "utf8"
   );
   const scoped = JSON.parse(run(env, ["--json", "validator", "--note", "Scoped"]));
@@ -687,7 +721,7 @@ test("validator --note restricts reported issues to the edited notes", async () 
   assert.ok(scoped.issues.length >= 1);
   assert.ok(scoped.issues.every((item) => item.note === "Scoped" || (item.path ?? "").includes("Scoped")));
   const help = run(env, ["help", "validator"]);
-  assert.match(help, /--note NOTE/);
+  assert.match(help, /--note <notes\.\.\.>/);
 });
 
 test("vault-wide validator text output is capped per code with a summary table", async () => {
@@ -695,16 +729,16 @@ test("vault-wide validator text output is capped per code with a summary table",
   for (let i = 0; i < 35; i += 1) {
     await writeFile(
       join(vault, "00 Inbox", `Noisy ${i}.md`),
-      `---\ndate_created: 2026/05/10 (Sun) 00:00:00\ndate_modified: 2026/05/10 (Sun) 00:00:00\nref: ["[[🔖 Topic Index]]"]\ntags: ["BadTag${i}"]\ntype: note\n---\n# Noisy ${i}\n\nBody\n`,
+      `---\ndate_created: 2026/05/10 (Sun) 00:00:00\ndate_modified: 2026/05/10 (Sun) 00:00:00\nref: ["[[Missing Target ${i}]]"]\ntags: []\ntype: note\n---\n# Noisy ${i}\n\nBody\n`,
       "utf8"
     );
   }
   const text = run(env, ["validator"]);
   assert.match(text, /more issue\(s\) hidden/);
   assert.match(text, /Count/);
-  const rowCount = (text.match(/ipa\.tag\.snake_case/g) ?? []).length;
-  assert.ok(rowCount <= 7, `snake_case rows should be capped, got ${rowCount}`);
+  const rowCount = (text.match(/ipa\.link\.ref_target_missing/g) ?? []).length;
+  assert.ok(rowCount <= 7, `missing-ref rows should be capped, got ${rowCount}`);
 
   const json = JSON.parse(run(env, ["--json", "validator"]));
-  assert.ok(json.issues.filter((item) => item.code === "ipa.tag.snake_case").length >= 35, "--json keeps the full list");
+  assert.ok(json.issues.filter((item) => item.code === "ipa.link.ref_target_missing").length >= 35, "--json keeps the full list");
 });

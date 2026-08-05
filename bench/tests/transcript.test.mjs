@@ -35,6 +35,16 @@ test("ipaCall detection: cd-chained ipa", () => {
   assert.match(p.ipaCalls[0].command, /inbox add/);
 });
 
+test("ipaCall detection: counts each chained ipa command", () => {
+  const p = parseTranscript(bashTranscript('ipa view "A" --full && echo split && ipa view "B" --full'));
+  assert.equal(p.bashCalls.length, 1);
+  assert.equal(p.ipaCalls.length, 2);
+  assert.deepEqual(p.ipaCalls.map((call) => call.command), [
+    'ipa view "A" --full',
+    'ipa view "B" --full',
+  ]);
+});
+
 test("ipaCall detection: heredoc body then chained ipa", () => {
   const p = parseTranscript(bashTranscript("mkdir -p .tmp && cat > .tmp/x << 'EOF'\n> [!abstract]\n내용\nEOF\nipa inbox add \"t\""));
   assert.equal(p.ipaCalls.length, 1);

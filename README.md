@@ -11,7 +11,7 @@ Surface:
 - `ipa formatter plan / apply` — autofix issues that rules know how to fix
 - `ipa tune / eval / list / use / analyze` — tpe-lite tuning on weights
 - `ipa config init / show / profile list / use / current` — config bootstrap and introspection
-- `ipa search / view / traversal / validator / refactor` — legacy
+- `ipa search / view / traversal / graph / validator / refactor` — legacy
   surface now backed by `runtime/*` modules built on the same service
   layer as `engine` / `convention` / `formatter` (see
   [Vault skill compatibility](#vault-skill-compatibility) below)
@@ -149,6 +149,9 @@ ipa profile current
 ipa engine search "ipa cli" --explain --max 5
 ipa search "ipa cli" "하네스" "벤치마크"
 
+# Render a centered, depth-limited ASCII neighborhood from refs and wikilinks.
+ipa graph "Alpha" --depth 2
+
 # List the active search channels (builtin/profile + vault-local plugins).
 ipa engine channels
 
@@ -284,10 +287,6 @@ test:
   file: .ipa/tune/testsets/testset.json
 weights:
   file: .ipa/tune/results/2026-05-06T21-30-00.json
-review:
-  sot:
-    title_patterns: [계획, 결과, report, plan]
-    min: 4
 link:
   stopwords: [참여자, 요약]
   ignored_headings: [전사문, transcript]
@@ -301,9 +300,9 @@ rules:
   only:
     - vault.frontmatter_order
   ignore:
-    - ipa.heading.no_h1
+    - vault.heading.start_h2
   items:
-    ipa.heading.no_h1: false
+    vault.heading.start_h2: false
     vault.obsidian.inline_tags_to_yaml: false
 files:
   exclude:
@@ -329,10 +328,7 @@ filter by rule code after loading.
 
 `mapping.date_format` sets the timestamp format core writes into the mapped
 date fields (tokens: `YYYY MM DD ddd HH mm ss`); the default is
-`YYYY/MM/DD (ddd) HH:mm:ss`. `review.sot.title_patterns` supplies the
-report-style title vocabulary for `ipa review sot` — the scope stays silent
-until the vault declares its own patterns (`min` sets the pileup threshold,
-default 4). `link.stopwords` and `link.ignored_headings` extend the
+`YYYY/MM/DD (ddd) HH:mm:ss`. `link.stopwords` and `link.ignored_headings` extend the
 link-suggestion vocabulary: stopwords are dropped from semantic queries and
 body text under ignored headings is skipped, so vault-specific formats
 (meeting transcripts, boilerplate sections) stay out of link suggestions.
@@ -706,6 +702,7 @@ old in-package parity oracle has been removed.
 | `list-refactors`   | `packages/cli` → `@ipa/core.REFACTORS`| Registry inspection for the 7 refactor recipes.                        |
 | `view`             | `@ipa/core.viewNote`                 | Note rendering with context header, frontmatter, body/structure, footer. |
 | `traversal`        | `@ipa/core.traversal`                | Ref-based up/down/siblings/root traversal.                             |
+| `graph`            | `@ipa/core.graphTopology`            | Centered ref/wikilink topology rendered as a depth-limited ASCII tree. |
 | `context`          | `@ipa/core.buildContext`             | Compact agent context pack with selected notes, excerpts, and local graph. |
 | `validator`        | `@ipa/core.validateVault`            | Validator engine plus formatter-aware issue reporting; `--note` scopes output to edited notes. |
 | `search`           | `@ipa/core.searchVault`              | Weighted builtin and vault-local JS plugin search.                     |
