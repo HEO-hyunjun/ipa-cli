@@ -1005,19 +1005,20 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   assert.equal((await harnessDoctor(vault, options)).status, "ok");
   const skill = await readFile(join(home, ".codex", "skills", "ipa", "SKILL.md"), "utf8");
   assert.ok(skill.startsWith("---\nname: ipa\n"), "skill YAML frontmatter must be first");
-  assert.match(skill, /ipa context "keyword" --size medium --format markdown/);
-  assert.match(skill, /ipa search "keyword"/);
-  assert.match(skill, /IPA Command Selection/);
-  assert.match(skill, /ipa link suggest "Note Title"/);
+  assert.match(skill, /## Evidence Recall/);
+  assert.match(skill, /## Command Pointers/);
+  assert.match(skill, /private vault knowledge even when notes are not mentioned/);
+  assert.match(skill, /Meeting and scrum records may be the only source/);
+  assert.match(skill, /Skip IPA when the request is self-contained or current code and git are sufficient/);
+  assert.match(skill, /one `ipa search "facet A" "facet B"` call with 2-3 short lexical angles/);
+  assert.match(skill, /Rank evidence by authority and freshness/);
+  assert.match(skill, /use dated meeting or scrum notes when they are newer or the sole source/);
+  assert.match(skill, /batch them in one `ipa view "A" "B" --full` call/);
+  assert.match(skill, /do not reopen an overview in full unless a specific missing section is necessary/);
+  assert.match(skill, /If code or git conflicts with the vault, report the drift/);
   assert.match(skill, /ipa graph "Note Title" --depth 2/);
   assert.match(skill, /ipa <command> --help/);
   assert.match(skill, /within ~3 ipa calls/);
-  assert.match(skill, /ipa digest "Index Note"/);
-  assert.match(skill, /ipa config init/);
-  // Command Selection surfaces the plain rename (note stays, links rewired) and
-  // the onboarding close that points at the operating-rules fragment.
-  assert.match(skill, /ipa rename "Old" "New" --apply/);
-  assert.match(skill, /\.ipa\/harness\/fragments\/prompt\.md/);
   assert.match(skill, /Never edit the time fields \(`date_created`\/`date_modified`\) by hand/);
   assert.match(skill, /ipa convention/);
   assert.doesNotMatch(skill, /current prompt context/);
@@ -1029,19 +1030,11 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   assert.match(skill, /## Scripted Edits/);
   assert.match(skill, /ipa note replace "Note Title"/);
   assert.match(skill, /ipa note set "Note Title" --field ref --add "Index Note" --apply/);
-  // Command Selection leads the "relate notes" answer with the write path and
-  // demotes link suggest/traversal to read-only discovery (bench g30).
-  assert.match(skill, /Relate a note to an index \(make it belong\): `ipa note set "Note" --field ref --add "Index Note" --apply`/);
-  assert.match(skill, /only wikify a title already present verbatim in the note body/);
-  assert.match(skill, /Read-only discovery only:/);
-  // Counting an index's children routes to digest/traversal, not view|grep loops.
-  assert.match(skill, /Count or list an index's children\/backlinks:/);
-  assert.match(skill, /ipa traversal --down "Index Note"/);
-  // context --by-note distinction rides on the existing context line.
-  assert.match(skill, /ipa context --by-note "Note Title"/);
-  // Archive→project reactivation move with folder-independent link framing.
-  assert.match(skill, /Reactivate an archived topic[^\n]*ipa move "Note" "01 Project" --apply/);
-  assert.match(skill, /inbound wikilinks keep resolving/);
+  // Detailed command syntax comes from the registry-generated help surface,
+  // not from a duplicated catalog in the skill.
+  assert.doesNotMatch(skill, /IPA Command Selection/);
+  assert.doesNotMatch(skill, /Relate a note to an index/);
+  assert.doesNotMatch(skill, /Reactivate an archived topic/);
   // Generalized "preview is not the deliverable" mutation cue in Safe Writes.
   assert.match(skill, /a preview or plan is not the deliverable — re-run the same command with `--apply`/);
   // c12: the single-note apply cue and the bulk-confirm exception are scoped by
@@ -1064,7 +1057,11 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   // points at the skill/convention/help surfaces instead of duplicating them.
   const globalPrompt = await readFile(join(home, ".codex", "AGENTS.md"), "utf8");
   assert.match(globalPrompt, /Evidence-Based Work/);
-  assert.match(globalPrompt, /answer from vault evidence/);
+  assert.match(globalPrompt, /even if the user did not mention notes/);
+  assert.match(globalPrompt, /Meeting or scrum records may be the only source/);
+  assert.match(globalPrompt, /Skip IPA for self-contained questions/);
+  assert.match(globalPrompt, /Code and git are authoritative for current implementation behavior/);
+  assert.match(globalPrompt, /Report drift when they conflict/);
   assert.match(globalPrompt, /ipa search "keyword"/);
   assert.match(globalPrompt, /ipa <command> --help/);
   assert.match(globalPrompt, /ipa convention/);
@@ -1074,7 +1071,7 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   // it. Distinct wording from the skill's fuller version, not copy-pasted into it.
   assert.match(globalPrompt, /ipa digest/);
   assert.match(globalPrompt, /before opening/);
-  assert.match(globalPrompt, /converge/);
+  assert.match(globalPrompt, /use the evidence in the answer/);
   assert.doesNotMatch(skill, /digesting ones you already read/, "the global efficiency bullet must not be copy-pasted into the skill's command selection");
   assert.doesNotMatch(globalPrompt, /ipa link suggest/, "global block must not duplicate the command catalog");
   assert.match(await readFile(join(home, ".codex", "hooks", "ipa-inbox-guard.mjs"), "utf8"), /shared IPA inbox creation guard/);
@@ -1483,16 +1480,17 @@ test("harness install opencode creates OpenCode-native managed artifacts and uni
   assert.ok(existsSync(join(vault, ".ipa", "harness", "opencode", "manifest.json")));
   assert.ok(existsSync(join(vault, ".ipa", "harness", "manifest.json")));
 
-  // Then: the global OpenCode skill has IPA frontmatter and command guidance.
+  // Then: the global OpenCode skill has IPA frontmatter and recall guidance.
   const skill = await readFile(join(opencodeHome, "skills", "ipa", "SKILL.md"), "utf8");
   assert.ok(skill.startsWith("---\nname: ipa\n"), "skill YAML frontmatter must be first");
-  assert.match(skill, /ipa context "keyword" --size medium --format markdown/);
-  assert.match(skill, /ipa search "keyword"/);
+  assert.match(skill, /## Evidence Recall/);
+  assert.match(skill, /private vault knowledge could materially change the answer/);
+  assert.match(skill, /Discovery or broad history: `ipa search` and `ipa context`/);
 
   // Then: the global OpenCode AGENTS.md prompt has evidence-based guidance.
   const globalPrompt = await readFile(join(opencodeHome, "AGENTS.md"), "utf8");
   assert.match(globalPrompt, /Evidence-Based Work/);
-  assert.match(globalPrompt, /answer from vault evidence/);
+  assert.match(globalPrompt, /Meeting or scrum records may be the only source/);
 
   // Then: the OpenCode plugin file is valid JavaScript with the harness marker.
   const pluginSource = await readFile(join(opencodeHome, "plugins", "ipa-harness.js"), "utf8");
@@ -1956,14 +1954,9 @@ test("harness prompt surfaces render field and folder names from the config mapp
   // Then: the skill teaches the vault's real field names, not IPA defaults.
   const skill = await readFile(join(home, ".claude", "skills", "ipa", "SKILL.md"), "utf8");
   assert.match(skill, /--field link --add "Index Note" --apply/);
-  // P1: the "relate notes" write path leads and renders the mapped refs field.
-  assert.match(skill, /Relate a note to an index \(make it belong\): `ipa note set "Note" --field link --add "Index Note" --apply`/);
-  // P9: the reactivation move line renders the mapped project folder.
-  assert.match(skill, /Reactivate an archived topic[^\n]*ipa move "Note" "20 Active" --apply/);
   assert.match(skill, /`created`\/`modified`/);
   assert.match(skill, /`link`\/`keywords`\) at capture time/);
-  // The rename router row names the mapped refs field for the inbound rewire.
-  assert.match(skill, /inbound link\/wikilinks auto-rewired/);
+  assert.match(skill, /`10 Intake\/`, `20 Active\/`/);
   assert.doesNotMatch(skill, /--field ref --add/);
   assert.doesNotMatch(skill, /date_created/);
 
@@ -2001,7 +1994,7 @@ test("harness prompt surfaces render field and folder names from the config mapp
   // references no folder/field, so it stays mapping-safe).
   const globalPrompt = await readFile(join(home, ".claude", "CLAUDE.md"), "utf8");
   assert.match(globalPrompt, /ipa digest/);
-  assert.match(globalPrompt, /converge/);
+  assert.match(globalPrompt, /use the evidence in the answer/);
 
   await harnessUninstall(vault, "claude", options);
 });
@@ -2582,7 +2575,7 @@ test("opencode full install reports plugin-backed hook components as present in 
   await harnessUninstall(vault, "opencode", options);
 });
 
-test("call-counter hook counts ipa Bash calls per session and nudges at the threshold", async () => {
+test("call-counter hook counts actual ipa commands per session and nudges when a chained call crosses the threshold", async () => {
   const vault = await fixtureVault();
   const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
   const options = { homeDir: home, profile: "ipa-test" };
@@ -2603,17 +2596,18 @@ test("call-counter hook counts ipa Bash calls per session and nudges at the thre
   assert.equal(ignored.stdout.trim(), "");
   assert.equal(existsSync(join(vault, ".ipa", "harness", "call-counter.json")), false);
 
-  // ipa calls 1..9 count silently; the 10th emits a convergence nudge.
+  // ipa calls 1..9 count silently; one Bash tool_use containing two chained ipa
+  // commands crosses the threshold at 11 and must emit a convergence nudge.
   for (let index = 1; index <= 9; index += 1) {
     const silent = runHook(`ipa search "query ${index}"`);
     assert.equal(silent.status, 0);
     assert.equal(silent.stdout.trim(), "", `call ${index} must stay silent`);
   }
-  const nudged = runHook('ipa view "Some Note" --full');
+  const nudged = runHook('ipa view "Some Note" --full && ipa view "Other Note" --full');
   assert.equal(nudged.status, 0);
   const payload = JSON.parse(nudged.stdout);
   assert.equal(payload.hookSpecificOutput.hookEventName, "PostToolUse");
-  assert.match(payload.hookSpecificOutput.additionalContext, /10 ipa calls/);
+  assert.match(payload.hookSpecificOutput.additionalContext, /11 ipa calls/);
   assert.match(payload.hookSpecificOutput.additionalContext, /converging/);
 
   // Counts are per session: a different session starts from zero.

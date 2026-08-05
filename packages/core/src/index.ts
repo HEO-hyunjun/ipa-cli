@@ -7010,20 +7010,24 @@ function harnessTargetSpec(target = "codex", options = {}) {
   };
 }
 
-function ipaCommandSelection(prefix = "ipa", mapping = DEFAULT_MAPPING) {
-  return `## IPA Command Selection
+function ipaEvidenceRecall(prefix = "ipa") {
+  return `## Evidence Recall
 
-- Exact note title known: \`${prefix} view "Note Title"\` (overview first), then \`--section\`/\`--full\` for the parts you actually need. Several notes: \`${prefix} view "A" "B" --full\` in one call.
-- Index/root summary: \`${prefix} digest "Index Note"\` (children + snippets + dates), then \`view --full\` on at most the 2-3 most relevant children — never open every child.
-- Count or list an index's children/backlinks: \`${prefix} digest "Index Note"\` or \`${prefix} traversal --down "Index Note"\` — read the count from their output instead of hand-rolling \`view | grep\` loops.
-- Broad prior context or user-specific background: \`${prefix} context "keyword" --size medium --format markdown\`; widen with \`${prefix} search "other angle"\` only when context missed something. Several search angles go in one call — \`${prefix} search "A" "B" "C"\` (vault loads once). Results already carry snippets and dates — judge relevance from them before opening notes. Center context on one note instead of a free-text query with \`${prefix} context --by-note "Note Title"\`.
-- Relate a note to an index (make it belong): \`${prefix} note set "Note" --field ${mapping.refs} --add "Index Note" --apply\` — the reliable belongs-to mechanism. \`${prefix} link apply\`/\`${prefix} cascade apply\` only wikify a title already present verbatim in the note body (a silent no-op otherwise); when the body has no plaintext mention of the target, use \`note set --field ${mapping.refs} --add\`. Read-only discovery only: \`${prefix} link suggest "Note Title"\` for candidate targets, \`${prefix} traversal --up|--down|--siblings "Note Title"\` for directional walks, and \`${prefix} graph "Note Title" --depth 2\` for a centered ASCII neighborhood.
-- New/empty vault with no \`.ipa/config.yaml\`: \`${prefix} config init\` (absorb existing folders with \`--inbox/--project/--archive\`, then edit to match), verify with \`${prefix} doctor\`. Closing setup: optionally confirm folder/field mapping (config.yaml) and operating rules (\`.ipa/harness/fragments/prompt.md\` → \`${prefix} harness update <target>\`) — the ipa-config skill has the interview. Never rename the user's folders or do vault-wide moves/backfills to fit defaults; absorb existing structure via mapping.
-- New note: \`${prefix} inbox add ...\`. Body edit: \`${prefix} note replace ...\`. Frontmatter edit: \`${prefix} note set "Note" --field ${mapping.refs} --add "Index Note" --apply\`.
-- Rename a note/index (note stays, inbound ${mapping.refs}/wikilinks auto-rewired): \`${prefix} rename "Old" "New" --apply\` (drop \`--apply\` for preview). Only when merging several notes into one: \`${prefix} note redirect\`.
-- Reactivate an archived topic (move its root/index back to the project folder): \`${prefix} move "Note" "${mapping.project_dir}" --apply\` — inbound wikilinks keep resolving (they are folder-independent, so nothing needs rewiring; unlike rename, move does not rewrite link text).
-- During note work always scope \`validator\`/\`formatter plan\` with \`--note\`; without it they are vault-wide maintenance sweeps.
-- Unsure command or syntax: \`${prefix} help\` or \`${prefix} <command> --help\`.
+Use IPA when private vault knowledge could materially change the answer, even if the user did not mention notes. This includes prior rationale and decisions, team direction, meeting or scrum agreements, current work status, blockers, ownership, resumptions, and handoffs. Meeting and scrum records may be the only source for an operational fact; do not treat them as merely secondary evidence.
+
+1. Decide whether recall is needed. Skip IPA when the request is self-contained or current code and git are sufficient. For current implementation facts, inspect code and git first; use vault evidence for intent, organizational context, and facts that are not represented there.
+2. Find the center. If a note or index is known, use \`${prefix} view\` or \`${prefix} context --by-note\`. Otherwise run one \`${prefix} search "facet A" "facet B"\` call with 2-3 short lexical angles. Never submit a file path or the whole user prompt as a query.
+3. Rank evidence by authority and freshness. Prefer current status/architecture notes and explicit decision records when they exist, but use dated meeting or scrum notes when they are newer or the sole source. Distinguish a confirmed decision from a proposal or provisional update.
+4. Expand only after finding a center. Use \`${prefix} digest\` for an index, \`${prefix} graph "Note Title" --depth 2\` for a centered neighborhood, or \`${prefix} traversal\` for a directional walk. Once titles are selected, batch them in one \`${prefix} view "A" "B" --full\` call; do not reopen an overview in full unless a specific missing section is necessary. Open at most 2-3 full notes, then converge.
+5. Use the evidence in the answer. State the applicable fact or decision, its rationale or status, and the note title/date when freshness matters. If code or git conflicts with the vault, report the drift instead of silently choosing one.
+
+## Command Pointers
+
+- Discovery or broad history: \`${prefix} search\` and \`${prefix} context\`.
+- Exact note: \`${prefix} view\`. Index summary: \`${prefix} digest\`.
+- Relationships: \`${prefix} graph\` for a centered neighborhood; \`${prefix} traversal\` for direction.
+- IPA concepts and active vault rules: \`${prefix} convention\`.
+- Command discovery and exact syntax: \`${prefix} help\` and \`${prefix} <command> --help\`.
 `;
 }
 
@@ -7035,11 +7039,12 @@ function globalPromptContent(spec) {
   const skillPath = spec.name === "opencode" ? "~/.config/opencode/skills/ipa/SKILL.md" : `~/.${spec.name}/skills/ipa/SKILL.md`;
   return `## IPA Vault — Evidence-Based Work
 
-This ${tool} environment has the IPA CLI installed for the user's IPA note vault (prior work, decisions, project history, user-specific context).
+This ${tool} environment has the IPA CLI installed for the user's private note vault: decisions and rationale, project history, team direction, meeting and scrum records, current work status, and user-specific context.
 
-- When a request touches the vault, vault notes, or the user's prior work/decisions, answer from vault evidence: drive the work through \`ipa\` commands from the first turn instead of answering from memory or reading vault files directly.
-- Entry points: \`ipa search "keyword"\` (discovery; several quoted queries in one call: \`ipa search "A" "B"\`), \`ipa view "Note Title"\` (read), \`ipa context "keyword" --size medium --format markdown\` (broad/history bootstrap). Full workflow: the \`ipa\` skill at \`${skillPath}\`; exact syntax: \`ipa <command> --help\`.
-- On an index or root note, run \`ipa digest\` before opening any child, then read at most 2-3 in full — and once you already have enough evidence, converge on the answer instead of opening more notes or digesting ones you already read.
+- Use vault evidence whenever a request explicitly concerns IPA/notes, or when planning, architecture/spec interpretation, regression history, resuming work, or a handoff could depend on private context — even if the user did not mention notes. Meeting or scrum records may be the only source for an operational fact.
+- Skip IPA for self-contained questions when the supplied context, current code, and git are enough. Code and git are authoritative for current implementation behavior; IPA is evidence for intent, decisions, organizational context, and facts absent from the repository. Report drift when they conflict.
+- Entry points: \`ipa search "keyword"\` (discovery; several short facets in one call), \`ipa view "Note Title"\` (exact read), and \`ipa context "keyword" --size medium --format markdown\` (broad/history bootstrap). Full workflow: the \`ipa\` skill at \`${skillPath}\`; exact syntax: \`ipa <command> --help\`.
+- On an index or root note, run \`ipa digest\` before opening children, read at most 2-3 full notes, then use the evidence in the answer instead of continuing to explore.
 - IPA concepts and this vault's operating rules: \`ipa convention\`.
 - Create new vault notes only through \`ipa inbox add\` — a guard hook blocks new markdown outside the inbox.
 - After editing vault markdown, finish the note-scoped loop: \`ipa validator --note ...\`, \`ipa formatter plan --note ...\`, \`ipa formatter apply --note ...\`. A Stop gate blocks final responses while formatter patches remain.`;
@@ -7540,7 +7545,7 @@ function harnessSkillContent(vaultPath, spec, mapping = DEFAULT_MAPPING, options
   const prefix = commandPrefix(vaultPath, options);
   return `---
 name: ipa
-description: Entry point for every IPA vault task — search, read, validate, format, and safely write vault notes with the ipa CLI, and route focused work (concept questions, triage, review, tuning, rules, config) to the vault's helper skills. Use when a task mentions IPA, the vault, a vault note, inbox capture, note search, note validation, note formatting, asks what an IPA concept means, or references a note path under the vault folders (\`${mapping.inbox_dir}/\`, \`${mapping.project_dir}/\`, \`${mapping.archive_dir}/\`, or \`.md\` files in ${vaultPath}).
+description: Use IPA for explicit vault and note work, and whenever planning, architecture or spec interpretation, regression history, work resumption, handoff, team direction, meetings, scrums, status, blockers, or ownership may depend on private vault knowledge even when notes are not mentioned. Also use for note paths under \`${mapping.inbox_dir}/\`, \`${mapping.project_dir}/\`, \`${mapping.archive_dir}/\`, or \`.md\` files in ${vaultPath}. Skip self-contained implementation questions; code and git remain authoritative for current behavior.
 ---
 
 <!-- ${HARNESS_MARKER} -->
@@ -7570,18 +7575,8 @@ This skill is the single entry point for vault requests from any directory. Focu
 
 Inside the vault these load as invocable skills — invoke the matching one. Outside the vault they are not auto-loaded: read the matching \`SKILL.md\` at the path above and follow its workflow with \`${prefix}\` commands. If the skill file does not exist, fall back to \`${prefix} convention\` and the commands below.
 
-## Read First
-
-\`\`\`bash
-${prefix} view "Note Title"
-${prefix} digest "Index Note"
-${prefix} context "keyword" --size medium --format markdown
-${prefix} search "keyword"
-${prefix} search "keyword A" "keyword B" "keyword C"   # several queries, one call
-\`\`\`
-
-${ipaCommandSelection(prefix, mapping)}
-Keep exploration proportional to the question: simple lookups within ~3 ipa calls, broad questions within ~8. At the budget, answer from the evidence gathered and state what was not checked. Pick short keywords or exact titles — never paste file paths or the full user prompt as a query.
+${ipaEvidenceRecall(prefix)}
+Keep exploration proportional to the question: simple lookups within ~3 ipa calls, broad questions within ~8. At the budget, answer from the evidence gathered and state what was not checked.
 
 If search results look stale after external (Obsidian) edits, diagnose the index fingerprint with \`${prefix} cache doctor\` and force a rebuild with \`${prefix} cache rebuild\`.
 
@@ -8082,7 +8077,15 @@ function firstString(values) {
 const input = inputJson();
 const toolInput = input.tool_input ?? input.toolInput ?? input.input ?? {};
 const command = firstString([toolInput.command, input.command]);
-if (!command || !/(^|[\\s;|&(])ipa\\s/.test(command)) process.exit(0);
+function ipaCommandCount(value) {
+  let total = 0;
+  for (const segment of String(value ?? "").split(/&&|\\|\\||;/)) {
+    total += [...segment.matchAll(/(?:^|\\n)\\s*ipa\\s+[a-z-]/g)].length;
+  }
+  return total;
+}
+const commandCount = ipaCommandCount(command);
+if (!commandCount) process.exit(0);
 
 const sessionId = firstString([
   input.session_id,
@@ -8114,7 +8117,8 @@ for (const key of Object.keys(state.sessions)) {
   if (Number.isNaN(stamp) || stamp < cutoff) delete state.sessions[key];
 }
 const entry = state.sessions[sessionId] ?? { count: 0 };
-entry.count += 1;
+const previousCount = entry.count;
+entry.count += commandCount;
 entry.updated_at = new Date().toISOString();
 state.sessions[sessionId] = entry;
 try {
@@ -8125,7 +8129,10 @@ try {
 }
 
 const count = entry.count;
-if (count < WARN_AT || (count - WARN_AT) % REPEAT_EVERY !== 0) process.exit(0);
+const nextNudgeAt = previousCount < WARN_AT
+  ? WARN_AT
+  : WARN_AT + (Math.floor((previousCount - WARN_AT) / REPEAT_EVERY) + 1) * REPEAT_EVERY;
+if (count < nextNudgeAt) process.exit(0);
 
 const message = [
   \`[IPA CLI] This session has run \${count} ipa calls.\`,

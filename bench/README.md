@@ -29,7 +29,8 @@ npm run bench -- --full --max-workers 8  # 매트릭스 동시 실행 (기본 5)
 - **correctness** — 불리언. 해당 턴의 `expect` 어서션이 전부 통과했는가 (budget·completion 제외).
 - **efficiency** — `ok | warn | over`. ipa 콜 수 기준, 모델 독립. 같은 축에 임계가 둘이다:
   - goldenPath 축 — `scenario.goldenPath`는 사람이 추적한 "정답 최소 콜 시퀀스".
-    `stepRatio = ipaCalls / goldenPath`로 관측한다. `ipaCalls ≤ goldenPath × 2`면 `ok`,
+    `stepRatio = ipaCalls / goldenPath`로 관측한다. `ipaCalls`는 Bash tool 수가 아니라 실제
+    `ipa <subcommand>` 실행 수이며, 한 Bash 호출에 체이닝된 명령도 각각 센다. `ipaCalls ≤ goldenPath × 2`면 `ok`,
     그 위부터 상한 사이는 `warn`("정답인데 서툼" — fail 아님, 개선 기회 리포트).
   - 폭주 상한 축 — `scenario.budget.maxIpaCalls`(관측 정상치의 ~2배). 넘으면 `over` → fail.
 - **completion** — `completed | void`. 세션이 max-turns/에러로 잘리면(`truncated`) `void`로
