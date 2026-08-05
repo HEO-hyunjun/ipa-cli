@@ -3249,29 +3249,43 @@ function syncUpdatedAtText(text, mapping = DEFAULT_MAPPING, now = new Date()) {
 
 function noteSnippet(note, maxChars = 100) {
   const body = String(note.body ?? "");
+  // Body prose first, callout as fallback. Callout-first taught vaults to stuff
+  // the whole note into the top callout and leave the body empty; the snippet
+  // should reward real body text. Document order already puts the paragraph
+  // under H1 before H2, so no explicit heading priority is needed.
   let text = "";
-  const callout = body.match(/^>\s*\[!\w+\][+-]?[ \t]*([^\n]*)((?:\n>[^\n]*)*)/m);
-  if (callout) {
-    const block = String(callout[2] ?? "")
-      .split("\n")
-      .map((line) => line.replace(/^>\s?/, "").replace(/^[-*]\s+/, "").trim())
-      .filter(Boolean)
-      .join(" ");
-    text = [String(callout[1] ?? "").trim(), block].filter(Boolean).join(" — ");
+  let inFence = false;
+  const paragraph = [];
+  for (const raw of body.split("\n")) {
+    const trimmed = raw.trim();
+    if (trimmed.startsWith("```")) {
+      if (paragraph.length) break;
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) continue;
+    if (!trimmed) {
+      if (paragraph.length) break;
+      continue;
+    }
+    if (trimmed.startsWith("#") || trimmed.startsWith(">") || trimmed.startsWith("---")
+      || trimmed.startsWith("![") || trimmed.startsWith("|")) {
+      if (paragraph.length) break;
+      continue;
+    }
+    paragraph.push(trimmed.replace(/^[-*+]\s+/, "").replace(/^\d+[.)]\s+/, ""));
   }
+  text = paragraph.join(" ");
   if (!text) {
-    const line = body.split("\n").find((candidate) => {
-      const trimmed = candidate.trim();
-      return trimmed
-        && !trimmed.startsWith("#")
-        && !trimmed.startsWith("```")
-        && !trimmed.startsWith("---")
-        && !trimmed.startsWith("![");
-    });
-    text = String(line ?? "").trim()
-      .replace(/^(?:>\s?)+/, "")
-      .replace(/^\[!\w+\][+-]?\s*/, "")
-      .replace(/^[-*]\s+/, "");
+    const callout = body.match(/^>\s*\[!\w+\][+-]?[ \t]*([^\n]*)((?:\n>[^\n]*)*)/m);
+    if (callout) {
+      const block = String(callout[2] ?? "")
+        .split("\n")
+        .map((line) => line.replace(/^>\s?/, "").replace(/^[-*]\s+/, "").trim())
+        .filter(Boolean)
+        .join(" ");
+      text = [String(callout[1] ?? "").trim(), block].filter(Boolean).join(" — ");
+    }
   }
   text = text
     .replace(/\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g, "$1")
