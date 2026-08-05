@@ -23,6 +23,7 @@ import {
   digestNote,
   doctor,
   formatVault,
+  graphTopology,
   harnessDoctor,
   harnessGuardCheck,
   harnessGuardStatus,
@@ -81,456 +82,153 @@ import {
   viewNote
 } from "../../core/dist/index.js";
 
-const COMMAND_GROUPS = [
-  {
-    title: "Core commands",
-    rows: [
-      ["search", "Search notes with active weights and plugins"],
-      ["view", "Show note overview, section, or full content"],
-      ["convention", "Show IPA concepts rendered through the active vault config, or run validator checks"],
-      ["digest", "Summarize index notes and their children in one call"],
-      ["cascade", "Plan/apply the ripple of a new note: refs, links, overlap candidates"],
-      ["traversal", "Walk refs, backlinks, siblings, and roots"],
-      ["validator", "Validate IPA frontmatter and links"],
-      ["context", "Build note context for an agent prompt"]
-    ]
-  },
-  {
-    title: "Operations",
-    rows: [
-      ["formatter", "Plan or apply formatting fixes"],
-      ["refactor", "Rewrite tags, refs, and wikilinks"],
-      ["note", "Core-backed scripted note edits"],
-      ["rename", "Rename a note and update links"],
-      ["move", "Move a note and update links"],
-      ["inbox", "Add or triage inbox notes"],
-      ["link", "Suggest, plan, and apply wikilinks"],
-      ["review", "Audit convention, inbox, tags, duplicates, and SoT"]
-    ]
-  },
-  {
-    title: "Runtime",
-    rows: [
-      ["config / profile", "Inspect config and profile resolution"],
-      ["engine", "Inspect and run search engine channels"],
-      ["tune", "Evaluate and run the tpe-lite optimizer"],
-      ["cache", "Rebuild, inspect, and diagnose vault cache"],
-      ["doctor", "Run basic vault setup checks"],
-      ["plugin", "Scaffold, list, validate, and dry-run vault plugins"],
-      ["contract", "Validate runtime contract fixtures"],
-      ["harness", "Install, uninstall, update, and inspect AI harness hooks"],
-      ["update", "Update the ipa CLI from its git checkout"],
-      ["obsidian", "Install or sync the Obsidian plugin into the active vault"],
-      ["list-channels / list-rules / list-refactors", "Inspect builtin registries"]
-    ]
-  }
-];
-
 const PRETTY = Boolean((process.stdout.isTTY || process.env.IPA_FORCE_PRETTY === "1") && !process.env.NO_COLOR);
 
-const HELP = formatHelp();
-const COMMAND_HELP = {
-  cache: formatDetailedHelp({
-    usage: "ipa [OPTIONS] cache status|rebuild|clean|inspect|doctor [ARGS...]",
-    summary: "Inspect and maintain the vault-local parsed cache.",
-    commands: [
-      ["ipa cache status", "Show stale cache entries"],
-      ["ipa cache rebuild", "Rebuild manifest, files, and graph cache"],
-      ["ipa cache inspect --note NOTE", "Inspect cache data for one note"],
-      ["ipa cache doctor", "Diagnose cache/plugin fingerprint state"],
-      ["ipa cache clean", "Remove cache artifacts"]
-    ],
-    options: [
-      ["inspect [NOTE]", "Inspect the cache entry for a note title"],
-      ["inspect --note NOTE", "Pass the note title as an option"]
-    ]
-  }),
-  config: formatDetailedHelp({
-    usage: "ipa [OPTIONS] config <init|show>",
-    summary: "Create the vault's .ipa/config.yaml, or show the resolved vault/profile context.",
-    commands: [
-      ["ipa config init", "Write .ipa/config.yaml with the default mapping template"],
-      ["ipa config show", "Show the resolved vault/profile context"]
-    ],
-    options: [
-      ["--force", "Overwrite an existing .ipa/config.yaml (init)"],
-      ["--inbox NAME", "Record an existing inbox folder name in the mapping (init)"],
-      ["--project NAME", "Record an existing project folder name in the mapping (init)"],
-      ["--archive NAME", "Record an existing archive folder name in the mapping (init)"]
-    ],
-    examples: [
-      ["ipa config init", "Create the config with default folder/field names"],
-      ["ipa config init --inbox Inbox --project Projects", "Absorb an existing folder layout"],
-      ["ipa config show", "Use project-local selector/default profile"]
-    ]
-  }),
-  convention: formatDetailedHelp({
-    usage: "ipa [OPTIONS] convention [show|check]",
-    summary: "Show IPA concepts rendered through the active vault config, or run validator checks.",
-    commands: [
-      ["ipa convention", "Show IPA concepts with this vault's real field/folder names plus vault operating rules"],
-      ["ipa convention show", "Same as bare ipa convention"],
-      ["ipa convention check", "Run the active vault validator (compatibility alias)"]
-    ],
-    notes: [
-      "Vault operating rules come from .ipa/harness/fragments/*.md — the same fragments the harness inlines into managed prompts."
-    ]
-  }),
-  context: formatDetailedHelp({
-    usage: "ipa [OPTIONS] context QUERY [--by-note] [--size small|medium|large|full] [--format json|markdown]",
-    summary: "Build a compact note-centered context pack for agent prompts.",
-    options: [
-      ["--by-note", "Treat QUERY as a note title instead of a search query"],
-      ["--include MODE", "Include extra context; use full for full selected note bodies"],
-      ["--size NAME", "Context budget preset: small, medium, large, or full"],
-      ["--max-notes N", "Override selected primary note count"],
-      ["--max-chars N", "Override the target character budget"],
-      ["--format json", "Print structured JSON"],
-      ["--format markdown", "Print a markdown context pack"]
-    ],
-    examples: [
-      ["ipa context \"ipa cli\"", "Search and assemble a medium context pack"],
-      ["ipa context \"Alpha\" --by-note", "Build context around one note"],
-      ["ipa context \"Alpha\" --by-note --size small --format markdown", "Hook-friendly compact context"]
-    ]
-  }),
-  contract: formatDetailedHelp({
-    usage: "ipa [OPTIONS] contract list|validate|validate-output|export-fixtures",
-    summary: "Validate runtime contract fixtures and exported command output.",
-    commands: [
-      ["ipa contract list", "List known contracts"],
-      ["ipa contract validate FILE", "Validate a contract fixture"],
-      ["ipa contract validate-output COMMAND FILE", "Validate command output"],
-      ["ipa contract export-fixtures", "Export current fixture contracts"],
-      ["ipa contract export-fixtures --target DIR", "Export fixtures into a target directory"]
-    ],
-    options: [
-      ["export-fixtures --target DIR", "Target directory; default .ipa/fixtures/contracts"]
-    ]
-  }),
-  doctor: formatDetailedHelp({
-    usage: "ipa [OPTIONS] doctor [--fix-dirs] [--check NAME]",
-    summary: "Run basic vault setup checks.",
-    options: [
-      ["--fix-dirs", "Create missing expected directories"],
-      ["--check NAME", "Run one check (config or cache)"]
-    ]
-  }),
-  engine: formatDetailedHelp({
-    usage: "ipa [OPTIONS] engine search|channels [ARGS...]",
-    summary: "Inspect low-level search engine behavior.",
-    commands: [
-      ["ipa engine search \"query\" --explain", "Run search with threshold 0"],
-      ["ipa engine channels", "List active search channels"]
-    ]
-  }),
-  formatter: formatDetailedHelp({
-    usage: "ipa [OPTIONS] formatter plan|apply [--note NOTE...]",
-    summary: "Plan or apply fixes from active builtin and vault-local rules.",
-    commands: [
-      ["ipa formatter plan", "Preview all formatter patches"],
-      ["ipa formatter apply", "Apply all formatter patches"],
-      ["ipa formatter plan --note \"A\" \"B\"", "Preview patches for selected notes only"],
-      ["ipa formatter apply --note \"A\"", "Apply patches for one note"]
-    ],
-    options: [
-      ["plan/apply --note NOTE...", "Restrict formatting to one or more note titles"]
-    ]
-  }),
-  harness: formatDetailedHelp({
-    usage: "ipa [OPTIONS] harness status|init|install|uninstall|update|doctor|guard|gate (hook-invoked)",
-    summary: "Install and inspect AI harness skills, hooks, vault prompt blocks, and plugin scaffold.",
-    commands: [
-      ["ipa harness status", "Show installed target state and outdated components"],
-      ["ipa harness init codex", "Initialize Codex skill/hooks, vault prompt block, and plugin scaffold"],
-      ["ipa harness install codex", "Install Codex skill/hooks, vault prompt block, and plugin scaffold"],
-      ["ipa harness install claude", "Install Claude Code skill/hooks, vault prompt block, and plugin scaffold"],
-      ["ipa harness install opencode", "Install OpenCode skill/hooks, vault prompt block, and plugin scaffold"],
-      ["ipa harness uninstall codex", "Remove Codex harness files"],
-      ["ipa harness update claude", "Reinstall harness files with the current CLI templates, keeping component selection"],
-      ["ipa harness doctor", "Validate installed harness files"],
-      ["ipa harness guard status", "Show guard policy state"],
-      ["ipa harness guard check PATH --action create", "Check inbox-only write policy"]
-    ],
-    options: [
-      ["init/install/uninstall [target]", "Harness target: codex (default), claude, or opencode"],
-      ["init/install --only <component...>", "Install only the named components (repeatable, comma-separated)"],
-      ["init/install --with <component...>", "Add components to the default set (repeatable, comma-separated)"],
-      ["init/install --without <component...>", "Remove components from the default set (repeatable, comma-separated)"],
-      ["guard check --action ACTION", "Write action to evaluate; default is create-like behavior"]
-    ],
-    examples: [
-      ["ipa harness install opencode", "Default OpenCode install (all components except hook:evidence)"],
-      ["ipa harness install opencode --with hook:evidence", "Default install plus the opt-in evidence hook"],
-      ["ipa harness install opencode --only skill,prompt", "Install only the global skill and prompt components"],
-      ["ipa harness install codex --only hook:guard", "Install only the Codex inbox guard hook"]
-    ],
-    notes: [
-      "Without --only, init/install applies the default install for the target (all components except hook:evidence).",
-      "Components: skill, prompt, local-prompt, local-skills, plugin-scaffold, opencode-plugin, permissions (claude; adds a Bash(ipa *) allow rule to ~/.claude/settings.json), hook:session-env, hook:guard, hook:markdown-nudge, hook:formatter-gate, hook:call-counter, hook:vault-ref, hook:evidence (opt-in)."
-    ]
-  }),
-  inbox: formatDetailedHelp({
-    usage: "ipa [OPTIONS] inbox add|triage [ARGS...]",
-    summary: "Create or triage inbox notes.",
-    commands: [
-      ["ipa inbox add ./draft.md --title \"Title\"", "Import a draft into the configured inbox"],
-      ["ipa inbox triage", "Suggest refs/tags for inbox notes"],
-      ["ipa inbox triage --apply --note \"Title\"", "Apply triage to one note"]
-    ],
-    options: [
-      ["add --title TITLE", "Inbox note title"],
-      ["add --ref REF", "Add a frontmatter ref; repeatable"],
-      ["add --tag TAG", "Add a frontmatter tag; repeatable"],
-      ["add --force", "Overwrite if the target note already exists"],
-      ["triage --apply", "Apply suggested refs/tags"],
-      ["triage --note NOTE", "Restrict triage to one note"]
-    ]
-  }),
-  link: formatDetailedHelp({
-    usage: "ipa [OPTIONS] link suggest|plan|apply [ARGS...]",
-    summary: "Suggest, persist, and apply wikilink edits.",
-    commands: [
-      ["ipa link suggest NOTE", "Suggest links for one note"],
-      ["ipa link plan --note NOTE", "Write a guarded link plan"],
-      ["ipa link apply .ipa/plans/link.json", "Apply a saved plan"]
-    ],
-    options: [
-      ["plan --note NOTE", "Plan links for one note"],
-      ["plan --output PATH", "Plan output path"],
-      ["plan --scope SCOPE", "Accepted for compatibility"]
-    ]
-  }),
-  plugin: formatDetailedHelp({
-    usage: "ipa [OPTIONS] plugin init|list|doctor|validate|dry-run [ARGS...]",
-    summary: "Create, inspect, and test vault-local JS plugins.",
-    commands: [
-      ["ipa plugin init", "Create .ipa/plugins authoring structure with JS types and disabled examples"],
-      ["ipa plugin list", "List enabled plugins"],
-      ["ipa plugin doctor", "Validate all plugin contracts"],
-      ["ipa plugin validate .ipa/plugins/search/x.js", "Validate one plugin file"],
-      ["ipa plugin dry-run search .ipa/plugins/search/x.js --query Alpha", "Run a search plugin without installing changes"],
-      ["ipa plugin dry-run rules .ipa/plugins/rules/x.js --note Alpha", "Preview rule issues and fixes"]
-    ],
-    options: [
-      ["init --force", "Overwrite scaffold files that already exist"],
-      ["init --no-examples", "Skip disabled example plugin files"],
-      ["dry-run --query QUERY", "Search query for search plugin dry-runs"],
-      ["dry-run --note NOTE", "Note title for rule plugin dry-runs"]
-    ]
-  }),
-  profile: formatDetailedHelp({
-    usage: "ipa profile init|new|list|current|use [ARGS...]",
-    summary: "Create, inspect, and update the machine-local profile registry.",
-    commands: [
-      ["ipa profile init --vault ~/ipa", "Initialize ~/.config/ipa/profile.yaml with the default ipa profile"],
-      ["ipa profile new work ~/work/IPA --default", "Add or update a named profile and make it default"],
-      ["ipa profile list", "List configured profiles"],
-      ["ipa profile current", "Show the default profile"],
-      ["ipa profile use work", "Mark a profile as default"]
-    ],
-    options: [
-      ["init --name NAME", "Profile name to initialize; default ipa"],
-      ["init --vault PATH", "Vault path to initialize; default ~/ipa"],
-      ["new --default", "Mark the new or updated profile as default"],
-      ["init/new --force", "Update an existing profile instead of failing"]
-    ]
-  }),
-  refactor: formatDetailedHelp({
-    usage: "ipa [OPTIONS] refactor COMMAND [ARGS...] [--apply]",
-    summary: "Plan or apply refs, tags, and wikilink rewrites.",
-    commands: [
-      ["ipa refactor tag-rename OLD NEW", "Rename a frontmatter tag across the vault"],
-      ["ipa refactor tag-remove TAG", "Remove a frontmatter tag across the vault"],
-      ["ipa refactor tag-add TAG", "Add a frontmatter tag to every note"],
-      ["ipa refactor ref-replace OLD NEW", "Replace frontmatter refs across the vault"],
-      ["ipa refactor ref-remove REF", "Remove a frontmatter ref across the vault"],
-      ["ipa refactor ref-add REF", "Add a frontmatter ref to every note"],
-      ["ipa refactor wikilink-replace OLD NEW", "Replace exact body wikilinks across the vault"]
-    ],
-    options: [
-      ["--apply", "Write the planned refactor; omit for preview"]
-    ],
-    notes: [
-      "`refactor` is vault-wide. Preview first; use `ipa note replace` for note-scoped literal edits.",
-      "Run `ipa list-refactors` to inspect every registered refactor recipe."
-    ]
-  }),
-  rename: formatDetailedHelp({
-    usage: "ipa [OPTIONS] rename OLD NEW [--apply]",
-    summary: "Rename a note and update links when applied.",
-    examples: [
-      ["ipa rename \"Old\" \"New\"", "Preview rename"],
-      ["ipa rename \"Old\" \"New\" --apply", "Apply rename"]
-    ],
-    options: [
-      ["--apply", "Write the rename and link updates; omit for preview"]
-    ]
-  }),
-  move: formatDetailedHelp({
-    usage: "ipa [OPTIONS] move NOTE TARGET [--apply]",
-    summary: "Move a note to a target directory and update links when applied.",
-    examples: [
-      ["ipa move \"Note\" \"02 Archive\"", "Preview move"],
-      ["ipa move \"Note\" \"02 Archive\" --apply", "Apply move"]
-    ],
-    options: [
-      ["--apply", "Write the move and link updates; omit for preview"]
-    ]
-  }),
-  note: formatDetailedHelp({
-    usage: "ipa [OPTIONS] note replace|set|redirect NOTE [ARGS...]",
-    summary: "Apply core-backed edits to existing notes, including frontmatter, without raw vault path scans.",
-    commands: [
-      ["ipa note replace \"Note\" --old-file .tmp/old.txt --new-file .tmp/new.txt", "Preview a literal block replacement"],
-      ["ipa note replace \"Note\" --old-file .tmp/old.txt --new-file .tmp/new.txt --apply", "Apply the replacement"],
-      ["ipa note set \"Note\" --field ref --add \"Index Note\" --apply", "Add a frontmatter list item"],
-      ["ipa note set \"Note\" --field type --value index --apply", "Set a scalar frontmatter field"],
-      ["ipa note set \"A\" \"B\" --field ref --add \"Index\" --apply", "Same field edit across several notes"],
-      ["ipa note redirect \"Old A\" \"Old B\" --to \"SoT Note\" --archive --apply", "Rewire every wikilink/ref to the target and archive the sources"]
-    ],
-    options: [
-      ["--old-file PATH", "File containing the exact raw note text to replace"],
-      ["--new-file PATH", "File containing replacement text"],
-      ["--apply", "Write the change; omit for preview"],
-      ["--allow-multiple", "Allow replacing more than one matching block"],
-      ["--keep-files", "Keep --old-file/--new-file after a successful apply (default: .tmp files are removed)"],
-      ["--field NAME", "Frontmatter field to edit with note set"],
-      ["--value VALUE", "Scalar value for note set"],
-      ["--add VALUE", "List item to add (repeatable)"],
-      ["--remove VALUE", "List item to remove (repeatable)"]
-    ],
-    notes: [
-      "Writes keep the mapped date_modified field in sync automatically — never edit time fields by hand."
-    ]
-  }),
-  review: formatDetailedHelp({
-    usage: "ipa [OPTIONS] review [all|convention|inbox|duplicates|tags|sot] [--suggest-refactor]",
-    summary: "Audit vault structure and surface cleanup/refactor candidates.",
-    examples: [
-      ["ipa review all", "Run all read-only audits"],
-      ["ipa review duplicates", "Find duplicate-looking notes"],
-      ["ipa review all --suggest-refactor", "Include refactor suggestions"]
-    ],
-    options: [
-      ["--suggest-refactor", "Attach refactor command suggestions where possible"]
-    ]
-  }),
-  search: formatDetailedHelp({
-    usage: "ipa [OPTIONS] search QUERY... [--max N] [--threshold N] [--all] [--join] [--json]",
-    summary: "Search notes with active weights, tune result, and vault-local search plugins.",
-    options: [
-      ["--max N", "Maximum result count (per query)"],
-      ["--threshold N", "Minimum score threshold"],
-      ["--all", "Show all scored notes by forcing threshold 0"],
-      ["--join", "Treat all arguments as one space-joined query"],
-      ["--json", "Print structured output"]
-    ],
+const COMMAND_GROUP_BY_NAME = {
+  search: "Core commands",
+  view: "Core commands",
+  convention: "Core commands",
+  digest: "Core commands",
+  cascade: "Core commands",
+  traversal: "Core commands",
+  graph: "Core commands",
+  validator: "Core commands",
+  context: "Core commands",
+  formatter: "Operations",
+  refactor: "Operations",
+  note: "Operations",
+  rename: "Operations",
+  move: "Operations",
+  inbox: "Operations",
+  link: "Operations",
+  review: "Operations",
+  add: "Legacy aliases"
+};
+
+const COMMAND_DESCRIPTIONS = {
+  help: "Show help for any registered command path",
+  search: "Search notes with active weights and plugins",
+  view: "Show note overviews, sections, or full content",
+  digest: "Summarize an index or root note and its children",
+  cascade: "Plan or apply refs, links, and overlap discovery for a note",
+  traversal: "Walk refs, backlinks, siblings, and roots in one direction",
+  graph: "Render a depth-limited ASCII graph around one note",
+  validator: "Validate IPA invariants and vault-local rules",
+  doctor: "Run basic vault setup checks",
+  context: "Build note context for an agent prompt",
+  rename: "Rename a note and update links",
+  move: "Move a note and update links",
+  note: "Apply core-backed scripted note edits",
+  "note replace": "Replace an exact text block in one note",
+  "note set": "Set or update a mapped frontmatter field",
+  "note redirect": "Redirect references from source notes to a target note",
+  add: "Import a draft into the configured inbox (legacy alias)",
+  refactor: "Plan or apply refs, tags, and wikilink rewrites",
+  config: "Initialize or inspect vault configuration",
+  "config init": "Create the vault's .ipa/config.yaml",
+  "config show": "Show the resolved vault and profile context",
+  profile: "Manage machine-local vault profiles",
+  "profile init": "Initialize the profile registry",
+  "profile new": "Add or update a named profile",
+  "profile list": "List configured profiles",
+  "profile current": "Show the default profile",
+  "profile use": "Set the default profile",
+  engine: "Inspect low-level search engine behavior",
+  "engine channels": "List active search channels",
+  "engine search": "Run a search with diagnostic output",
+  convention: "Show IPA concepts or run active convention checks",
+  "convention show": "Show IPA concepts rendered through the active mapping",
+  "convention check": "Run active convention checks",
+  formatter: "Plan or apply fixes from active rules",
+  "formatter plan": "Preview formatter patches",
+  "formatter apply": "Apply formatter patches",
+  inbox: "Create or triage inbox notes",
+  "inbox add": "Import a draft into the configured inbox",
+  "inbox triage": "Suggest or apply refs and tags for inbox notes",
+  update: "Update the ipa CLI from its git checkout",
+  obsidian: "Install or sync the Obsidian plugin bundle",
+  "obsidian install": "Install the built plugin bundle into the active vault",
+  "obsidian sync": "Refresh an existing vault plugin installation",
+  harness: "Install and inspect AI harness integrations",
+  "harness status": "Show installed harness component state",
+  "harness init": "Initialize harness components",
+  "harness install": "Install harness components",
+  "harness uninstall": "Remove managed harness components",
+  "harness update": "Update installed harness components",
+  "harness doctor": "Validate installed harness files",
+  "harness gate": "Run the session-end formatter gate",
+  "harness guard": "Inspect or evaluate the inbox write guard",
+  "harness guard status": "Show inbox write guard state",
+  "harness guard check": "Evaluate one path against the inbox write guard",
+  cache: "Inspect and maintain the vault-local parsed cache",
+  "cache status": "Show stale cache entries",
+  "cache rebuild": "Rebuild manifest, files, and graph cache",
+  "cache clean": "Remove cache artifacts",
+  "cache inspect": "Inspect cache data for one note",
+  "cache doctor": "Diagnose cache and plugin fingerprints",
+  link: "Suggest, persist, and apply wikilink edits",
+  "link suggest": "Suggest links for one note",
+  "link plan": "Write a guarded link plan",
+  "link apply": "Apply a saved link plan",
+  review: "Audit IPA convention, inbox lifecycle, and duplicate basenames",
+  contract: "Validate runtime contract fixtures and command output",
+  "contract list": "List known runtime contracts",
+  "contract validate": "Validate a contract fixture",
+  "contract validate-output": "Validate serialized command output",
+  "contract export-fixtures": "Export current contract fixtures",
+  plugin: "Create, inspect, and test vault-local plugins",
+  "plugin init": "Create the vault-local plugin authoring scaffold",
+  "plugin list": "List enabled vault plugins",
+  "plugin doctor": "Validate all vault plugin contracts",
+  "plugin validate": "Validate one plugin file",
+  "plugin dry-run": "Run one plugin without installing changes",
+  tune: "Evaluate search quality and run the tpe-lite optimizer",
+  "tune help": "Show tune command help",
+  "tune eval": "Evaluate active search parameters",
+  "tune list": "List saved tune result files",
+  "tune use": "Activate a saved tune result",
+  "tune analyze": "Inspect threshold candidates and target scores",
+  "tune replay": "Replay saved trials against the current vault",
+  "tune label": "Record a labeled search event",
+  "tune log": "Show recorded search events",
+  "tune testset": "Manage vault-local search testsets",
+  "tune testset list": "List vault-local testsets",
+  "tune testset init": "Create and optionally activate a testset",
+  "tune testset show": "Show a testset",
+  "tune testset validate": "Validate testset targets",
+  "tune testset draft": "Draft test cases from search logs",
+  "tune testset add": "Add one labeled test case",
+  "tune pack": "Inspect built-in query packs",
+  "tune pack list": "List built-in query packs",
+  "tune pack eval": "Evaluate a built-in query pack",
+  "list-channels": "List active search channels",
+  "list-rules": "List active builtin and vault-local rules",
+  "list-refactors": "List registered refactor recipes"
+};
+
+const COMMAND_EXTRAS = {
+  search: {
     examples: [
       ["ipa search \"ipa cli\"", "Search the active vault"],
-      ["ipa search \"ipa cli\" \"하네스\"", "Run several queries in one call (vault loads once)"],
-      ["ipa search \"graph\" --max 20", "Return more results"],
-      ["ipa search \"Alpha\" --json", "Use machine-readable output"]
+      ["ipa search \"Alpha\" --json", "Print structured results"]
     ],
-    notes: [
-      "Multiple arguments run as separate queries against one loaded vault. Quote multi-word queries, or pass --join to search all arguments as one query."
-    ]
-  }),
-  traversal: formatDetailedHelp({
-    usage: "ipa [OPTIONS] traversal [--up|--down|--siblings|--root] NOTE",
-    summary: "Walk the ref graph around a note.",
-    options: [
-      ["--up NOTE", "Show note -> index -> root paths"],
-      ["--down NOTE", "Show a child tree"],
-      ["--siblings NOTE", "Show notes with the same parent"],
-      ["--root NOTE", "Show root note(s)"]
-    ]
-  }),
-  tune: formatTuneHelp(),
-  obsidian: formatDetailedHelp({
-    usage: "ipa [OPTIONS] obsidian install|sync",
-    summary: "Deploy the built Obsidian plugin bundle into the active vault's .obsidian/plugins/ipa-obsidian/.",
-    commands: [
-      ["ipa obsidian install", "Create the plugin folder in the active vault and copy the built bundle (enable it in Obsidian afterwards)"],
-      ["ipa obsidian sync", "Refresh an existing install with the current build; does nothing if the vault has no install"]
-    ],
-    notes: [
-      "Copies release assets only (main.js, manifest.json, styles.css, versions.json); data.json settings are never touched.",
-      "ipa update --apply rebuilds the bundle and runs the sync automatically when the active vault carries an install."
-    ]
-  }),
-  update: formatDetailedHelp({
-    usage: "ipa [OPTIONS] update [--apply]",
-    summary: "Update the ipa CLI from its git checkout: show pending upstream commits, then fast-forward pull and rebuild.",
-    options: [
-      ["--apply", "Run git pull --ff-only, pnpm install, and pnpm run build in the repo; also syncs the vault-installed Obsidian plugin"]
-    ],
+    notes: ["Quote multi-word queries; multiple arguments run as separate queries unless --join is set."]
+  },
+  graph: {
     examples: [
-      ["ipa update", "Show how far behind upstream the checkout is and the commands to run"],
-      ["ipa update --apply", "Fast-forward pull and rebuild; the ipa symlink keeps pointing at the fresh build"]
-    ],
+      ["ipa graph \"Alpha\"", "Render two hops around Alpha"],
+      ["ipa graph \"Alpha\" --depth 3", "Expand to three hops"]
+    ]
+  },
+  refactor: {
+    notes: ["This command is vault-wide. Preview first; use `ipa note replace` for note-scoped literal edits."]
+  },
+  update: {
     notes: [
-      "Refuses to apply while the checkout has uncommitted changes or has diverged from upstream.",
-      "After updating, run `ipa harness status` and `ipa harness update <target>` if components are outdated."
+      "With --apply, ipa runs git pull --ff-only, installs dependencies, rebuilds, and syncs an existing Obsidian plugin install.",
+      "After updating, run `ipa harness status` and `ipa harness update <target>` if managed components are outdated."
     ]
-  }),
-  validator: formatDetailedHelp({
-    usage: "ipa [OPTIONS] validator [--note NOTE...] [--json]",
-    summary: "Validate active IPA notes after applying files.exclude.",
-    examples: [
-      ["ipa validator", "Human-readable vault-wide issue report"],
-      ["ipa validator --note \"Edited Note\"", "Only issues attached to the edited note(s)"],
-      ["ipa validator --json", "Machine-readable issue payload"]
-    ],
-    options: [
-      ["--note NOTE...", "Restrict reported issues to the named notes (validation still runs vault-wide)"],
-      ["--json", "Print machine-readable JSON"]
-    ]
-  }),
-  view: formatDetailedHelp({
-    usage: "ipa [OPTIONS] view NOTE [NOTE...] [--full] [--section HEADING]",
-    summary: "Show note overviews, sections, or full bodies while preserving display names.",
-    options: [
-      ["--full", "Show the full note body and footer"],
-      ["--section HEADING", "Show one markdown section"]
-    ],
-    examples: [
-      ["ipa view \"Note Title\"", "Show structure overview"],
-      ["ipa view \"Note Title\" --full", "Show full content"],
-      ["ipa view \"Note A\" \"Note B\" --full", "Show several notes in one call"],
-      ["ipa view \"Note Title\" --section \"Details\"", "Show one section"]
-    ]
-  }),
-  cascade: formatDetailedHelp({
-    usage: "ipa [OPTIONS] cascade plan|apply --note NOTE [--only refs,links,overlaps]",
-    summary: "Staged ripple for a new note: ref wiring and title wikilinks are appliable; overlap candidates are report-only.",
-    commands: [
-      ["ipa cascade plan --note \"New Note\"", "Preview refs, links, and overlap candidates"],
-      ["ipa cascade apply --note \"New Note\" --only links", "Apply only the wikilink wiring"]
-    ],
-    options: [
-      ["--note NOTE", "Target note title"],
-      ["--only KINDS", "Comma-separated subset: refs, links, overlaps"]
-    ],
-    notes: [
-      "Overlap candidates are never auto-merged: synthesize content yourself, then use note replace / note redirect."
-    ]
-  }),
-  digest: formatDetailedHelp({
-    usage: "ipa [OPTIONS] digest NOTE [--max N] [--snippet-chars N]",
-    summary: "Summarize an index/root note and its children (modified date, sections, snippet) in one call.",
-    options: [
-      ["--max N", "Maximum children to include (default 30)"],
-      ["--snippet-chars N", "Snippet length per child (default 240)"]
-    ],
-    examples: [
-      ["ipa digest \"🔖 Index Note\"", "Digest all children of an index"],
-      ["ipa digest \"🔖 Index Note\" --max 10", "Digest the first 10 children"]
-    ],
-    notes: [
-      "Use digest before opening children with view --full; read at most the 2-3 most relevant children in full."
-    ]
-  })
+  }
 };
 
 async function settings(global) {
@@ -543,23 +241,65 @@ function print(payload, json = false) {
   else console.log(render(payload));
 }
 
-function formatHelp() {
+function commandPath(command) {
+  const names = [];
+  for (let current = command; current?.parent; current = current.parent) names.unshift(current.name());
+  return names.join(" ");
+}
+
+function commandRegistry(program) {
+  const entries = [];
+  const visit = (parent) => {
+    for (const command of parent.commands) {
+      entries.push({
+        command,
+        path: commandPath(command),
+        name: command.name(),
+        description: command.description()
+      });
+      visit(command);
+    }
+  };
+  visit(program);
+  return entries;
+}
+
+function optionTerm(option) {
+  return option.flags;
+}
+
+function argumentTerm(argument) {
+  const suffix = argument.variadic ? "..." : "";
+  return argument.required ? `<${argument.name()}${suffix}>` : `[${argument.name()}${suffix}]`;
+}
+
+function commandUsage(command) {
+  const path = commandPath(command);
+  const argumentsText = command.registeredArguments.map(argumentTerm).join(" ");
+  const subcommandText = command.commands.length ? "[COMMAND]" : "";
+  return ["ipa [OPTIONS]", path, argumentsText, subcommandText].filter(Boolean).join(" ");
+}
+
+function formatHelp(program) {
   const lines = [
     styleTitle("Usage: ipa [OPTIONS] COMMAND [ARGS...]"),
     "",
-    "IPA vault CLI - JS/TS runtime.",
+    program.description(),
     "",
     styleSection("Options:"),
-    formatRows([
-      ["--profile NAME", "Use a profile from ~/.config/ipa/profile.yaml"],
-      ["--vault PATH", "Use a vault path directly"],
-      ["--json", "Print machine-readable JSON"],
-      ["--help", "Show this help message"]
-    ]),
+    formatRows(program.createHelp().visibleOptions(program).map((option) => [optionTerm(option), option.description])),
     ""
   ];
-  for (const group of COMMAND_GROUPS) {
-    lines.push(styleSection(`${group.title}:`), formatRows(group.rows), "");
+  const groups = new Map();
+  for (const entry of commandRegistry(program).filter((item) => item.command.parent === program)) {
+    const group = COMMAND_GROUP_BY_NAME[entry.name] ?? "Runtime";
+    const rows = groups.get(group) ?? [];
+    rows.push([entry.name, entry.description]);
+    groups.set(group, rows);
+  }
+  for (const group of ["Core commands", "Operations", "Runtime", "Legacy aliases"]) {
+    const rows = groups.get(group);
+    if (rows?.length) lines.push(styleSection(`${group}:`), formatRows(rows), "");
   }
   lines.push(styleSection("Examples:"));
   lines.push(formatRows([
@@ -572,91 +312,27 @@ function formatHelp() {
 }
 
 function formatCommandHelp(command) {
-  return COMMAND_HELP[command] ?? `${HELP}\nNo detailed help is available for '${command}' yet.\n`;
-}
-
-function formatDetailedHelp({ usage, summary, commands = [], options = [], examples = [], notes = [] }) {
+  const path = commandPath(command);
   const lines = [
-    styleTitle(`Usage: ${usage}`),
+    styleTitle(`Usage: ${commandUsage(command)}`),
     "",
-    summary
+    command.description()
   ];
-  if (commands.length) lines.push("", styleSection("Commands:"), formatRows(commands));
-  if (options.length) lines.push("", styleSection("Options:"), formatRows(options));
-  if (examples.length) lines.push("", styleSection("Examples:"), formatRows(examples));
-  if (notes.length) lines.push("", styleSection("Notes:"), ...notes.map((note) => `  ${note}`));
+  if (command.commands.length) {
+    lines.push("", styleSection("Commands:"), formatRows(command.commands.map((child) => [child.name(), child.description()])));
+  }
+  if (command.registeredArguments.length) {
+    lines.push("", styleSection("Arguments:"), formatRows(command.registeredArguments.map((argument) => [argumentTerm(argument), argument.description ?? ""])))
+  }
+  const options = command.createHelp().visibleOptions(command);
+  if (options.length) {
+    lines.push("", styleSection("Options:"), formatRows(options.map((option) => [optionTerm(option), option.description])));
+  }
+  const extras = COMMAND_EXTRAS[path] ?? {};
+  if (extras.examples?.length) lines.push("", styleSection("Examples:"), formatRows(extras.examples));
+  if (extras.notes?.length) lines.push("", styleSection("Notes:"), ...extras.notes.map((note) => `  ${note}`));
   lines.push("");
   return lines.join("\n");
-}
-
-function formatTuneHelp() {
-  return [
-    styleTitle("Usage: ipa [OPTIONS] tune [SUBCOMMAND] [ARGS...]"),
-    "",
-    "Evaluate search quality and run the tpe-lite optimizer against the active vault testset.",
-    "",
-    styleSection("Common commands:"),
-    formatRows([
-      ["ipa tune eval", "Evaluate current active search params"],
-      ["ipa tune --trials 100", "Run 100 tpe-lite trials and save a result JSON"],
-      ["ipa tune --trials 100 --apply", "Run tuning and activate the new result"],
-      ["ipa tune list", "List saved tune result JSON files"],
-      ["ipa tune use FILE", "Activate an existing tune result"],
-      ["ipa tune analyze", "Inspect threshold candidates and target scores"],
-      ["ipa tune replay [FILE]", "Replay saved trial history against the current vault"],
-      ["ipa tune log", "Show recorded search events"],
-      ["ipa tune label --query Q --target NOTE", "Record a search label"],
-      ["ipa tune testset init", "Create the vault-local testset file and configure test.file"],
-      ["ipa tune testset list", "List vault-local testsets"],
-      ["ipa tune testset show", "Show the active testset"],
-      ["ipa tune testset validate", "Validate testset targets"],
-      ["ipa tune testset draft --file FILE", "Draft testset cases from logged events"],
-      ["ipa tune testset add --query Q --target NOTE", "Add one labelled test case"],
-      ["ipa tune pack eval ipa-cli-core", "Evaluate the built-in sample pack"]
-    ]),
-    "",
-    styleSection("Run options:"),
-    formatRows([
-      ["--trials N, -n N", "Number of tpe-lite trials; default 20"],
-      ["--pack NAME", "Use a built-in query pack instead of the vault-local testset"],
-      ["--seed N", "Deterministic optimizer seed; default 42"],
-      ["--apply", "Activate the generated result by writing weights.file"],
-      ["--quiet", "Suppress progress output"],
-      ["--json", "Print machine-readable JSON; progress is suppressed"]
-    ]),
-    "",
-    styleSection("Subcommand options:"),
-    formatRows([
-      ["analyze --threshold N", "Candidate threshold; repeatable"],
-      ["analyze --cap N", "Candidate max result cap"],
-      ["analyze/replay --pack NAME", "Use a built-in query pack"],
-      ["label --query Q", "Query to label"],
-      ["label --target NOTE", "Expected target note for a hit"],
-      ["label --miss", "Record the query as a miss"],
-      ["log --limit N", "Show only the newest N events"],
-      ["log --query TEXT", "Filter events by query substring"],
-      ["testset init --file FILE", "Target testset file"],
-      ["testset init --force", "Overwrite an existing testset file"],
-      ["testset init --activate", "Set the new file as test.file"],
-      ["testset show/validate [FILE]", "Inspect or validate a specific testset file"],
-      ["testset draft/add --file FILE", "Write cases to a specific testset file"],
-      ["testset add --query Q --target NOTE", "Add one labelled query target"]
-    ]),
-    "",
-    styleSection("Vault setup:"),
-    "  Configure the default testset in {vault}/.ipa/config.yaml:",
-    "",
-    "  test:",
-    "    file: .ipa/tune/testsets/testset.json",
-    "",
-    styleSection("Search logging:"),
-    "  Set IPA_SEARCH_LOG=1 when running ipa search to append JSONL events under .ipa/tune/logs/search-events.jsonl.",
-    "  Use `ipa tune log` to inspect them and `ipa tune testset draft --file NAME` to draft test cases.",
-    "",
-    styleSection("Progress:"),
-    "  Long runs print trial progress to stderr: completed/trials, percent, current loss, best loss, elapsed, and ETA.",
-    ""
-  ].join("\n");
 }
 
 function colorize(text, apply) {
@@ -716,6 +392,7 @@ function render(payload) {
   if (payload.status && payload.checks) return renderDoctor(payload);
   if (payload.issues) return renderIssues(payload);
   if (payload.plugins) return renderPlugins(payload);
+  if (payload.operation === "graph") return renderGraphTopology(payload);
   if (payload.paths || payload.tree || payload.roots || payload.siblings) return renderTraversal(payload);
   if (payload.notes && payload.sources) return renderContext(payload);
   if (payload.channels) return renderChannels(payload.channels);
@@ -1033,6 +710,50 @@ function renderTraversal(payload) {
     return [`Root(s) for '${payload.note ?? ""}':`, ...payload.roots.map((note) => `  - ${note}`)].join("\n");
   }
   return JSON.stringify(payload, null, 2);
+}
+
+function graphRelationLabel(relations = []) {
+  const kinds = [];
+  for (const relation of relations) {
+    if (!kinds.includes(relation.kind)) kinds.push(relation.kind);
+  }
+  return kinds.map((kind) => {
+    const directions = new Set(relations.filter((item) => item.kind === kind).map((item) => item.direction));
+    const arrow = directions.has("out") && directions.has("in") ? "↔" : directions.has("out") ? "→" : "←";
+    return `${kind} ${arrow}`;
+  }).join(" · ");
+}
+
+function renderGraphTopology(payload) {
+  const nodes = new Map((payload.nodes ?? []).map((node) => [node.id, node]));
+  const children = new Map();
+  for (const node of payload.nodes ?? []) {
+    if (!node.parent) continue;
+    const list = children.get(node.parent) ?? [];
+    list.push({ kind: "tree", node });
+    children.set(node.parent, list);
+  }
+  for (const edge of payload.cross_edges ?? []) {
+    const list = children.get(edge.from) ?? [];
+    list.push({ kind: "cross", edge, node: nodes.get(edge.to) });
+    children.set(edge.from, list);
+  }
+
+  const lines = [`Graph from '${payload.center}' (depth ${payload.depth})`, "", `◎ [${payload.center}] (${nodes.get(payload.center)?.type ?? "note"})`];
+  const renderChildren = (parent, prefix) => {
+    const entries = children.get(parent) ?? [];
+    entries.forEach((entry, index) => {
+      const last = index === entries.length - 1;
+      const connector = last ? "└──" : "├──";
+      const relation = graphRelationLabel(entry.kind === "tree" ? entry.node.relations : entry.edge.relations);
+      const suffix = entry.kind === "cross" ? "  ↩ already shown" : "";
+      lines.push(`${prefix}${connector} ${relation} ${entry.node.id} (${entry.node.type || "note"})${suffix}`);
+      if (entry.kind === "tree") renderChildren(entry.node.id, `${prefix}${last ? "    " : "│   "}`);
+    });
+  };
+  renderChildren(payload.center, "");
+  if (payload.truncated_nodes > 0) lines.push(`… ${payload.truncated_nodes} more nodes (increase --max-nodes)`);
+  return lines.join("\n");
 }
 
 function renderContext(payload) {
@@ -1433,8 +1154,29 @@ function optionalList(values) {
 }
 
 function setHelp(command, key) {
-  command.helpInformation = () => formatCommandHelp(key);
+  command.description(COMMAND_DESCRIPTIONS[key] ?? command.description());
+  command.helpInformation = () => formatCommandHelp(command);
   return command;
+}
+
+function finalizeCommandRegistry(program) {
+  for (const entry of commandRegistry(program)) {
+    const description = COMMAND_DESCRIPTIONS[entry.path];
+    if (!description) throw new Error(`missing command registry description: ${entry.path}`);
+    entry.command.description(description);
+    entry.command.helpInformation = () => formatCommandHelp(entry.command);
+  }
+  return program;
+}
+
+function findRegisteredCommand(program, parts) {
+  let current = program;
+  for (const part of parts) {
+    const next = current.commands.find((command) => command.name() === part);
+    if (!next) throw new Error(`unknown command: ${parts.join(" ")}`);
+    current = next;
+  }
+  return current;
 }
 
 function buildProgram() {
@@ -1456,16 +1198,16 @@ function buildProgram() {
         else console.log(`ipa ${info.version ?? "unknown"}${info.commit ? ` (${info.commit})` : ""}`);
         return;
       }
-      console.log(HELP);
+      console.log(formatHelp(program));
     });
-  program.helpInformation = () => HELP;
+  program.helpInformation = () => formatHelp(program);
 
   program
     .command("help")
-    .argument("[command]", "Command to describe")
+    .argument("[command...]", "Registered command path to describe")
     .description("Show command help")
-    .action((command) => {
-      console.log(command ? formatCommandHelp(command) : HELP);
+    .action((parts) => {
+      console.log(parts.length ? formatCommandHelp(findRegisteredCommand(program, parts)) : formatHelp(program));
     });
 
   setHelp(program.command("search"), "search")
@@ -1556,6 +1298,17 @@ function buildProgram() {
       const mode = options.down ? "down" : options.siblings ? "siblings" : options.root ? "root" : "up";
       const note = options[mode] ?? noteArg;
       await withVault(globalOptions(program), async (vault) => print(await traversal(vault, mode, note), jsonOutput(program)));
+    });
+
+  setHelp(program.command("graph"), "graph")
+    .argument("<note>", "Center note title")
+    .option("--depth <number>", "Maximum edge distance", "2")
+    .option("--max-nodes <number>", "Maximum unique node count", "100")
+    .action(async (note, options) => {
+      await withVault(globalOptions(program), async (vault) => print(await graphTopology(vault, note, {
+        depth: optionNumber(options.depth, 2),
+        maxNodes: optionNumber(options.maxNodes, 100)
+      }), jsonOutput(program)));
     });
 
   setHelp(program.command("validator"), "validator")
@@ -2053,12 +1806,9 @@ function buildProgram() {
     });
 
   setHelp(program.command("review"), "review")
-    .argument("[scope]", "Review scope", "all")
-    .option("--suggest-refactor", "Include refactor suggestions")
-    .action(async (scope, options) => {
-      await withVault(globalOptions(program), async (vault) => print(await reviewVault(vault, scope, {
-        suggestRefactor: Boolean(options.suggestRefactor)
-      }), jsonOutput(program)));
+    .argument("[scope]", "Review scope: all, convention, inbox, or duplicates", "all")
+    .action(async (scope) => {
+      await withVault(globalOptions(program), async (vault) => print(await reviewVault(vault, scope), jsonOutput(program)));
     });
 
   const contractCommand = setHelp(program.command("contract"), "contract");
@@ -2145,7 +1895,7 @@ function buildProgram() {
       }), jsonOutput(program)));
     });
   tuneCommand.command("help").action(() => {
-    console.log(formatCommandHelp("tune"));
+    console.log(formatCommandHelp(tuneCommand));
   });
   tuneCommand.command("eval").action(async () => {
     await withVault(globalOptions(program), async (vault) => print(await tuneEval(vault), jsonOutput(program)));
@@ -2278,7 +2028,7 @@ function buildProgram() {
     print({ refactors: REFACTORS }, jsonOutput(program));
   });
 
-  return program;
+  return finalizeCommandRegistry(program);
 }
 
 async function main(argv = process.argv.slice(2)) {

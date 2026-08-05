@@ -16,7 +16,9 @@ verified: 8ac0c4f4069ca3452b78c6bbc4e0ecb6e58d804f
   손으로 만들지 않는다.
 - 에러 처리: 비치명 실패는 `result.status === "error"` 검사 후 `process.exitCode = 1` 설정으로
   처리하고, 예기치 못한 예외는 per-command try/catch 없이 최상위 `main().catch` 하나로 전파시킨다.
-- help는 `HELP_TOPICS` 객체 + `program.helpInformation` 오버라이드 방식이다. 새 커맨드는 기존
-  `setHelp` 패턴을 따라 상세 help 블록을 붙인다.
+- help는 Commander에 실제 등록된 command/argument/option tree를 `commandRegistry()`가 순회해
+  자동 생성한다. 새 커맨드는 `COMMAND_DESCRIPTIONS`에 설명을 추가해야 하며, 누락되면
+  `finalizeCommandRegistry()`가 시작 시 실패시켜 help와 실행 표면의 불일치를 막는다. 예시·주의사항처럼
+  런타임 tree에서 얻을 수 없는 보충 문구만 `COMMAND_EXTRAS`에 둔다.
 - 함수 시그니처에 실제 타입 어노테이션 금지 — core와 동일한 무변환 복사 빌드를 탄다
   (`.claude/rules/core.md` 참고).
