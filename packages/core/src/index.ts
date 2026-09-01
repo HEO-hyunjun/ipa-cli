@@ -6713,6 +6713,11 @@ function gitOutput(repoRoot, args) {
 }
 
 export function cliVersionInfo() {
+  // Release bundles bake these in via esbuild define (scripts/bundle-cli.mjs);
+  // in a normal checkout both env slots are empty and we walk the repo.
+  if (process.env.IPA_BUNDLE_VERSION) {
+    return { version: process.env.IPA_BUNDLE_VERSION, commit: process.env.IPA_BUNDLE_COMMIT || null, repo_root: null };
+  }
   const here = dirname(fileURLToPath(import.meta.url));
   const repoRoot = findRepoRoot(here);
   let version = null;

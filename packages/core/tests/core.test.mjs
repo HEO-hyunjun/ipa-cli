@@ -2928,6 +2928,21 @@ test("cliVersionInfo reports workspace version, commit, and repo root", () => {
   assert.match(info.commit ?? "", /^[0-9a-f]{6,}$/);
 });
 
+test("cliVersionInfo uses version metadata embedded in a release bundle", () => {
+  const previousVersion = process.env.IPA_BUNDLE_VERSION;
+  const previousCommit = process.env.IPA_BUNDLE_COMMIT;
+  process.env.IPA_BUNDLE_VERSION = "9.8.7";
+  process.env.IPA_BUNDLE_COMMIT = "abc1234";
+  try {
+    assert.deepEqual(cliVersionInfo(), { version: "9.8.7", commit: "abc1234", repo_root: null });
+  } finally {
+    if (previousVersion === undefined) delete process.env.IPA_BUNDLE_VERSION;
+    else process.env.IPA_BUNDLE_VERSION = previousVersion;
+    if (previousCommit === undefined) delete process.env.IPA_BUNDLE_COMMIT;
+    else process.env.IPA_BUNDLE_COMMIT = previousCommit;
+  }
+});
+
 test("selfUpdate plans behind commits and applies a fast-forward pull on a fixture checkout", async () => {
   const work = await mkdtemp(join(tmpdir(), "ipa-update-test-"));
   const origin = join(work, "origin");
