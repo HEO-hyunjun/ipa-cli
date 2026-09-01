@@ -53,7 +53,9 @@ test("planted fixture: over-full index keeps 20+ ref children after derive", () 
     .filter((f) => f.endsWith(".md"))
     .filter((f) => /^ref:.*🔖 레시피 모음/m.test(readFileSync(join(archive, f), "utf8")));
   assert.ok(children.length >= 20, `over-full index should keep 20+ children, got ${children.length}`);
-  assert.ok(existsSync(join(VAULTS, "canonical", "01 Project", "요리", "🔖 레시피 모음.md")), "index note survived");
+  const indexNames = readdirSync(join(VAULTS, "canonical", "01 Project", "요리"))
+    .map((name) => name.normalize("NFC"));
+  assert.ok(indexNames.includes("🔖 레시피 모음.md"), "index note survived");
 });
 
 test("planted fixture: near-duplicate coffee-grind pair both survive derive", () => {

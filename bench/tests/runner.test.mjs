@@ -17,7 +17,8 @@ const IPA_BIN = join(REPO, "packages", "cli", "dist", "main.js");
 const MINI_VAULT = join(REPO, "packages", "test-vaults", "fixtures", "mini-vault");
 
 test("runClaudeTurn returns raw jsonl with a result event", async () => {
-  const out = await runClaudeTurn({ cwd: tmpdir(), model: "sonnet", message: "안녕", claudeCmd: CMD });
+  const cwd = mkdtempSync(join(tmpdir(), "bench-cwd-"));
+  const out = await runClaudeTurn({ cwd, model: "sonnet", message: "안녕", claudeCmd: CMD });
   const parsed = parseTranscript(out);
   assert.equal(parsed.sessionId, "sess-fake-1");
   assert.equal(parsed.ipaCalls.length, 1);
@@ -25,15 +26,16 @@ test("runClaudeTurn returns raw jsonl with a result event", async () => {
 
 test("runClaudeTurn overrides child HOME when homeDir is passed, and leaves it untouched otherwise", async () => {
   const probe = join(mkdtempSync(join(tmpdir(), "bench-probe-")), "home");
+  const cwd = mkdtempSync(join(tmpdir(), "bench-cwd-"));
   process.env.IPA_BENCH_ENV_PROBE = probe;
   try {
     // homeDir 지정 → 자식 HOME이 격리 디렉터리로 덮어써진다 (install 단계가 의존하는 격리 메커니즘)
     const iso = mkdtempSync(join(tmpdir(), "bench-home-"));
-    await runClaudeTurn({ cwd: tmpdir(), model: "sonnet", message: "안녕", claudeCmd: CMD, homeDir: iso });
+    await runClaudeTurn({ cwd, model: "sonnet", message: "안녕", claudeCmd: CMD, homeDir: iso });
     assert.equal(readFileSync(probe, "utf8"), iso);
     assert.match(iso, new RegExp(tmpdir().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     // homeDir 미지정 → 실제 HOME 그대로 (세션 경로: macOS 인증 유지)
-    await runClaudeTurn({ cwd: tmpdir(), model: "sonnet", message: "안녕", claudeCmd: CMD });
+    await runClaudeTurn({ cwd, model: "sonnet", message: "안녕", claudeCmd: CMD });
     assert.equal(readFileSync(probe, "utf8"), process.env.HOME);
   } finally {
     delete process.env.IPA_BENCH_ENV_PROBE;
@@ -41,7 +43,8 @@ test("runClaudeTurn overrides child HOME when homeDir is passed, and leaves it u
 });
 
 test("runClaudeTurn passes --resume for follow-up turns", async () => {
-  const out = await runClaudeTurn({ cwd: tmpdir(), model: "sonnet", message: "이어서", resumeSessionId: "sess-fake-1", claudeCmd: CMD });
+  const cwd = mkdtempSync(join(tmpdir(), "bench-cwd-"));
+  const out = await runClaudeTurn({ cwd, model: "sonnet", message: "이어서", resumeSessionId: "sess-fake-1", claudeCmd: CMD });
   assert.match(parseTranscript(out).finalText, /마무리/);
 });
 
