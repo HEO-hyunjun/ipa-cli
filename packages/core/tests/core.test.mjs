@@ -905,7 +905,9 @@ test("tune analyze, replay and testset commands are functional", async () => {
   delete process.env.IPA_SEARCH_LOG;
   delete process.env.IPA_TUNE_LOG_SEARCH;
   try {
-    await searchVault(vault, "Alpha", { logCwd: searchCwd });
+    // Make the session contract explicit so an enclosing Codex/Claude test
+    // runner cannot override the fixture's prompt-context identity.
+    await searchVault(vault, "Alpha", { logCwd: searchCwd, sessionId: "session_test" });
     const log = await tuneLog(vault);
     assert.equal(log.count, 1);
     assert.equal(log.events[0].event_type, "search");
@@ -1271,7 +1273,10 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   });
   assert.equal(blockedFormatter.status, 2);
   assert.match(blockedFormatter.stderr, /Formatter gate blocked final response/);
-  assert.match(blockedFormatter.stdout, /formatter apply --note/);
+  const blockedFormatterPayload = JSON.parse(blockedFormatter.stdout);
+  assert.deepEqual(Object.keys(blockedFormatterPayload).sort(), ["decision", "reason"]);
+  assert.equal(blockedFormatterPayload.decision, "block");
+  assert.match(blockedFormatterPayload.reason, /formatter apply --note/);
 
   await formatVault(vault, true, { notes: ["Alpha", "Needs Format"] });
   const passedFormatter = spawnSync(process.execPath, [formatterGate], {
@@ -2016,8 +2021,11 @@ test("vault-ref nudge hook points path-referencing prompts at the ipa skill from
   // Then: a vault note path mentioned from outside the vault injects the pointer.
   const outside = run({ prompt: "00 Inbox/Alpha.md 이거 보고 요약해줘", cwd: tmpdir() });
   assert.equal(outside.status, 0);
-  assert.match(outside.stdout, /\[IPA\]/);
-  assert.match(outside.stdout, /ipa view "Note Title"/);
+  const outsidePayload = JSON.parse(outside.stdout);
+  assert.deepEqual(Object.keys(outsidePayload), ["hookSpecificOutput"]);
+  assert.equal(outsidePayload.hookSpecificOutput.hookEventName, "UserPromptSubmit");
+  assert.match(outsidePayload.hookSpecificOutput.additionalContext, /\[IPA\]/);
+  assert.match(outsidePayload.hookSpecificOutput.additionalContext, /ipa view "Note Title"/);
 
   // Then: the same prompt inside the vault stays silent (local surfaces cover it).
   const inside = run({ prompt: "00 Inbox/Alpha.md 이거 보고 요약해줘", cwd: vault });
@@ -3230,6 +3238,23 @@ test("session gate surfaces a non-blocking gate warning to the agent", async () 
   assert.match(payload.hookSpecificOutput.additionalContext, /warn-me/);
 
   await harnessUninstall(vault, "claude", options);
+
+  // Codex Stop hooks use a different output schema: advisory context is a
+  // top-level systemMessage and hookSpecificOutput is not accepted.
+  await harnessInstall(vault, "codex", options);
+  const codexFormatterGate = join(home, ".codex", "hooks", "ipa-formatter-gate.mjs");
+  const codexResult = spawnSync(process.execPath, [codexFormatterGate], {
+    input: "{}",
+    env: { ...process.env, IPA_VAULT_PATH: vault },
+    encoding: "utf8"
+  });
+  assert.equal(codexResult.status, 0, codexResult.stderr);
+  const codexPayload = JSON.parse(codexResult.stdout);
+  assert.deepEqual(Object.keys(codexPayload), ["systemMessage"]);
+  assert.match(codexPayload.systemMessage, /not blocking/);
+  assert.match(codexPayload.systemMessage, /warn-me/);
+
+  await harnessUninstall(vault, "codex", options);
 });
 
 test("obsidian plugin sync deploys the built bundle into the vault plugin folder", async () => {

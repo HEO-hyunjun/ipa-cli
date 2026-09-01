@@ -539,6 +539,14 @@ the evidence nudge/logging hook (`hook:evidence`), which is opt-in via
 <component...>` adds components to the default set, and `--without
 <component...>` removes components from the default set.
 
+Harness providers use a ports-and-adapters boundary under
+`packages/core/src/harness/`: the common application service owns lifecycle,
+manifest, managed-file, and doctor behavior, while each adapter owns its
+paths, supported components, hook registration, plugin markers, permissions,
+and hook output schema. Adding a provider requires an adapter plus a registry
+entry and contract tests; common lifecycle code must not branch on provider
+names.
+
 ```sh
 ipa harness install opencode --with hook:evidence
 ipa harness install opencode --only skill,prompt

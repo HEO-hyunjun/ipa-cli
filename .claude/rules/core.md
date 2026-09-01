@@ -7,8 +7,10 @@ verified: 8ac0c4f4069ca3452b78c6bbc4e0ecb6e58d804f
 
 # core conventions
 
-- `packages/core/src/index.ts`(~9,500줄)가 core 전부다. 새 로직은 이 파일에 추가하고 심볼 검색으로
-  탐색한다 — 복사 기반 빌드가 단일 파일을 가정하므로 파일을 새로 쪼개지 않는다.
+- `packages/core/src/index.ts`는 core 공개 진입점이며, 응집된 기능은 하위 모듈로 분리한다.
+  `scripts/build.mjs`가 `src/**/*.ts`를 같은 상대 경로의 `dist/**/*.js`로 재귀 복사하므로 소스 내부
+  ESM import는 빌드 결과를 기준으로 `.js` 확장자를 사용한다. 하네스 코드는
+  `packages/core/src/harness/`에 두며 `index.ts`에는 의존성 조립과 공개 API wrapper만 남긴다.
 - 함수 시그니처에 실제 타입 어노테이션(`: string` 등)을 쓰지 않는다. `scripts/build.mjs`가 `.ts`를
   무변환으로 `dist/*.js`에 복사하므로 런타임 파싱 에러가 난다. `interface`/`type` 선언만 허용.
 - 폴더·프론트매터 이름은 항상 `mapping.*` 경유로 참조한다(`normalizeMapping`, index.ts의 `Mapping`
@@ -20,9 +22,11 @@ verified: 8ac0c4f4069ca3452b78c6bbc4e0ecb6e58d804f
   통과해도 실 설치에서 크래시하는 함정.
 - 하네스 관리 파일 쓰기는 `writeManagedFile`/`upsertManagedBlock` 경유. `IPA_HARNESS_MANAGED` 마커가
   없는 대상 파일은 user-owned이므로 절대 덮어쓰지 않고 `skipped_user_owned`로 보고한다.
-- 하네스 컴포넌트를 추가/변경하면 전부 갱신: `HARNESS_COMPONENTS`, script/event/matcher 맵,
-  `IPA_MANAGED_HOOK_SCRIPTS`(구 이름은 legacy 정리를 위해 잔류), `installGlobalHarness`,
-  `uninstallGlobalHarness`, `componentsValidForTarget`, doctor.
+- 하네스 컴포넌트를 추가/변경하면 `harness/model.ts`의 component/script 목록,
+  `shared/hookConfig.ts`의 등록 정보와 legacy 정리 목록, 각 provider adapter의 지원 목록,
+  artifact renderer, lifecycle, doctor를 함께 갱신한다. 프로바이더별 경로·입출력 JSON·hook/plugin
+  등록 방식은 `harness/adapters/*.ts`가 소유하며 공통 application/domain 계층에서 provider 이름으로
+  분기하지 않는다.
 - gate 플러그인 block 의미론: `{ block: true }`는 Stop 하드블록, `{ block: false, message }`는
   비차단 경고. throw하거나 출력이 깨진 gate는 보고만 되고 절대 세션을 잠그지 않는다(fail-safe 유지).
 - 프롬프트 템플릿(전역 스킬·프롬프트 블록·볼트 로컬 스킬)은 계약 표면이다. 변경 시 매핑명 렌더링
