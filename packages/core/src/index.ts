@@ -15,7 +15,8 @@ import {
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { homedir } from "node:os";
-import { callCounterOptions } from "./harness/shared/hookTemplates.js";
+import { harnessTemplateOptions } from "./harness/shared/hookTemplates.js";
+export { recordHarnessMutation } from "./harness/mutationLedger.js";
 import {
   VAULT_LOCAL_SKILLS,
   vaultLocalSkillRelPath
@@ -32,6 +33,7 @@ import {
 } from "./harness/artifacts.js";
 import {
   installGlobalHarness,
+  pruneVaultLocalSkills,
   uninstallGlobalHarness,
   uninstallVaultLocalSkills,
   vaultLocalSkillStatus
@@ -3239,6 +3241,12 @@ export async function rewriteNote(vaultPath, noteName, rewrite, options = {}) {
     ? syncUpdatedAtText(nextText, mapping)
     : nextText;
   if (changed && apply) await writeFile(note.path, finalText, "utf8");
+  const postflight = changed && apply && options.postflight !== false
+    ? await finalizeNotes(vaultPath, [note.id])
+    : null;
+  const persistedText = changed && apply && postflight
+    ? await readFile(note.path, "utf8")
+    : finalText;
   return {
     operation: "rewrite-note",
     note: note.id,
@@ -3247,7 +3255,8 @@ export async function rewriteNote(vaultPath, noteName, rewrite, options = {}) {
     applied: changed && apply,
     updated_at_synced: finalText !== nextText,
     sha256_before: sha256(note.raw),
-    sha256_after: sha256(finalText)
+    sha256_after: sha256(persistedText),
+    ...(postflight ? { postflight } : {})
   };
 }
 
@@ -4146,6 +4155,32 @@ export async function formatVault(vaultPath, apply = false, options = {}) {
     patches,
     applied,
     issues
+  };
+}
+
+// One note-scoped postflight replaces the agent-side validator -> formatter
+// plan -> formatter apply chain. Formatting runs first, then validation reports
+// the persisted result so callers receive one authoritative outcome.
+export async function finalizeNotes(vaultPath, noteNames, options = {}) {
+  const requested = [...new Set(asList(noteNames).map((name) => String(name).trim()).filter(Boolean))];
+  if (!requested.length) throw new Error("note finalize requires at least one note title");
+  const formatting = await formatVault(vaultPath, true, {
+    notes: requested,
+    patchesOnly: true
+  });
+  const validation = await validateVault(vaultPath, null, { notes: requested });
+  return {
+    operation: "note-finalize",
+    notes: requested,
+    status: validation.status,
+    formatting: {
+      patches: formatting.summary.patches,
+      applied: formatting.applied?.length ?? 0
+    },
+    validation: {
+      status: validation.status,
+      issues: validation.issues
+    }
   };
 }
 
@@ -5132,7 +5167,8 @@ export async function inboxAdd(vaultPath, sourcePath, options = {}) {
   };
   await mkdir(dirname(target), { recursive: true });
   await writeFile(target, writeFrontmatter(frontmatter, parsed.body || source), "utf8");
-  return { path: toPosix(relative(vaultPath, target)), title };
+  const postflight = options.postflight === false ? null : await finalizeNotes(vaultPath, [title]);
+  return { path: toPosix(relative(vaultPath, target)), title, ...(postflight ? { postflight } : {}) };
 }
 
 export async function inboxTriage(vaultPath, apply = false, noteName = null) {
@@ -6899,7 +6935,7 @@ const harnessGuard = createHarnessGuard({
 
 const harnessApplication = createHarnessService({
   readVaultConfig,
-  callCounterOptions,
+  templateOptions: harnessTemplateOptions,
   vaultLocalSkillStatus,
   pluginScaffoldStatus,
   outdatedComponents: harnessOutdatedComponents,
@@ -6913,6 +6949,7 @@ const harnessApplication = createHarnessService({
   toPosix,
   installGlobal: installGlobalHarness,
   uninstallLocalSkills: uninstallVaultLocalSkills,
+  pruneLocalSkills: pruneVaultLocalSkills,
   uninstallGlobal: uninstallGlobalHarness,
   fragmentNames: harnessFragmentNames,
   pluginDoctor,

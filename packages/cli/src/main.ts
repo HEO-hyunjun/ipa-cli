@@ -23,6 +23,7 @@ import {
   digestNote,
   doctor,
   formatVault,
+  finalizeNotes,
   graphTopology,
   harnessDoctor,
   harnessGuardCheck,
@@ -49,6 +50,7 @@ import {
   pluginDryRun,
   pluginInit,
   readVaultConfig,
+  recordHarnessMutation,
   rebuildCache,
   redirectNotes,
   refactorVault,
@@ -105,6 +107,9 @@ const COMMAND_GROUP_BY_NAME = {
   add: "Legacy aliases"
 };
 
+const DEFAULT_COMMANDS = ["search", "view", "context", "inbox", "note", "review", "doctor", "help"];
+const DEFAULT_COMMAND_SET = new Set(DEFAULT_COMMANDS);
+
 const COMMAND_DESCRIPTIONS = {
   help: "Show help for any registered command path",
   search: "Search notes with active weights and plugins",
@@ -122,6 +127,7 @@ const COMMAND_DESCRIPTIONS = {
   "note replace": "Replace an exact text block in one note",
   "note set": "Set or update a mapped frontmatter field",
   "note redirect": "Redirect references from source notes to a target note",
+  "note finalize": "Format and validate raw Markdown edits in one call",
   add: "Import a draft into the configured inbox (legacy alias)",
   refactor: "Plan or apply refs, tags, and wikilink rewrites",
   config: "Initialize or inspect vault configuration",
@@ -280,7 +286,7 @@ function commandUsage(command) {
   return ["ipa [OPTIONS]", path, argumentsText, subcommandText].filter(Boolean).join(" ");
 }
 
-function formatHelp(program) {
+function formatHelp(program, options = {}) {
   const lines = [
     styleTitle("Usage: ipa [OPTIONS] COMMAND [ARGS...]"),
     "",
@@ -291,23 +297,35 @@ function formatHelp(program) {
     ""
   ];
   const groups = new Map();
-  for (const entry of commandRegistry(program).filter((item) => item.command.parent === program)) {
-    const group = COMMAND_GROUP_BY_NAME[entry.name] ?? "Runtime";
+  const rootEntries = commandRegistry(program).filter((item) => item.command.parent === program);
+  const visibleEntries = options.all
+    ? rootEntries
+    : rootEntries
+      .filter((item) => DEFAULT_COMMAND_SET.has(item.name))
+      .sort((left, right) => DEFAULT_COMMANDS.indexOf(left.name) - DEFAULT_COMMANDS.indexOf(right.name));
+  for (const entry of visibleEntries) {
+    const group = options.all ? (COMMAND_GROUP_BY_NAME[entry.name] ?? "Runtime") : "Commands";
     const rows = groups.get(group) ?? [];
     rows.push([entry.name, entry.description]);
     groups.set(group, rows);
   }
-  for (const group of ["Core commands", "Operations", "Runtime", "Legacy aliases"]) {
+  for (const group of options.all ? ["Core commands", "Operations", "Runtime", "Legacy aliases"] : ["Commands"]) {
     const rows = groups.get(group);
     if (rows?.length) lines.push(styleSection(`${group}:`), formatRows(rows), "");
   }
   lines.push(styleSection("Examples:"));
-  lines.push(formatRows([
+  lines.push(formatRows(options.all ? [
     ["ipa search \"ipa cli\"", "Search the active vault"],
     ["ipa --profile ipa-test review all", "Run a read-only review on a test profile"],
     ["ipa plugin dry-run search .ipa/plugins/search/custom.js --query Alpha", "Test a vault plugin"]
+  ] : [
+    ["ipa search \"ipa cli\" \"harness\"", "Search several facets in one call"],
+    ["ipa view \"Note A\" \"Note B\" --full", "Read selected notes in one call"],
+    ["ipa note finalize \"Edited Note\"", "Finish a raw Markdown edit"]
   ]));
-  lines.push("", styleMuted("Run `ipa <command> --help` for command-specific help."));
+  lines.push("", styleMuted(options.all
+    ? "Run `ipa <command> --help` for command-specific help."
+    : "Run `ipa help --all` for advanced and administrative commands, or `ipa <command> --help` for exact syntax."));
   return `${lines.join("\n")}\n`;
 }
 
@@ -400,6 +418,7 @@ function render(payload) {
   if (payload.refactors) return renderRefactors(payload.refactors);
   if (payload.operation === "replace-in-note") return renderKeyValues("Note replace", payload);
   if (payload.operation === "set-note-field") return renderKeyValues("Note set", payload);
+  if (payload.operation === "note-finalize") return renderNoteFinalize(payload);
   if (payload.operation === "digest") return renderDigest(payload);
   if (payload.operation === "redirect-notes") return renderRedirect(payload);
   if (payload.operation === "cascade") return renderCascade(payload);
@@ -911,7 +930,7 @@ function renderHarnessStatus(payload) {
     state.prompt ? "yes" : "no",
     state.markdown_nudge_hook ? "yes" : "no"
   ]);
-  if (globalRows.length) lines.push("", table(["target", "skill", "guard", "prompt", "md nudge"], globalRows));
+  if (globalRows.length) lines.push("", table(["target", "skill", "guard", "prompt", "md ledger"], globalRows));
   const componentRows = Object.entries(payload.global ?? {}).flatMap(([target, state]) => {
     if (!state.selected_components) return [];
     const rows = [
@@ -1000,9 +1019,22 @@ function renderHarnessChange(payload) {
   if (payload.skipped_user_owned?.length) {
     lines.push("", "Skipped user-owned files (marker removed; left untouched):", ...payload.skipped_user_owned.map((file) => `  ${file}`));
   }
+  if (payload.removed_stale?.length) {
+    lines.push("", "Removed stale managed files:", ...payload.removed_stale.map((file) => `  ${file}`));
+  }
   if (payload.removed?.length) lines.push("", "Removed vault-local files:", ...payload.removed.map((file) => `  ${file}`));
   if (payload.global_removed?.length) lines.push("", "Removed global files:", ...payload.global_removed.map((file) => `  ${file}`));
   return lines.join("\n");
+}
+
+function renderNoteFinalize(payload) {
+  return renderKeyValues("Note finalize", {
+    status: payload.status,
+    notes: (payload.notes ?? []).join(", "),
+    "formatter patches": payload.formatting?.patches ?? 0,
+    "formatter applied": payload.formatting?.applied ?? 0,
+    "validation issues": payload.validation?.issues?.length ?? 0
+  });
 }
 
 function renderSelfUpdate(payload) {
@@ -1149,6 +1181,12 @@ function collectComponents(value, previous) {
   return [...previous, ...segments];
 }
 
+async function trackedMutation(vault, command, applied, run) {
+  const result = await run();
+  await recordHarnessMutation(vault, command, applied);
+  return result;
+}
+
 function optionalList(values) {
   return values?.length ? values : undefined;
 }
@@ -1205,9 +1243,10 @@ function buildProgram() {
   program
     .command("help")
     .argument("[command...]", "Registered command path to describe")
+    .option("--all", "Show advanced, administrative, and legacy commands")
     .description("Show command help")
-    .action((parts) => {
-      console.log(parts.length ? formatCommandHelp(findRegisteredCommand(program, parts)) : formatHelp(program));
+    .action((parts, options) => {
+      console.log(parts.length ? formatCommandHelp(findRegisteredCommand(program, parts)) : formatHelp(program, { all: Boolean(options.all) }));
     });
 
   setHelp(program.command("search"), "search")
@@ -1282,10 +1321,10 @@ function buildProgram() {
     .action(async (mode, options) => {
       if (!["plan", "apply"].includes(mode)) throw new Error(`unknown cascade mode: ${mode}`);
       const only = String(options.only ?? "").split(",").map((item) => item.trim()).filter(Boolean);
-      await withVault(globalOptions(program), async (vault) => print(await cascadeNote(vault, options.note, {
+      await withVault(globalOptions(program), async (vault) => print(await trackedMutation(vault, "cascade", mode === "apply", () => cascadeNote(vault, options.note, {
         apply: mode === "apply",
         only: only.length ? only : undefined
-      }), jsonOutput(program)));
+      })), jsonOutput(program)));
     });
 
   setHelp(program.command("traversal"), "traversal")
@@ -1359,7 +1398,7 @@ function buildProgram() {
     .argument("<newName>", "New note title")
     .option("--apply", "Apply the rename")
     .action(async (oldName, newName, options) => {
-      await withVault(globalOptions(program), async (vault) => print(await renameNote(vault, oldName, newName, Boolean(options.apply)), jsonOutput(program)));
+      await withVault(globalOptions(program), async (vault) => print(await trackedMutation(vault, "rename", Boolean(options.apply), () => renameNote(vault, oldName, newName, Boolean(options.apply))), jsonOutput(program)));
     });
 
   setHelp(program.command("move"), "move")
@@ -1367,7 +1406,7 @@ function buildProgram() {
     .argument("<target>", "Target directory")
     .option("--apply", "Apply the move")
     .action(async (note, target, options) => {
-      await withVault(globalOptions(program), async (vault) => print(await moveNote(vault, note, target, Boolean(options.apply)), jsonOutput(program)));
+      await withVault(globalOptions(program), async (vault) => print(await trackedMutation(vault, "move", Boolean(options.apply), () => moveNote(vault, note, target, Boolean(options.apply))), jsonOutput(program)));
     });
 
   const noteCommand = setHelp(program.command("note"), "note");
@@ -1449,6 +1488,13 @@ function buildProgram() {
       }), jsonOutput(program)));
     });
 
+  noteCommand
+    .command("finalize")
+    .argument("<notes...>", "Note titles changed through raw editor tools")
+    .action(async (notes) => {
+      await withVault(globalOptions(program), async (vault) => print(await finalizeNotes(vault, notes), jsonOutput(program)));
+    });
+
   setHelp(program.command("add"), "inbox")
     .argument("<source>", "Source markdown file")
     .option("--title <title>", "Inbox note title")
@@ -1469,9 +1515,9 @@ function buildProgram() {
     .argument("[values...]", "Command values")
     .option("--apply", "Apply the refactor")
     .action(async (subcommand, values, options) => {
-      await withVault(globalOptions(program), async (vault) => print(await refactorVault(vault, subcommand, values, {
+      await withVault(globalOptions(program), async (vault) => print(await trackedMutation(vault, "refactor", Boolean(options.apply), () => refactorVault(vault, subcommand, values, {
         apply: Boolean(options.apply)
-      }), jsonOutput(program)));
+      })), jsonOutput(program)));
     });
 
   const configCommand = setHelp(program.command("config"), "config");
@@ -1793,16 +1839,16 @@ function buildProgram() {
     .option("--output <path>", "Plan output path")
     .option("--scope <scope>", "Accepted for compatibility")
     .action(async (options) => {
-      await withVault(globalOptions(program), async (vault) => print(await linkPlan(vault, {
+      await withVault(globalOptions(program), async (vault) => print(await trackedMutation(vault, "link", false, () => linkPlan(vault, {
         note: options.note,
         output: options.output
-      }), jsonOutput(program)));
+      })), jsonOutput(program)));
     });
   linkCommand
     .command("apply")
     .argument("<planFile>", "Plan file")
     .action(async (planFile) => {
-      await withVault(globalOptions(program), async (vault) => print(await linkApply(vault, planFile), jsonOutput(program)));
+      await withVault(globalOptions(program), async (vault) => print(await trackedMutation(vault, "link", true, () => linkApply(vault, planFile)), jsonOutput(program)));
     });
 
   setHelp(program.command("review"), "review")

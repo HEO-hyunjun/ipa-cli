@@ -3,6 +3,15 @@ import { HARNESS_COMPONENTS } from "../model.js";
 import { hookRegistration } from "../shared/hookConfig.js";
 
 const validComponents = HARNESS_COMPONENTS.filter((component) => component !== "opencode-plugin" && component !== "permissions");
+const defaultComponents = [
+  "skill",
+  "prompt",
+  "local-prompt",
+  "hook:session-env",
+  "hook:guard",
+  "hook:markdown-nudge",
+  "hook:formatter-gate"
+];
 
 export const codexAdapter = {
   id: "codex",
@@ -12,7 +21,7 @@ export const codexAdapter = {
   promptDisplayPath: "~/.codex/AGENTS.md",
   localSkillsRoot: ".agents/skills",
   validComponents,
-  defaultComponents: [...validComponents],
+  defaultComponents,
   usesPlugin: false,
   targetSpec(homeBase) {
     const home = join(homeBase, ".codex");

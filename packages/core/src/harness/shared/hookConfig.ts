@@ -1,9 +1,8 @@
 export const HOOK_REGISTRATIONS = {
   "hook:session-env": { event: "SessionStart", matcher: null, statusMessage: "Setting IPA search logging environment...", timeout: 5 },
   "hook:guard": { event: "PreToolUse", matcher: "Write|Edit|MultiEdit", statusMessage: "Checking IPA inbox write policy...", timeout: 5 },
-  "hook:markdown-nudge": { event: "PostToolUse", matcher: "Write|Edit|MultiEdit", statusMessage: "Reminding IPA lint/format checks...", timeout: 5 },
+  "hook:markdown-nudge": { event: "PostToolUse", matcher: "Write|Edit|MultiEdit", statusMessage: null, timeout: 5 },
   "hook:call-counter": { event: "PostToolUse", matcher: "Bash", statusMessage: null, timeout: 5 },
-  "hook:mutation-ledger": { event: "PostToolUse", matcher: "Bash", statusMessage: null, timeout: 5 },
   "hook:formatter-gate": { event: "Stop", matcher: null, statusMessage: "Checking IPA formatter apply gate...", timeout: 20 },
   "hook:vault-ref": { event: "UserPromptSubmit", matcher: null, statusMessage: null, timeout: 5 },
   "hook:evidence": { event: "UserPromptSubmit", matcher: null, statusMessage: null, timeout: 5 }

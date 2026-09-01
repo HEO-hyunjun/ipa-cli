@@ -94,7 +94,7 @@ export function createHarnessService(deps) {
   const status = async (vaultPath, options = {}) => {
     const index = await readHarnessIndex(vaultPath);
     const { config, mapping } = await deps.readVaultConfig(vaultPath);
-    options = { ...options, callCounter: deps.callCounterOptions(config) };
+    options = { ...options, ...deps.templateOptions(config) };
     const global = {};
     const outdatedByTarget = {};
     let aggregateSelected = [];
@@ -152,7 +152,14 @@ export function createHarnessService(deps) {
     const spec = targetSpec(target, options);
     const { selected, omitted } = resolveHarnessComponents(spec.adapter, options);
     const { config, mapping } = await deps.readVaultConfig(vaultPath);
-    options = { ...options, callCounter: deps.callCounterOptions(config) };
+    options = { ...options, ...deps.templateOptions(config) };
+    const selectorUsed = normalizeComponentList(options.components?.only).length > 0
+      || normalizeComponentList(options.components?.with).length > 0
+      || normalizeComponentList(options.components?.without).length > 0;
+    const selectionMode = options.selectionMode ?? (selectorUsed ? "custom" : "default");
+    const previousManifest = await readTargetManifest(vaultPath, spec.name);
+    const previousSkills = previousManifest?.local_skills?.skills ?? [];
+    const removedStale = await deps.pruneLocalSkills(vaultPath, spec, componentSelected(selected, "local-skills"), previousSkills);
     const pluginInitResult = componentSelected(selected, "plugin-scaffold")
       ? await deps.pluginInit(vaultPath, { examples: true })
       : { created: [], skipped: [] };
@@ -162,6 +169,7 @@ export function createHarnessService(deps) {
       spec,
       selected,
       omitted,
+      selectionMode,
       cliInfo: deps.cliVersionInfo(),
       installedAt: deps.nowIso(),
       localSkills: deps.localSkills.map((skill) => skill.name)
@@ -208,15 +216,18 @@ export function createHarnessService(deps) {
       plugin_init: pluginInitResult,
       files,
       global_files: globalFiles,
-      skipped_user_owned: skippedUserOwned
+      skipped_user_owned: skippedUserOwned,
+      removed_stale: removedStale
     };
   };
 
   const uninstall = async (vaultPath, target = "codex", options = {}) => {
     const spec = targetSpec(target, options);
+    const targetManifest = await readTargetManifest(vaultPath, spec.name);
+    const previousSkills = targetManifest?.local_skills?.skills ?? [];
     await rm(join(harnessRoot(vaultPath), spec.name), { recursive: true, force: true });
     await removeManagedBlock(join(vaultPath, spec.localPrompt));
-    const localSkillRemoved = await deps.uninstallLocalSkills(vaultPath, spec);
+    const localSkillRemoved = await deps.uninstallLocalSkills(vaultPath, spec, previousSkills);
     const globalRemoved = await deps.uninstallGlobal(spec);
     const index = await readHarnessIndex(vaultPath);
     if (index.targets) delete index.targets[spec.name];
@@ -240,17 +251,21 @@ export function createHarnessService(deps) {
     for (const component of [...only, ...withList, ...without]) {
       if (!valid.has(component)) throw new Error(`unknown harness component: ${component}`);
     }
-    const autoAdded = only.length ? [] : spec.adapter.defaultComponents
-      .filter((component) => !storedSelected.includes(component) && !storedOmitted.includes(component));
+    const storedMode = targetManifest?.version >= 2 ? targetManifest.selection_mode : "default";
+    const baseSelected = storedMode === "custom" ? storedSelected : spec.adapter.defaultComponents;
+    const autoAdded = only.length || storedMode !== "custom" ? [] : spec.adapter.defaultComponents
+      .filter((component) => !baseSelected.includes(component) && !storedOmitted.includes(component));
     let selected = only.length
       ? [...new Set(only)]
-      : [...storedSelected.filter((component) => valid.has(component)), ...autoAdded];
+      : [...baseSelected.filter((component) => valid.has(component)), ...autoAdded];
     for (const component of withList) {
       if (!selected.includes(component)) selected.push(component);
     }
     selected = spec.adapter.completeSelection(selected.filter((component) => !without.includes(component)));
     const uninstallResult = await uninstall(vaultPath, spec.name, options);
-    const installResult = await install(vaultPath, spec.name, { ...options, components: { only: selected } });
+    const selectorUsed = only.length > 0 || withList.length > 0 || without.length > 0;
+    const selectionMode = selectorUsed ? "custom" : storedMode;
+    const installResult = await install(vaultPath, spec.name, { ...options, selectionMode, components: { only: selected } });
     return {
       status: "ok",
       target: spec.name,
@@ -270,7 +285,7 @@ export function createHarnessService(deps) {
   const doctor = async (vaultPath, options = {}) => {
     const index = await readHarnessIndex(vaultPath);
     const { config, mapping } = await deps.readVaultConfig(vaultPath);
-    options = { ...options, callCounter: deps.callCounterOptions(config) };
+    options = { ...options, ...deps.templateOptions(config) };
     const issues = [];
     const knownFragments = new Set(deps.fragmentNames());
     for (const fragment of await listFragments(vaultPath)) {

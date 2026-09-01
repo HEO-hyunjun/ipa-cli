@@ -1,42 +1,24 @@
 import { HARNESS_MARKER } from "../managedFiles.js";
 
-function ipaEvidenceRecall(prefix = "ipa") {
-  return `## Evidence Recall
-
-Use IPA when private vault knowledge could materially change the answer, even if the user did not mention notes. This includes prior rationale and decisions, team direction, meeting or scrum agreements, current work status, blockers, ownership, resumptions, and handoffs. Meeting and scrum records may be the only source for an operational fact; do not treat them as merely secondary evidence.
-
-1. Decide whether recall is needed. Skip IPA when the request is self-contained or current code and git are sufficient. For current implementation facts, inspect code and git first; use vault evidence for intent, organizational context, and facts that are not represented there.
-2. Find the center. If a note or index is known, use \`${prefix} view\` or \`${prefix} context --by-note\`. Otherwise run one \`${prefix} search "facet A" "facet B"\` call with 2-3 short lexical angles. Never submit a file path or the whole user prompt as a query.
-3. Rank evidence by authority and freshness. Prefer current status/architecture notes and explicit decision records when they exist, but use dated meeting or scrum notes when they are newer or the sole source. Distinguish a confirmed decision from a proposal or provisional update.
-4. Expand only after finding a center. Use \`${prefix} digest\` for an index, \`${prefix} graph "Note Title" --depth 2\` for a centered neighborhood, or \`${prefix} traversal\` for a directional walk. Once titles are selected, batch them in one \`${prefix} view "A" "B" --full\` call; do not reopen an overview in full unless a specific missing section is necessary. Open at most 2-3 full notes, then converge.
-5. Use the evidence in the answer. State the applicable fact or decision, its rationale or status, and the note title/date when freshness matters. If code or git conflicts with the vault, report the drift instead of silently choosing one.
-
-## Command Pointers
-
-- Discovery or broad history: \`${prefix} search\` and \`${prefix} context\`.
-- Exact note: \`${prefix} view\`. Index summary: \`${prefix} digest\`.
-- Relationships: \`${prefix} graph\` for a centered neighborhood; \`${prefix} traversal\` for direction.
-- IPA concepts and active vault rules: \`${prefix} convention\`.
-- Command discovery and exact syntax: \`${prefix} help\` and \`${prefix} <command> --help\`.
-`;
-}
 // The global prompt block is loaded into every session, vault-related or not,
-// so it stays pointer-level: when to reach for ipa, where the detail lives
-// (skill, --help, ipa convention), and the two guard rails that hooks enforce.
-export function globalPromptContent(spec) {
+// so it contains only the trigger, source-of-truth pointers, and write safety.
+export function globalPromptContent(spec, options = {}) {
   const tool = spec.adapter.displayName;
   const skillPath = spec.adapter.skillDisplayPath;
-  return `## IPA Vault — Evidence-Based Work
+  const contextual = options.recallMode === "contextual";
+  const recall = contextual
+    ? "Use IPA when private vault history could materially change planning, architecture, resumption, handoff, status, or ownership decisions, even when notes are not named."
+    : "Use IPA only when the user explicitly asks for IPA/vault/note work, names a vault note or path, or invokes the `ipa` skill. Do not proactively scan the vault for self-contained work.";
+  return `## IPA Vault
 
-This ${tool} environment has the IPA CLI installed for the user's private note vault: decisions and rationale, project history, team direction, meeting and scrum records, current work status, and user-specific context.
+This ${tool} environment has the IPA CLI installed for the user's private note vault.
 
-- Use vault evidence whenever a request explicitly concerns IPA/notes, or when planning, architecture/spec interpretation, regression history, resuming work, or a handoff could depend on private context — even if the user did not mention notes. Meeting or scrum records may be the only source for an operational fact.
-- Skip IPA for self-contained questions when the supplied context, current code, and git are enough. Code and git are authoritative for current implementation behavior; IPA is evidence for intent, decisions, organizational context, and facts absent from the repository. Report drift when they conflict.
-- Entry points: \`ipa search "keyword"\` (discovery; several short facets in one call), \`ipa view "Note Title"\` (exact read), and \`ipa context "keyword" --size medium --format markdown\` (broad/history bootstrap). Full workflow: the \`ipa\` skill at \`${skillPath}\`; exact syntax: \`ipa <command> --help\`.
-- On an index or root note, run \`ipa digest\` before opening children, read at most 2-3 full notes, then use the evidence in the answer instead of continuing to explore.
-- IPA concepts and this vault's operating rules: \`ipa convention\`.
-- Create new vault notes only through \`ipa inbox add\` — a guard hook blocks new markdown outside the inbox.
-- After editing vault markdown, finish the note-scoped loop: \`ipa validator --note ...\`, \`ipa formatter plan --note ...\`, \`ipa formatter apply --note ...\`. A Stop gate blocks final responses while formatter patches remain.`;
+- ${recall}
+- Start with \`ipa search\`, \`ipa view\`, or \`ipa context\`; batch related queries or note titles in one call and stop once the needed evidence is found.
+- Code and git are authoritative for current behavior. Use vault notes for intent and private history, and report conflicts.
+- The CLI help is the command source of truth: \`ipa help\`, \`ipa help --all\`, and \`ipa <command> --help\`. IPA concepts and active vault rules: \`ipa convention\`.
+- Full workflow: the \`ipa\` skill at \`${skillPath}\`.
+- Create notes with \`ipa inbox add\`. Core note mutations finalize themselves; after a raw Markdown edit run one \`ipa note finalize "Note Title"\` call.`;
 }
 
 function profileRegistryDisplay() {
@@ -109,7 +91,7 @@ Use this skill when the user wants to improve IPA search quality, review misses,
 ## Rules
 
 - Treat prompt and search logs as evidence, not labels. A prompt event tells you what the user asked; it does not prove the correct note.
-- In harness sessions, prompts and search calls are logged automatically (\`prompt_event_id\`/\`source_prompt\` connect them); use plain \`ipa search "keyword"\` for evidence collection. \`IPA_SEARCH_LOG=1\` remains a compatibility fallback for non-harness searches.
+- When the optional \`hook:evidence\` component is installed, prompts and search calls are paired automatically (\`prompt_event_id\`/\`source_prompt\`); otherwise enable logging explicitly with \`IPA_SEARCH_LOG=1\`.
 - Use \`prompt_event_id\`, \`turn_id\`, \`source_prompt\`, and \`generated_query\` to connect prompt/search pairs. If a prompt has no matching search event, treat it as "no query was run" rather than inferring one from nearby timestamps.
 - Do not run the optimizer by default. Present the command and wait unless the user explicitly asks you to execute it.
 - Do not activate a tune result just because it is newest. Activate only a reviewed artifact that improves the target cases without obvious regressions.
@@ -178,42 +160,6 @@ Which note should be the correct target for this query?
 If the user has not answered this question, do not run \`ipa tune testset add\` for that case. This applies even when the top result looks correct.
 
 Treat tuning as an evaluation loop, not a one-off command. Prefer better labels and representative cases over simply increasing trial count.`
-  },
-  {
-    name: "ipa-triage",
-    description: "Triage IPA inbox notes into the archive: confirm refs/tags, wire wikilinks, validate, and move approved notes. Use this skill whenever the user wants to clean up or empty the inbox, triage notes, confirm refs/tags for new notes, or move finished notes to the archive.",
-    body: (mapping) => `# IPA Triage Skill
-
-Move finished inbox notes into the archive: confirm refs/tags → wire links → validate → move after approval. Triage connects and moves notes that are already written; it does not create notes or deepen their content.
-
-When a triage sweep moves or archives several notes at once, surface the full per-note plan (the \`ipa inbox triage\`/\`ipa cascade plan\` dry-run output) and run each \`--apply\` step only after the user confirms; a single-note capture or edit needs no such round-trip.
-
-## Workflow
-
-1. Scan the inbox: \`ipa review inbox\` lists notes and issues (missing refs/tags). If the user named specific notes, triage only those; with 10+ notes, work in batches the user confirms.
-2. Confirm refs/tags per note:
-
-\`\`\`bash
-ipa view "Note" --full
-ipa inbox triage --note "Note"           # ref/tag suggestions
-ipa search "keyword"                     # verify suggestions, find candidates
-ipa traversal --down "Candidate Index"   # see what already lives under a candidate
-\`\`\`
-
-   Refs must point at existing index notes — a note points at an index, not directly at a root. Reuse existing tags; add a new tag only when it cuts across more than one index. If no index fits, ask the user whether to create one. A note that is only a line or two, or clearly unfinished, stays in the inbox — report it as needing enrichment instead of forcing a move.
-
-   Apply confirmed values with \`ipa inbox triage --apply --note "Note"\`, or adjust manually with \`ipa note set "Note" --field ${mapping.refs} --add "Index Note" --apply\`.
-3. Wire the note into the graph: \`ipa cascade plan --note "Note"\`, then \`ipa cascade apply --note "Note" --only links\`. Never auto-merge duplicate candidates — compare contents, ask the user, and on an approved merge combine with \`ipa note replace\` then rewire references with \`ipa note redirect --archive --apply\`.
-4. Validate: \`ipa validator --note "Note"\` → \`ipa formatter plan --note "Note"\` → \`ipa formatter apply --note "Note"\`.
-5. Move after approval: present a summary table (note, refs, tags, action) and ask which notes to move. Move only the approved ones: \`ipa move "Note" "${mapping.archive_dir}" --apply\` (wikilinks update automatically).
-6. Report moved notes, held notes with reasons, and recommended follow-ups.
-
-## Must Not
-
-- Move a note to the archive without user approval.
-- Edit note bodies beyond wikilink insertion or an approved merge.
-- Add a ref to an index that does not exist.
-- Auto-merge suspected duplicates.`
   },
   {
     name: "ipa-review",
@@ -293,7 +239,7 @@ The source of truth for IPA philosophy is the Design Intent section of \`ipa con
 | "I keep forgetting/violating convention X" | Add a rule plugin — ipa-rule skill |
 | "Search does not find the right note" | Label cases and tune — ipa-tune skill |
 | "Field or folder names do not fit how I think" | Remap in config — ipa-config skill (then \`ipa harness update\`) |
-| "The inbox keeps piling up" | Batch triage — ipa-triage skill |
+| "The inbox keeps piling up" | Inspect \`ipa inbox --help\` and run an approved batch triage |
 | "Tags/indexes/links feel messy" | Structural health pass — ipa-review skill |
 | "Agents keep doing X wrong in this vault" | Add an operating rule fragment under \`.ipa/harness/fragments/\` |
 | "The same manual fix repeats" | Rule plugin with a safe fix so the formatter applies it |
@@ -308,6 +254,13 @@ Vault operating rules belong in \`.ipa/harness/fragments/prompt.md\` (then \`ipa
 - Answer philosophy questions from general knowledge when \`ipa convention\` or a vault note contradicts it.
 - Recommend restructuring beyond what the observed friction justifies.`
   }
+];
+
+// Keep retired names so install/update can remove old managed files without
+// touching user-owned forks whose marker was removed.
+export const IPA_MANAGED_LOCAL_SKILL_NAMES = [
+  ...VAULT_LOCAL_SKILLS.map((skill) => skill.name),
+  "ipa-triage"
 ];
 
 export function vaultLocalSkillRootRel(spec) {
@@ -334,82 +287,43 @@ ${body.trim()}
 
 export function harnessSkillContent(vaultPath, spec, mapping, options = {}) {
   const prefix = commandPrefix(vaultPath, options);
+  const contextual = options.recallMode === "contextual";
+  const description = contextual
+    ? "Use IPA for explicit vault work and when private vault history may materially change planning, architecture, resumption, handoff, status, or ownership decisions. Skip self-contained implementation questions."
+    : `Use IPA when the user explicitly asks for IPA, vault, or note work; names a path under ${mapping.inbox_dir}/, ${mapping.project_dir}/, ${mapping.archive_dir}/, or ${vaultPath}; or invokes this skill. Do not proactively search the vault for self-contained work.`;
   return `---
 name: ipa
-description: Use IPA for explicit vault and note work, and whenever planning, architecture or spec interpretation, regression history, work resumption, handoff, team direction, meetings, scrums, status, blockers, or ownership may depend on private vault knowledge even when notes are not mentioned. Also use for note paths under \`${mapping.inbox_dir}/\`, \`${mapping.project_dir}/\`, \`${mapping.archive_dir}/\`, or \`.md\` files in ${vaultPath}. Skip self-contained implementation questions; code and git remain authoritative for current behavior.
+description: ${JSON.stringify(description)}
 ---
 
 <!-- ${HARNESS_MARKER} -->
 
 # IPA CLI Skill
 
-## Active Vault
+Vault: ${vaultPath}
+Target: ${spec.name}
+Config: \`.ipa/config.yaml\`
+Profile registry: ${profileRegistryDisplay()}
 
-- Target: ${spec.name}
-- Vault: ${vaultPath}
-- Profile registry: ${profileRegistryDisplay()}
-- Vault config: .ipa/config.yaml
-- IPA concepts + vault operating rules: \`${prefix} convention\`
+## Read
 
-Sessions running outside the vault directory do not load the vault's own \`${spec.localPrompt}\`; before writing or reorganizing notes from such a session, run \`${prefix} convention\` and read \`${vaultPath}/${spec.localPrompt}\` for user-maintained rules outside the managed block.
+- Discovery: \`${prefix} search "facet A" "facet B"\`. Exact notes: \`${prefix} view "A" "B" --full\`. Broad pack: \`${prefix} context "keyword" --size medium --format markdown\`.
+- Use short lexical facets, not a file path or the whole user prompt. Batch related queries and titles in one command.
+- Read only the few notes needed to answer. Prefer current decisions and dated evidence; report conflicts with code or git.
+- For concepts and vault policy, run \`${prefix} convention\`. For every other command, use \`${prefix} help\`, \`${prefix} help --all\`, or \`${prefix} <command> --help\` as the source of truth.
 
-## Skill Routing
+## Write
 
-This skill is the single entry point for vault requests from any directory. Focused workflows live as vault-local skills under \`${vaultPath}/${vaultLocalSkillRootRel(spec)}/\`:
+- Create Markdown through \`${prefix} inbox add\`; the guard blocks new notes outside the mapped inbox.
+- Core-backed mutations such as \`${prefix} inbox add\`, \`${prefix} note set --apply\`, and \`${prefix} note replace --apply\` format and validate in the same call.
+- After a raw editor Write/Edit, run \`${prefix} note finalize "Note Title"\` once. The Stop gate checks any edited note still pending.
+- Mutations preview unless the command says otherwise. For an already-authorized single-note change, apply it; for bulk changes, show the plan and obtain confirmation first.
+- Never hand-edit \`${mapping.created_at}\` or \`${mapping.updated_at}\`.
 
-- \`ipa-consult\` — IPA concept questions ("what is an index", "refs vs tags") and workflow friction ("the vault feels messy", "X keeps bothering me")
-- \`ipa-triage\` — inbox → refs/tags → wikilinks → archive processing
-- \`ipa-review\` — vault or subtree structural health checks with approved fixes
-- \`ipa-tune\` — search quality complaints, testset labelling, tune analysis
-- \`ipa-rule\` — authoring vault convention rule plugins
-- \`ipa-config\` — profile/config and field/folder mapping changes
+## Extensions
 
-Inside the vault these load as invocable skills — invoke the matching one. Outside the vault they are not auto-loaded: read the matching \`SKILL.md\` at the path above and follow its workflow with \`${prefix}\` commands. If the skill file does not exist, fall back to \`${prefix} convention\` and the commands below.
-
-${ipaEvidenceRecall(prefix)}
-Keep exploration proportional to the question: simple lookups within ~3 ipa calls, broad questions within ~8. At the budget, answer from the evidence gathered and state what was not checked.
-
-If search results look stale after external (Obsidian) edits, diagnose the index fingerprint with \`${prefix} cache doctor\` and force a rebuild with \`${prefix} cache rebuild\`.
-
-## Safe Writes
-
-Mutating commands preview by default and write only with \`--apply\`. For a single-note mutation the user already asked for, a preview or plan is not the deliverable — re-run the same command with \`--apply\` to actually write. The exception is a multi-note or bulk mutation (a triage sweep, a mass move or refactor) in an interactive session: surface the per-note plan, get the user's confirmation, then run \`--apply\`.
-
-New Markdown notes belong in the configured inbox:
-
-\`\`\`bash
-${prefix} inbox add ./draft.md --title "Title" --ref "Index Note" --tag "topic"
-\`\`\`
-
-Set refs and tags (frontmatter \`${mapping.refs}\`/\`${mapping.tags}\`) at capture time — do not leave them for later. Reuse the vault's existing tag vocabulary first (\`${prefix} inbox triage --note "Title"\` suggests refs/tags from it). Create a new tag only when it names a perspective that cuts across more than one index; a tag as narrow as a single note or a single index adds no retrieval value — put that meaning in the ref instead.
-
-After editing vault Markdown, finish the note-scoped loop (vault-wide runs are maintenance sweeps — always scope with \`--note\`):
-
-\`\`\`bash
-${prefix} validator --note "Edited Note"
-${prefix} formatter plan --note "Edited Note"
-${prefix} formatter apply --note "Edited Note"
-\`\`\`
-
-Multiple edited notes take one \`--note\` followed by all titles: \`${prefix} formatter plan --note "Note A" "Note B"\`, then the matching \`${prefix} formatter apply --note "Note A" "Note B"\`. The harness Stop hook blocks final responses while edited notes still have formatter patches — do not stop at plan-only.
-
-Never edit the time fields (\`${mapping.created_at}\`/\`${mapping.updated_at}\`) by hand: core-backed writes and \`formatter apply\` keep them in sync. A stale-looking date is not a task to fix.
-
-## Scripted Edits
-
-Prefer core-backed commands over scanning vault folders with \`fs\`:
-
-\`\`\`bash
-${prefix} note replace "Note Title" --old-file .tmp/old-block.txt --new-file .tmp/new-block.txt --apply
-${prefix} note set "Note Title" --field ${mapping.refs} --add "Index Note" --apply
-${prefix} note set "Note Title" --field ${mapping.note_type} --value index --apply
-\`\`\`
-
-\`note replace --apply\` removes its \`.tmp/\` input files automatically (\`--keep-files\` to keep them). Inside the \`ipa-cli\` workspace, one-off scripts may import core helpers (\`replaceInNote\`, \`rewriteNote\` from \`./packages/core/dist/index.js\`) — never hard-code vault folder paths.
-
-## Vault Convention And Plugins
-
-Vault-specific conventions are code, not prose: convention checks live in \`.ipa/plugins/rules/*.js\`, retrieval boosts in \`.ipa/plugins/search/*.js\`, and session-end policy in \`.ipa/plugins/gates/*.js\` (run by the Stop gate via \`${prefix} harness gate\`). Authoring and verification (\`${prefix} plugin init\` scaffold → \`plugin validate\` → \`plugin dry-run\`) follow the \`ipa-rule\` skill workflow.
+- Vault policy belongs in \`.ipa/config.yaml\`, \`.ipa/plugins/{rules,search,gates}/\`, and managed prompt fragments. Exact plugin workflows live under \`${vaultPath}/${vaultLocalSkillRootRel(spec)}/\` when the optional local-skills component is installed.
+- Sessions outside the vault do not load \`${vaultPath}/${spec.localPrompt}\`; read it before a vault-wide reorganization.
 `;
 }
 
@@ -420,14 +334,11 @@ export function localPromptContent(vaultPath, spec, mapping, options = {}) {
   const prefix = commandPrefix(vaultPath, options, true);
   return `## IPA CLI Harness
 
-This vault has an IPA CLI harness installed. Vault work goes through the \`${prefix}\` CLI — full workflow and safe-write rules in the global \`ipa\` skill, IPA concepts and this vault's operating rules via \`${prefix} convention\`, exact syntax via \`${prefix} <command> --help\`.
+This vault has an IPA CLI harness installed. For explicit vault work, use the global \`ipa\` skill and the \`${prefix}\` CLI.
 
 - Folders: inbox \`${mapping.inbox_dir}\`, project \`${mapping.project_dir}\`, archive \`${mapping.archive_dir}\`
 - Vault config: .ipa/config.yaml; profile registry: ${profileRegistryDisplay()}
-- Vault-specific conventions are enforced by \`.ipa/plugins/rules/*.js\`, retrieval boosts by \`.ipa/plugins/search/*.js\`, session-end policy by \`.ipa/plugins/gates/*.js\`; verify with \`${prefix} plugin validate\` and \`${prefix} plugin dry-run\`.
-- In harness sessions plain \`${prefix} search "keyword"\` calls are logged as tune evidence automatically.
-
-Focused workflows live as vault-local skills for each installed harness target — the exact path and routing map are in that target's global \`ipa\` skill.
+- Concepts and policy: \`${prefix} convention\`. Exact commands: \`${prefix} help\` and \`${prefix} <command> --help\`.
+- Core note mutations finalize themselves; after raw Markdown edits run \`${prefix} note finalize "Note Title"\` once.
 `;
 }
-

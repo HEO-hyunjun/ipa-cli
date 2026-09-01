@@ -53,8 +53,9 @@ npm run bench -- --full --max-workers 8  # 매트릭스 동시 실행 (기본 5)
 PostToolUse 훅은 stream-json transcript에 남지 않으므로 vault 부작용 파일로 판정한다
 (`bench/lib/judge.mjs`):
 
-- `hook_call_count` — `.ipa/harness/call-counter.json`의 세션별 `count` 합. `{ min, max,
-  max_ratio }`; `max_ratio`는 `total ≤ ceil(ipaCalls × ratio)`로 이중 발화(~2배) 회귀를 잡는다.
+- `hook_call_count` — opt-in `hook:call-counter`의 `.ipa/harness/call-counter.json`
+  세션별 `count` 합. `{ min, max, max_ratio }`; 기본 행동 시나리오는 이 훅을 설치하지 않고,
+  전용 훅 E2E 테스트만 명시적으로 추가해 이중 발화 회귀를 잡는다.
 - `mutation_pending` — `.ipa/harness/mutation-pending.json`의 `mutations` 배열. `true`
   또는 `{ command: regex, min }`.
 
@@ -66,8 +67,8 @@ PostToolUse 훅은 stream-json transcript에 남지 않으므로 vault 부작용
   무관한 코딩·비-볼트 파일 생성(콜 없음) vs 진짜 IPA 개념 질문.
 - **B — read** (`b-read.mjs`): 노트를 찾아 실제로 읽는 검색·retrieval. 단일 요약, 다중 노트
   종합, history bootstrap — 전부 읽기 전용(md 변경 0).
-- **C — write** (`c-write.mjs`): 쓰기 경로 — inbox capture, 노트 스코프 섹션 편집
-  (validator → formatter plan → apply → validator 루프).
+- **C — write** (`c-write.mjs`): 쓰기 경로 — core-backed 단일 호출 postflight와 raw Edit 뒤
+  `ipa note finalize` 한 번으로 formatter+validator를 마치는지 검증한다.
 - **D — robustness** (`d-robustness.mjs`): 비-정규 페르소나 견고성 — divergent 필드 매핑,
   messy 스코프 편집(볼트 전체 수리로 폭주하지 않고), 볼트 규칙 준수.
 - **E — authoring** (`e-authoring.mjs`): 커스터마이즈 — 룰 플러그인 작성·검증, 검색 개인화/튜닝.
@@ -119,6 +120,6 @@ PostToolUse 훅은 stream-json transcript에 남지 않으므로 vault 부작용
   headless 세션이 권한 프롬프트에 막힌다).
 
 이전의 "세션 내부 설치가 실제 `~/.claude`를 오염시킬 수 있다"는 잔여 리스크는 HOME+config 완전 격리로 닫혔다.
-PostToolUse 훅은 stream-json transcript에 안 남으므로, 세션이 훅을 실제로 발화시켰는지는 vault 부작용 파일로
-판정한다 — `hook_call_count`(call-counter.json의 세션별 카운트 합, `max_ratio`로 이중 발화 회귀 감시),
-`mutation_pending`(mutation-pending.json에 남은 dry-run 뮤테이션 엔트리).
+PostToolUse 훅은 stream-json transcript에 안 남으므로 전용 E2E 테스트는 vault 부작용 파일로
+판정한다. `hook_call_count`는 opt-in call-counter를 명시 설치해 검증하고,
+`mutation_pending`은 CLI가 기록한 dry-run 뮤테이션 엔트리를 검증한다.

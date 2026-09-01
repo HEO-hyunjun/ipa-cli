@@ -10,7 +10,6 @@ export const HARNESS_COMPONENTS = [
   "hook:guard",
   "hook:markdown-nudge",
   "hook:call-counter",
-  "hook:mutation-ledger",
   "hook:formatter-gate",
   "hook:vault-ref",
   "hook:evidence"
@@ -21,7 +20,6 @@ export const HARNESS_HOOK_COMPONENT_TO_SCRIPT = {
   "hook:guard": "ipa-inbox-guard.mjs",
   "hook:markdown-nudge": "ipa-md-write-nudge.mjs",
   "hook:call-counter": "ipa-call-counter.mjs",
-  "hook:mutation-ledger": "ipa-mutation-ledger.mjs",
   "hook:formatter-gate": "ipa-formatter-gate.mjs",
   "hook:vault-ref": "ipa-vault-ref-nudge.mjs",
   "hook:evidence": "ipa-prompt-evidence.mjs"

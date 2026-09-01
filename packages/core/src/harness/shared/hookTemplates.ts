@@ -11,10 +11,16 @@ function sessionEnvScript(options = {}) {
   const env = { IPA_SEARCH_LOG: "1", ...(options.env ?? {}) };
   return `#!/usr/bin/env node
 // ${HARNESS_MARKER}: IPA session environment defaults.
-import { appendFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 
 const envFiles = [...new Set([process.env.CLAUDE_ENV_FILE, process.env.CODEX_ENV_FILE].filter(Boolean))];
 const env = ${JSON.stringify(env)};
+
+let input = {};
+try { input = JSON.parse(readFileSync(0, "utf8")); } catch {}
+const sessionId = [input.session_id, input.sessionId, input.conversation_id, input.conversationId]
+  .find((value) => typeof value === "string" && value.trim());
+if (sessionId) env.IPA_SESSION_ID = sessionId;
 
 function shellEscape(value) {
   return \`'\${String(value).replace(/'/g, \`'"'"'\`)}'\`;
@@ -288,7 +294,7 @@ recordPromptEvent(input);
 
 function markdownWriteNudgeScript(vaultPath, mapping, options = {}) {
   return `#!/usr/bin/env node
-// ${HARNESS_MARKER}: prompt nudge after IPA vault Markdown edits.
+// ${HARNESS_MARKER}: silently track IPA vault Markdown edits for the Stop gate.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
@@ -296,7 +302,6 @@ import { spawnSync } from "node:child_process";
 
 const vaultPath = ${vaultResolverSnippet(vaultPath, options)};
 const noteRoots = ${JSON.stringify([mapping.inbox_dir, mapping.project_dir, mapping.archive_dir].filter(Boolean))};
-const prefix = "ipa";
 const pendingPath = join(vaultPath, ".ipa", "harness", "formatter-pending.json");
 
 function inputJson() {
@@ -377,30 +382,19 @@ pending.notes = pending.notes.filter((item) => item.path !== note && item.title 
 pending.notes.push({ title: noteTitle, path: note, session_id: sessionId ?? null, updated_at: new Date().toISOString() });
 pending.updated_at = new Date().toISOString();
 writePending(pending);
-const noteArg = JSON.stringify(noteTitle);
-const message = [
-  \`[IPA CLI] Vault Markdown changed: \${note}. Before finishing run:\`,
-  \`  \${prefix} validator --note \${noteArg}\`,
-  \`  \${prefix} formatter plan --note \${noteArg} && \${prefix} formatter apply --note \${noteArg}\`,
-  "Do not stop at formatter plan unless it shows unexpected changes. Multiple notes: one --note followed by all titles."
-].join("\\n");
-
-process.stdout.write(JSON.stringify({
-  hookSpecificOutput: {
-    hookEventName: "PostToolUse",
-    additionalContext: message
-  }
-}) + "\\n");
 `;
 }
 
 // Read the call-counter thresholds from vault config so install and the
 // outdated-check re-render the exact same baked constants (a mismatch would make
 // the outdated diff false-positive every time).
-export function callCounterOptions(config) {
+export function harnessTemplateOptions(config) {
   return {
-    warnAt: config?.harness?.call_counter?.warn_at ?? 10,
-    repeatEvery: config?.harness?.call_counter?.repeat_every ?? 6
+    callCounter: {
+      warnAt: config?.harness?.call_counter?.warn_at ?? 10,
+      repeatEvery: config?.harness?.call_counter?.repeat_every ?? 6
+    },
+    recallMode: config?.harness?.recall === "contextual" ? "contextual" : "explicit"
   };
 }
 
@@ -514,116 +508,6 @@ process.stdout.write(JSON.stringify({
     additionalContext: message
   }
 }) + "\\n");
-`;
-}
-
-// PostToolUse (Bash) hook: record ipa dry-run mutations that were never
-// followed by an --apply/apply sighting, so a session-end gate plugin can warn
-// about unapplied plans. Recording only — silent on stdout. The ledger is a
-// mechanism (a fact the gate can read); whether to warn/block on it is vault
-// policy carried by a gate plugin.
-function mutationLedgerScript(vaultPath, options = {}) {
-  return `#!/usr/bin/env node
-// ${HARNESS_MARKER}: track ipa dry-run mutations that were never applied.
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
-import { spawnSync } from "node:child_process";
-
-const vaultPath = ${vaultResolverSnippet(vaultPath, options)};
-const statePath = join(vaultPath, ".ipa", "harness", "mutation-pending.json");
-const TTL_MS = 48 * 60 * 60 * 1000;
-
-function inputJson() {
-  try {
-    return JSON.parse(readFileSync(0, "utf8"));
-  } catch {
-    return {};
-  }
-}
-
-function firstString(values) {
-  for (const value of values) {
-    if (typeof value === "string" && value.trim()) return value;
-  }
-  return null;
-}
-
-const input = inputJson();
-const toolInput = input.tool_input ?? input.toolInput ?? input.input ?? {};
-const command = firstString([toolInput.command, input.command]);
-if (!command || !/(^|[\\s;|&(])ipa\\s/.test(command)) process.exit(0);
-
-const sessionId = firstString([
-  input.session_id,
-  input.sessionId,
-  input.conversation_id,
-  input.conversationId,
-  input.transcript_path,
-  input.transcriptPath,
-  process.env.IPA_SESSION_ID,
-  process.env.CODEX_SESSION_ID,
-  process.env.CLAUDE_SESSION_ID,
-  process.env.TERM_SESSION_ID
-]) ?? "unknown";
-
-// Split the bash line on shell separators so each ipa invocation is judged on
-// its own — a chained \`ipa link plan ... && ipa link apply ...\` records then
-// clears within one line. \`link\`/\`cascade\` resolve via their \`apply\`
-// subcommand; \`rename\`/\`move\`/\`refactor\` resolve via --apply. This is
-// command-name granularity only: no per-note or per-target correlation.
-function classify(segment) {
-  if (!/(^|[\\s(])ipa\\s/.test(segment)) return null;
-  if (/(^|[\\s(])ipa\\s+link\\s+apply\\b/.test(segment)) return { command: "link", action: "apply" };
-  if (/(^|[\\s(])ipa\\s+link\\s+plan\\b/.test(segment)) return { command: "link", action: "pending" };
-  if (/(^|[\\s(])ipa\\s+cascade\\s+apply\\b/.test(segment)) return { command: "cascade", action: "apply" };
-  if (/(^|[\\s(])ipa\\s+cascade\\s+plan\\b/.test(segment)) return { command: "cascade", action: "pending" };
-  const family = segment.match(/(^|[\\s(])ipa\\s+(rename|move|refactor)\\b/);
-  if (family) {
-    return { command: family[2], action: /(^|\\s)--apply\\b/.test(segment) ? "apply" : "pending" };
-  }
-  return null;
-}
-
-const actions = command
-  .split(/[;&|\\n()]+/)
-  .map((segment) => classify(segment))
-  .filter(Boolean);
-if (!actions.length) process.exit(0);
-
-let entries = [];
-if (existsSync(statePath)) {
-  try {
-    const parsed = JSON.parse(readFileSync(statePath, "utf8"));
-    if (parsed && Array.isArray(parsed.mutations)) entries = parsed.mutations;
-  } catch {
-    // corrupt state — start over
-  }
-}
-const cutoff = Date.now() - TTL_MS;
-entries = entries.filter((item) => {
-  const stamp = Date.parse(item?.ts ?? "");
-  return Number.isNaN(stamp) || stamp >= cutoff;
-});
-
-for (const action of actions) {
-  if (action.action === "apply") {
-    entries = entries.filter((item) => !(item.command === action.command && item.session_id === sessionId));
-  } else {
-    entries.push({ command: action.command, session_id: sessionId, ts: new Date().toISOString() });
-  }
-}
-
-try {
-  if (entries.length) {
-    mkdirSync(dirname(statePath), { recursive: true });
-    writeFileSync(statePath, JSON.stringify({ version: 1, mutations: entries }, null, 2) + "\\n", "utf8");
-  } else if (existsSync(statePath)) {
-    unlinkSync(statePath);
-  }
-} catch {
-  // recording is best-effort
-}
 `;
 }
 
@@ -1000,7 +884,6 @@ export function harnessHookScriptContent(component, vaultPath, spec, mapping, op
     case "hook:evidence": return promptEvidenceScript(vaultPath, { ...options, agent: spec.name });
     case "hook:markdown-nudge": return markdownWriteNudgeScript(vaultPath, mapping, options);
     case "hook:call-counter": return callCounterScript(vaultPath, options);
-    case "hook:mutation-ledger": return mutationLedgerScript(vaultPath, options);
     case "hook:formatter-gate": return formatterGateScript(vaultPath, { ...options, agent: spec.name, provider: spec.adapter });
     default: return null;
   }

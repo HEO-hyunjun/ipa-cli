@@ -99,8 +99,8 @@ test("installHarness writes the global harness into the isolated home, not the r
   const configDir = installHarness({ ipaBin: IPA_BIN, sandboxDir: sandbox, homeDir: home });
   // 전역 하네스(스킬)는 격리 홈 아래에 떨어진다 — 실제 ~/.claude를 건드리지 않는다.
   assert.ok(existsSync(join(home, ".claude", "skills", "ipa", "SKILL.md")), "global skill under isolated home");
-  // 볼트-로컬 스킬은 cwd(sandbox) 아래에 떨어진다.
-  assert.ok(existsSync(join(sandbox, ".claude", "skills", "ipa-config", "SKILL.md")), "vault-local skill under sandbox");
+  // Focused local skills are opt-in and do not bloat the default sandbox.
+  assert.equal(existsSync(join(sandbox, ".claude", "skills", "ipa-config", "SKILL.md")), false);
   // 반환값은 세션이 CLAUDE_CONFIG_DIR로 쓸 config dir 경로.
   assert.equal(configDir, join(home, ".claude"));
   const settings = JSON.parse(readFileSync(join(configDir, "settings.json"), "utf8"));

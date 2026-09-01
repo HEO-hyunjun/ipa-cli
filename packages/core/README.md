@@ -6,10 +6,12 @@ rules, tune, harness templates + install, and the plugin loaders. `cli`,
 
 ## Entry points
 
-- `src/index.ts` — everything lives in this one file. Navigate by symbol
-  search, not by directory. Key symbols: `searchVault`, `validateVault`,
-  `formatVault`, `buildContext`, `harnessUpdate`/`installGlobalHarness`, and
-  the `HARNESS_COMPONENTS` maps.
+- `src/index.ts` — the main runtime and public API. Navigate by symbol search.
+  Key symbols include `searchVault`, `validateVault`, `formatVault`,
+  `finalizeNotes`, and `buildContext`.
+- `src/harness/` — provider adapters, lifecycle, managed artifacts, and hook
+  templates. `index.ts` only assembles these dependencies into the public
+  harness API.
 - `tests/*.test.mjs` — `node:test` suites (build first via `npm test`).
 
 ## Gotchas

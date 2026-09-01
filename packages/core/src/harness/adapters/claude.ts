@@ -3,6 +3,16 @@ import { HARNESS_COMPONENTS } from "../model.js";
 import { hookRegistration, hookSpecificOutput } from "../shared/hookConfig.js";
 
 const validComponents = HARNESS_COMPONENTS.filter((component) => component !== "opencode-plugin");
+const defaultComponents = [
+  "skill",
+  "prompt",
+  "local-prompt",
+  "permissions",
+  "hook:session-env",
+  "hook:guard",
+  "hook:markdown-nudge",
+  "hook:formatter-gate"
+];
 const permissionRule = "Bash(ipa *)";
 
 export const claudeAdapter = {
@@ -13,7 +23,7 @@ export const claudeAdapter = {
   promptDisplayPath: "~/.claude/CLAUDE.md",
   localSkillsRoot: ".claude/skills",
   validComponents,
-  defaultComponents: [...validComponents],
+  defaultComponents,
   usesPlugin: false,
   targetSpec(homeBase) {
     const home = join(homeBase, ".claude");

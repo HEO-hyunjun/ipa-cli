@@ -6,6 +6,9 @@ vault from the terminal. The active runtime is the JS/TS workspace under
 
 Surface:
 
+- `ipa --help` — concise everyday surface; `ipa help --all` shows advanced and administrative commands
+- `ipa search / view / context / inbox / note / review` — everyday retrieval and note operations
+- `ipa note finalize <notes...>` — format and validate raw Markdown edits in one call
 - `ipa engine search / channels` — multi-channel weighted search
 - `ipa convention check` — validate vault against active convention rules
 - `ipa formatter plan / apply` — autofix issues that rules know how to fix
@@ -187,10 +190,10 @@ ipa harness doctor
 
 `harness init` is an alias for `harness install`. `install <target>` supports
 `codex`, `claude`, and `opencode`; the default target is `codex`. A normal
-`install`/`init` installs every component except the evidence nudge/logging
-hook (`hook:evidence`), which is opt-in via `--with hook:evidence` (an A/B
-benchmark showed no behavioral benefit over the prompt/skill surface, while
-logging every prompt into the vault tune log).
+install keeps only the global skill/prompt, vault prompt, session environment,
+write guard, silent edit ledger, and formatter gate (plus Claude permissions).
+Prompt evidence, call counting, path nudges, vault-local helper skills, and the
+plugin authoring scaffold are opt-in components.
 
 Component selectors adjust an install:
 
@@ -201,9 +204,10 @@ ipa harness install codex --only hook:guard
 ```
 
 Harness install/init adds user-global IPA skills/hooks for Codex, Claude, or
-OpenCode, vault-local `AGENTS.md` / `CLAUDE.md` guidance blocks,
-`.ipa/harness/*` metadata, and the `.ipa/plugins` JS authoring scaffold used
-for convention/search plugins. For the `claude` target it also registers a
+OpenCode, vault-local `AGENTS.md` / `CLAUDE.md` guidance blocks, and
+`.ipa/harness/*` metadata. Add `--with local-skills,plugin-scaffold` when the
+vault also needs focused helper skills and the `.ipa/plugins` authoring
+scaffold. For the `claude` target it also registers a
 `Bash(ipa *)` allow rule in `~/.claude/settings.json` (the `permissions`
 component) so `ipa` commands run without a per-call approval prompt; the
 user-owned settings file is read-merge-written and never clobbered. Opt out
@@ -466,7 +470,7 @@ individual gates via `gates.plugins` in `.ipa/config.yaml`.
 Beyond the edited notes, a gate also receives `ctx.session.pending_mutations` —
 the ipa mutation dry-runs this session previewed but never confirmed with
 `--apply` (`ipa link`/`cascade` plans, `rename`/`move`/`refactor` dry-runs),
-recorded by the mutation-ledger hook at command-name granularity. Returning
+recorded directly by the CLI at command-name granularity. Returning
 `{ block: false, message }` instead of `block: true` surfaces the message as a
 non-blocking warning at session end rather than holding the response. The
 scaffolded, disabled `_example-unapplied-mutation-gate.js` shows the idiom:
@@ -518,7 +522,8 @@ ipa tune log
 ipa tune testset draft --file testset.json
 ```
 
-When the Codex or Claude harness is installed, the `UserPromptSubmit` hook also
+With the opt-in `hook:evidence` component, the Codex or Claude
+`UserPromptSubmit` hook also
 records user prompt events in the same JSONL log with `event_type: "prompt"`,
 and writes the current prompt context under `.ipa/tune/logs/`. Subsequent plain
 `ipa search "keyword"` commands are logged automatically from that prompt
@@ -532,9 +537,10 @@ run a search for a prompt, only the prompt event remains.
 `ipa harness` manages both user-global AI harness files and vault-local
 metadata under `.ipa/harness/`. `install <target>` supports `codex`, `claude`,
 and `opencode`; `init <target>` is the same bootstrap command. The default
-target is `codex`. A normal `install`/`init` installs every component except
-the evidence nudge/logging hook (`hook:evidence`), which is opt-in via
-`--with hook:evidence`. Component selectors adjust an install:
+target is `codex`. The lean default installs `skill`, `prompt`, `local-prompt`,
+`hook:session-env`, `hook:guard`, `hook:markdown-nudge` (a silent edit ledger),
+and `hook:formatter-gate`; Claude also installs `permissions`, while OpenCode
+adds its required plugin adapter. Component selectors adjust an install:
 `--only <component...>` installs just the named components, `--with
 <component...>` adds components to the default set, and `--without
 <component...>` removes components from the default set.
@@ -557,9 +563,10 @@ Installed harness files are generated from templates inside the CLI. After a
 CLI update, `ipa harness status` and `ipa harness doctor` compare the installed
 files against the current templates and list any target with
 `outdated_components` plus an update hint. `ipa harness update <target>`
-uninstalls and reinstalls the target with the same component selection (an
-omitted `hook:evidence` stays omitted), so renamed or dropped hook scripts do
-not survive as orphans.
+preserves a custom component selection, while default-mode installs follow the
+current version's lean defaults. Renamed or dropped hook scripts and managed
+IPA skills recorded by the previous manifest are removed; marker-less
+user-owned forks are preserved.
 
 To fork a managed file (for example, to localize a vault-local skill), remove
 the `IPA_HARNESS_MANAGED` marker from it. Marker-less files are user-owned:
@@ -584,21 +591,19 @@ For the selected target, install writes:
 
 - user-global IPA CLI skill: `~/.codex/skills/ipa/SKILL.md`,
   `~/.claude/skills/ipa/SKILL.md`, or `~/.config/opencode/skills/ipa/SKILL.md`
-- user-global `SessionStart` environment hook that exports `IPA_SEARCH_LOG=1`
+- user-global `SessionStart` environment hook that carries the harness session ID and exports `IPA_SEARCH_LOG=1`
 - user-global inbox creation guard hook
-- user-global `UserPromptSubmit` IPA context-first nudge hook (only with the
-  opt-in `hook:evidence` component)
-- user-global post-write Markdown lint/format nudge hook
+- user-global silent post-write Markdown edit ledger
 - user-global `Stop` formatter gate that blocks final responses while edited
   vault notes still have formatter patches
 - vault-local manifest and guard helper under `.ipa/harness/<target>/`
 - vault-local system prompt block in `AGENTS.md` for Codex/OpenCode or
   `CLAUDE.md` for Claude
-- vault-local helper skills:
-  - Codex: `.agents/skills/ipa-rule`, `.agents/skills/ipa-config`, `.agents/skills/ipa-tune`
-  - Claude: `.claude/skills/ipa-rule`, `.claude/skills/ipa-config`, `.claude/skills/ipa-tune`
-  - OpenCode: `.opencode/skills/ipa-rule`, `.opencode/skills/ipa-config`, `.opencode/skills/ipa-tune`
-- vault-local `.ipa/plugins` scaffold with JS types and disabled rule/search
+- optional (`--with hook:evidence`) prompt evidence recorder
+- optional (`--with local-skills`) vault-local `ipa-rule`, `ipa-config`,
+  `ipa-tune`, `ipa-review`, and `ipa-consult` helper skills under the target's
+  `.agents/skills`, `.claude/skills`, or `.opencode/skills` directory
+- optional (`--with plugin-scaffold`) vault-local `.ipa/plugins` scaffold with JS types and disabled rule/search
   examples
 
 OpenCode native locations differ from Codex/Claude. User-global files land
@@ -634,7 +639,7 @@ harness:
 
 `ipa harness guard status` lists the active allow patterns.
 
-The call-counter hook (`hook:call-counter`) warns an agent that is making an
+The opt-in call-counter hook (`--with hook:call-counter`) warns an agent that is making an
 unusual number of `ipa` calls in a single session. Its thresholds are
 vault-configurable:
 
@@ -651,47 +656,46 @@ in `.ipa/config.yaml` leaves the installed script stale — doctor reports the
 component as outdated (`component_outdated`) until you re-run
 `ipa harness update <target>`.
 
-Harness prompts use `ipa context "keyword" --size small|medium --format
-markdown` as the initial compact note pack. Treat that pack as a bootstrap:
-if it is narrow, ambiguous, or only one note, use `ipa search "keyword"` to
-surface adjacent candidates before deciding what the vault says. In harness
-sessions, that search is logged from the current prompt context; `IPA_SEARCH_LOG=1`
-remains supported for explicit non-harness logging.
-`ipa view "Note Title" --full` is for selected note inspection after the
-likely source notes are identified.
+Harness recall is explicit by default: self-contained coding or general
+questions do not trigger a vault scan. The user must ask for IPA/vault/note
+work, name a vault note/path, or invoke the `ipa` skill. A vault that wants the
+older context-sensitive behavior can opt in and then refresh each installed
+target:
 
-When a vault note is edited through the harness, the post-write hook records the
-note under `.ipa/harness/formatter-pending.json`. The `Stop` hook reruns
-`ipa formatter plan --note ...`; if patches remain, it blocks the final response
-until the matching `ipa formatter apply --note ...` has been run.
+```yaml
+harness:
+  recall: contextual
+```
 
-The vault-local prompt also describes the operational workflow for profile
-resolution, note discovery, safe writes, convention checks, formatter apply,
-and vault-local JS authoring. For vault-specific convention behavior, create or
-adjust `.ipa/plugins/rules/*.js`, verify it with `ipa plugin validate`,
-`ipa plugin dry-run rules ... --note "Note Title"`, `ipa list-rules`,
-`ipa validator`, and then run the formatter plan/apply loop. For retrieval
-behavior, use `.ipa/plugins/search/*.js` and `ipa plugin dry-run search`.
+Use `ipa search`, `ipa view`, and `ipa context` only as needed, batching related
+queries or titles in one command. `ipa help` is the concise everyday command
+index, `ipa help --all` is the complete index, and `ipa <command> --help` is
+the syntax source of truth.
 
-The helper skills split common IPA operations into focused workflows:
+When a vault note is edited through a raw editor tool, the post-write hook
+silently records it under `.ipa/harness/formatter-pending.json`. Run
+`ipa note finalize "Note A" "Note B"` once to format and validate all edited
+notes. Core-backed writes such as `inbox add`, `note set --apply`, and
+`note replace --apply` perform that postflight automatically. The `Stop` gate
+only blocks when formatting work remains.
+
+The vault-local prompt stays pointer-level: it identifies the mapped folders,
+`ipa convention`, CLI help, and the one-call postflight. Exact plugin and
+maintenance workflows remain in the CLI help and optional helper skills.
+
+The optional helper skills split specialized IPA operations into focused workflows:
 `ipa-rule` for rule plugins and formatter-backed conventions, `ipa-config` for
 `.ipa/config.yaml` and profile registry work, `ipa-tune` for search-log
 sampling, labelled testsets, tune result analysis, and activating selected
-results, `ipa-triage` for the inbox → refs/tags → wikilinks → archive
-lifecycle (with a user-approval gate before any move), `ipa-review` for
-vault-wide or subtree structural health checks with approved fixes, and
+results, `ipa-review` for vault-wide or subtree structural health checks with approved fixes, and
 `ipa-consult` for IPA concept Q&A and friction counseling — it explains design
 intent from `ipa convention` and routes complaints ("search misses", "inbox
 piles up", "I keep violating X") to the skill or mechanism that fixes the
 cause. Vault-
 specific policy for these workflows (naming conventions, thresholds, SoT
-rules) belongs in `.ipa/harness/fragments/ipa-triage.md` /
-`ipa-review.md`, not in forked skill copies.
-
-The post-write nudge hook does not format automatically, but it makes apply the
-expected completion path: run `ipa validator`, inspect the note-scoped
-`ipa formatter plan --note "Edited Note"`, then run the matching
-`ipa formatter apply --note "Edited Note"` when the plan is expected.
+rules) belongs in matching `.ipa/harness/fragments/*.md` files, not in forked
+skill copies. Inbox triage now uses `ipa inbox --help` and `ipa convention`
+directly instead of shipping a dedicated `ipa-triage` skill.
 
 ## Vault skill compatibility
 
@@ -717,6 +721,7 @@ old in-package parity oracle has been removed.
 | `refactor`         | `@ipa/core.refactorVault`            | Parse-layer scan/filter plus frontmatter/body mutation.                |
 | `note replace`     | `@ipa/core.replaceInNote`            | Core note lookup plus raw-note replacement; syncs `date_modified` and cleans consumed `.tmp` inputs on apply. |
 | `note set`         | `@ipa/core.setNoteField`             | Frontmatter-only edits (scalar `--value`, list `--add`/`--remove`) without exact-match blocks. |
+| `note finalize`    | `@ipa/core.finalizeNotes`             | One-call formatter apply plus note-scoped validation after raw editor changes. |
 | `digest`           | `@ipa/core.digestNote`               | One-call index summary: children with modified dates, section titles, and snippets. |
 | `note redirect`    | `@ipa/core.redirectNotes`            | Repoint every wikilink/ref from source notes to a target; optional archive of sources. |
 | `cascade`          | `@ipa/core.cascadeNote`              | Staged ripple for a note: appliable ref/link wiring plus report-only overlap candidates. |

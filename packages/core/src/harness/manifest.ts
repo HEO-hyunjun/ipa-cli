@@ -28,9 +28,9 @@ export async function readTargetManifest(vaultPath, target) {
   }
 }
 
-export function createTargetManifest({ adapter, spec, selected, omitted, cliInfo, installedAt, localSkills }) {
+export function createTargetManifest({ adapter, spec, selected, omitted, selectionMode, cliInfo, installedAt, localSkills }) {
   return {
-    version: 1,
+    version: 2,
     target: adapter.id,
     installed_at: installedAt,
     cli_version: cliInfo.version,
@@ -39,6 +39,7 @@ export function createTargetManifest({ adapter, spec, selected, omitted, cliInfo
     local_prompt: spec.localPrompt,
     components: selected,
     omitted_components: omitted,
+    selection_mode: selectionMode,
     global: {
       ...adapter.manifestGlobal(spec),
       environment: {
@@ -66,11 +67,11 @@ export function createTargetManifest({ adapter, spec, selected, omitted, cliInfo
         command: "ipa harness guard check <vault-relative-path>",
         policy: "new markdown files must be created under the configured inbox folder"
       },
-      prompt_submit: {
-        policy: "nudge the agent to search/view IPA notes before answering vault questions"
+      prompt_evidence: {
+        policy: "record prompt/search pairs for tuning when hook:evidence is selected"
       },
-      markdown_write_nudge: {
-        policy: "nudge the agent to run validator, note-scoped formatter plan, and matching formatter apply after vault Markdown edits"
+      markdown_edit_ledger: {
+        policy: "silently record raw Markdown edits for the session-end formatter gate"
       },
       formatter_gate: {
         policy: "block final response while edited vault notes still have formatter patches"

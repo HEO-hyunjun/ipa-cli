@@ -56,7 +56,7 @@ export function harnessExpectedArtifacts(vaultPath, spec, mapping, selected, opt
     }
   }
   if (componentSelected(selected, "prompt")) {
-    artifacts.push({ component: "prompt", scope: "global", kind: "block", path: spec.globalPromptFile, content: withVaultFragment(vaultPath, "prompt", globalPromptContent(spec)) });
+    artifacts.push({ component: "prompt", scope: "global", kind: "block", path: spec.globalPromptFile, content: withVaultFragment(vaultPath, "prompt", globalPromptContent(spec, options)) });
   }
   if (componentSelected(selected, "local-prompt")) {
     artifacts.push({ component: "local-prompt", scope: "vault", kind: "block", path: join(vaultPath, spec.localPrompt), content: withVaultFragment(vaultPath, "local-prompt", localPromptContent(vaultPath, spec, mapping, options)) });

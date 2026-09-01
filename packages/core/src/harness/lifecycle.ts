@@ -5,7 +5,7 @@ import { harnessExpectedArtifacts } from "./artifacts.js";
 import { HARNESS_HOOK_COMPONENT_TO_SCRIPT, componentSelected } from "./model.js";
 import { hasManagedFile, removeManagedBlock, removeManagedFile, removeManagedVaultFile, upsertManagedBlock, writeManagedFile } from "./managedFiles.js";
 import { addHookCommand, removeManagedHookCommands } from "./shared/hookConfig.js";
-import { VAULT_LOCAL_SKILLS, vaultLocalSkillRelPath } from "./shared/templates.js";
+import { IPA_MANAGED_LOCAL_SKILL_NAMES, VAULT_LOCAL_SKILLS, vaultLocalSkillRelPath } from "./shared/templates.js";
 
 function shellQuote(value) {
   return `'${String(value).replace(/'/g, "'\\''")}'`;
@@ -36,10 +36,25 @@ function hookCommand(path, spec) {
   return `node ${shellQuote(path)}`;
 }
 
-export async function uninstallVaultLocalSkills(vaultPath, spec) {
+function managedLocalSkillNames(previousSkills = []) {
+  return [...new Set([...IPA_MANAGED_LOCAL_SKILL_NAMES, ...previousSkills])]
+    .filter((name) => /^ipa-[a-z0-9-]+$/.test(String(name)));
+}
+
+export async function uninstallVaultLocalSkills(vaultPath, spec, previousSkills = []) {
   const removed = [];
-  for (const skill of VAULT_LOCAL_SKILLS) {
-    await removeManagedVaultFile(vaultPath, vaultLocalSkillRelPath(spec, skill.name), removed);
+  for (const name of managedLocalSkillNames(previousSkills)) {
+    await removeManagedVaultFile(vaultPath, vaultLocalSkillRelPath(spec, name), removed);
+  }
+  return removed;
+}
+
+export async function pruneVaultLocalSkills(vaultPath, spec, keepCurrent = false, previousSkills = []) {
+  const keep = keepCurrent ? new Set(VAULT_LOCAL_SKILLS.map((skill) => skill.name)) : new Set();
+  const removed = [];
+  for (const name of managedLocalSkillNames(previousSkills)) {
+    if (keep.has(name)) continue;
+    await removeManagedVaultFile(vaultPath, vaultLocalSkillRelPath(spec, name), removed);
   }
   return removed;
 }
@@ -113,6 +128,7 @@ export async function uninstallGlobalHarness(spec) {
     join(spec.hooksDir, "ipa-prompt-evidence.mjs"),
     join(spec.hooksDir, "ipa-md-write-nudge.mjs"),
     join(spec.hooksDir, "ipa-call-counter.mjs"),
+    // Legacy hook removed after mutation tracking moved into the CLI.
     join(spec.hooksDir, "ipa-mutation-ledger.mjs"),
     join(spec.hooksDir, "ipa-formatter-gate.mjs"),
     join(spec.hooksDir, "ipa-vault-ref-nudge.mjs")
@@ -136,4 +152,3 @@ export async function uninstallGlobalHarness(spec) {
   }
   return removed;
 }
-

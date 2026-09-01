@@ -43,6 +43,11 @@ declare module "@ipa/core" {
     apply?: boolean,
     options?: Record<string, unknown>
   ): Promise<any>;
+  export function finalizeNotes(
+    vaultPath: string,
+    noteNames: string[],
+    options?: Record<string, unknown>
+  ): Promise<any>;
 
   // Write surfaces
   export function moveNote(

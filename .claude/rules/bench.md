@@ -10,9 +10,10 @@ verified: 8ac0c4f4069ca3452b78c6bbc4e0ecb6e58d804f
   merge 방식은 실홈 훅과 샌드박스 훅이 이중 발화해 call-counter가 ~2배로 세는 사고가 있었다 —
   merge 방식으로 되돌리지 말 것. HOME도 `<sandbox>-home`으로 격리하고, 자격증명은 키체인에서
   `.credentials.json`으로 복사 후 세션 종료 시 삭제한다(`--keep-sandbox`여도).
-- 훅 발화 검증은 부작용 파일로만: `.ipa/harness/call-counter.json`(→ `hook_call_count`),
-  `mutation-pending.json`(→ `mutation_pending`). PostToolUse 훅은 `claude -p` stream-json
-  트랜스크립트에 아예 안 나타나므로 트랜스크립트 grep으로 검증하지 않는다.
+- 훅 발화 검증은 부작용 파일로만: opt-in call-counter의
+  `.ipa/harness/call-counter.json`(→ `hook_call_count`). `mutation-pending.json`
+  (→ `mutation_pending`)은 CLI가 직접 기록한다. PostToolUse 훅은 `claude -p`
+  stream-json 트랜스크립트에 아예 안 나타나므로 트랜스크립트 grep으로 검증하지 않는다.
 - 어서션 어휘는 `bench/lib/judge.mjs`가 해석한다: `used_command`/`command_flow`/`notes_added`/
   `file_contains`/`md_changed_max`/`hook_call_count{min,max_ratio}`/`mutation_pending` 등. 판정은
   3축 — correctness(전 expect 통과) / efficiency(`stepRatio = ipaCalls/goldenPath`, budget 초과 시

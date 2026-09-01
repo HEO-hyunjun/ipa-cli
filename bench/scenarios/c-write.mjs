@@ -1,6 +1,6 @@
 // bench/scenarios/c-write.mjs
-// maxTurns 24: 끝까지 수행 원칙(D 참조) — note set + note-scoped 루프(validator→formatter plan→apply→
-// validator)가 100노트 볼트에서 정당하게 ~13턴을 쓴다. 넉넉히 두고 효율은 ipa 예산이 판정.
+// maxTurns 24: 다중 노트 triage/rename의 승인과 검증 여유다. 단일 노트 쓰기는 core의
+// 자동 postflight 또는 `note finalize` 한 번으로 끝나며 효율은 ipa 예산이 판정한다.
 const base = { group: "C", persona: "canonical", smoke: false, holdout: false, harness: true, models: ["sonnet", "opus"], maxTurns: 24 };
 export default [
   { ...base, id: "c9-inbox-capture", mode: "single", smoke: true, responder: null,
@@ -10,22 +10,14 @@ export default [
     ],
     turns: [{ user: "$PROMPT", expect: {
       used_command: "inbox add",
-      // 정답 경로: inbox add로 캡처 → note-scoped 루프(validator/formatter)로 마무리
-      command_flow: ["inbox add", "validator|formatter"],
+      // inbox add가 formatter+validator postflight까지 한 번에 수행한다.
+      command_flow: ["inbox add"],
       notes_added: { folder: "00 Inbox", min: 1 },
       formatter_pending_empty: true,
       validator_clean_changed: true,
-      // 하네스 훅 라이브 가드: call-counter PostToolUse(Bash) 훅은 ipa 호출 시 vault에
-      // .ipa/harness/call-counter.json을 쓴다(색인 제외 dotdir라 snapshot에 잡힌다). 이 파일이
-      // 생기지 않으면 훅이 세션에 주입되지 않은 것 — 훅이 실제로 돌 때만 발화하는 e2e 회귀 가드다.
-      file_added: "\\.ipa/harness/call-counter\\.json",
-      // 파일 존재를 넘어 훅이 실제로 카운트를 기록했는지 검증(count≥1). 파일만 있고 count=0이면 훅이
-      // 안 돈 것. c9은 콜 수가 적어 비율 판정은 큰 콜 시나리오(c12)에 둔다.
-      hook_call_count: { min: 1 },
     } }],
-    // 폭주 상한 = ~2×효율관측(opus 6콜 → 12). 100노트 볼트에서 capture 뒤 note-scoped 루프(validator→
-    // formatter plan→apply→validator)가 정당하게 ~10콜을 쓴다(sonnet). 이전 9는 그 정당 작업을 1콜 차로 잘랐다.
-    budget: { maxCostUsd: 1.4, maxIpaCalls: 12 }, goldenPath: 3 },
+    // 최소 경로는 inbox add 1콜. 상한 4는 도움말/확인 1~2콜을 허용하면서 옛 6~10콜 루프는 잡는다.
+    budget: { maxCostUsd: 1.4, maxIpaCalls: 4 }, goldenPath: 1 },
 
   { ...base, id: "c10-edit-note-section", mode: "multi", responder: "approve",
     prompts: [
@@ -35,12 +27,13 @@ export default [
     turns: [
       { user: "$PROMPT", expect: { file_modified: "오후 커피 컷오프 실험", md_changed_max: 1 } },
       { user: "고마워, 마무리까지 해줘.", expect: {
-        // note-scoped 루프 완주: --note 스코프 validator → formatter 순서
-        command_flow: ["validator --note|validator", "formatter (plan|apply)|formatter"],
+        // raw Edit는 note finalize 한 번으로 formatter+validator postflight를 끝낸다.
+        used_command: "note finalize",
         formatter_pending_empty: true, validator_clean_changed: true, md_changed_max: 1,
       } },
     ],
-    budget: { maxCostUsd: 1.1, maxIpaCalls: 11 }, goldenPath: 4 },
+    // 최소 IPA 경로는 raw Edit 뒤 note finalize 1콜. 탐색/도움말 여유를 포함해 4콜에서 폭주를 자른다.
+    budget: { maxCostUsd: 1.1, maxIpaCalls: 4 }, goldenPath: 1 },
 
   { ...base, id: "c11-frontmatter-only", mode: "single", responder: null,
     prompts: [
@@ -53,7 +46,8 @@ export default [
       md_changed_max: 1,
       validator_clean_changed: true,
     } }],
-    budget: { maxCostUsd: 0.66, maxIpaCalls: 11 }, goldenPath: 2 },
+    // note set --apply가 postflight까지 수행하므로 최소 1콜, 확인 여유를 포함한 상한은 4콜이다.
+    budget: { maxCostUsd: 0.66, maxIpaCalls: 4 }, goldenPath: 1 },
 
   // rename 교육(ipa rename "Old" "New" --apply)을 행동으로 검증한다 — 손수 ref 치환이 아니라
   // rename 메커니즘으로 파일 이동 + 인바운드 링크 재배선을 한 번에 처리하는지 본다. 타깃
@@ -87,10 +81,6 @@ export default [
         // 어디로 보낼지는 볼트 정책이라 여기선 "이동이 일어났다"는 메커니즘만 판정한다.
         file_removed: "00 Inbox/.*\\.md",
         formatter_pending_empty: true,
-        // call-counter PostToolUse 훅 e2e: min:1 → 훅이 살아서 카운트함, max_ratio:1.5 → 실-홈+샌드박스
-        // 이중 발화(≈2×)면 실패 = 단일 발화(격리) 회귀 가드. min을 10으로 두면 승인-게이트 교육 후
-        // 8콜로 끝내는 효율적 에이전트를 벌주게 돼 완화했다(임계 통과 증명은 훅 unit e2e가 담당).
-        hook_call_count: { min: 1, max_ratio: 1.5 },
       } },
     ],
     // budget = 폭주 감지용 상한. 100노트 볼트의 인박스는 11노트라, 9노트 triage가 per-note

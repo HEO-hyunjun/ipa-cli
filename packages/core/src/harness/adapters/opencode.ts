@@ -1,8 +1,17 @@
 import { join } from "node:path";
 import { HARNESS_COMPONENTS } from "../model.js";
 
-const invalidComponents = new Set(["hook:call-counter", "hook:mutation-ledger", "hook:vault-ref", "permissions"]);
+const invalidComponents = new Set(["hook:call-counter", "hook:vault-ref", "permissions"]);
 const validComponents = HARNESS_COMPONENTS.filter((component) => !invalidComponents.has(component));
+const defaultComponents = [
+  "skill",
+  "prompt",
+  "local-prompt",
+  "hook:session-env",
+  "hook:guard",
+  "hook:markdown-nudge",
+  "hook:formatter-gate"
+];
 
 const pluginMarkers = {
   "hook:session-env": 'hooks["shell.env"]',
@@ -21,7 +30,7 @@ export const opencodeAdapter = {
   promptDisplayPath: "~/.config/opencode/AGENTS.md",
   localSkillsRoot: ".opencode/skills",
   validComponents,
-  defaultComponents: [...validComponents],
+  defaultComponents,
   usesPlugin: true,
   targetSpec(homeBase) {
     const home = join(homeBase, ".config", "opencode");

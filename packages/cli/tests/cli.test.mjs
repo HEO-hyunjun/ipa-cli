@@ -53,14 +53,20 @@ test("CLI help and key smoke commands run through ipa-test profile", async () =>
   const { vault, env } = await fixtureProfile();
   const help = run(env, ["--help"]);
   assert.match(help, /Usage: ipa/);
-  assert.match(help, /Core commands:/);
-  assert.match(help, /convention/);
+  assert.match(help, /Commands:/);
+  assert.match(help, /ipa help --all/);
   assert.match(help, /doctor/);
   assert.match(help, /--version\s+Show version information/);
   assert.match(help, /help\s+Show help for any registered command path/);
-  assert.match(help, /list-channels\s+List active search channels/);
-  assert.match(help, /list-rules\s+List active builtin and vault-local rules/);
-  assert.match(help, /list-refactors\s+List registered refactor recipes/);
+  assert.doesNotMatch(help, /list-channels/);
+  assert.doesNotMatch(help, /plugin dry-run/);
+  assert.match(help, /ipa note finalize "Edited Note"/);
+  const allHelp = run(env, ["help", "--all"]);
+  assert.match(allHelp, /Core commands:/);
+  assert.match(allHelp, /convention/);
+  assert.match(allHelp, /list-channels\s+List active search channels/);
+  assert.match(allHelp, /list-rules\s+List active builtin and vault-local rules/);
+  assert.match(allHelp, /list-refactors\s+List registered refactor recipes/);
   const tuneHelp = run(env, ["tune", "--help"]);
   assert.match(tuneHelp, /Usage: ipa \[OPTIONS\] tune/);
   assert.match(tuneHelp, /testset\s+Manage vault-local search testsets/);
@@ -73,6 +79,8 @@ test("CLI help and key smoke commands run through ipa-test profile", async () =>
   assert.match(contextHelp, /--include <mode>/);
   const inboxHelp = run(env, ["help", "inbox", "add"]);
   assert.match(inboxHelp, /--ref <ref>/);
+  const finalizeHelp = run(env, ["help", "note", "finalize"]);
+  assert.match(finalizeHelp, /Format and validate raw Markdown edits in one call/);
   const triageHelp = run(env, ["help", "inbox", "triage"]);
   assert.match(triageHelp, /--apply/);
   const linkHelp = run(env, ["help", "link", "plan"]);
@@ -532,6 +540,15 @@ test("agent-efficiency surface: snippets, digest, multi-view, note set, replace 
   run(env, ["--profile", "ipa-test", "note", "replace", "Alpha", "--old-file", oldFile, "--new-file", newFile, "--apply", "--keep-files"]);
   assert.equal(existsSync(oldFile), true);
 
+  // A raw editor change finishes through one note finalize call.
+  alpha = await readFile(join(vault, "00 Inbox", "Alpha.md"), "utf8");
+  await writeFile(join(vault, "00 Inbox", "Alpha.md"), alpha.replace(/date_modified: .*/, "date_modified: 2026-06-23T06:48:04.214Z"), "utf8");
+  const finalized = JSON.parse(run(env, ["--profile", "ipa-test", "--json", "note", "finalize", "Alpha"]));
+  assert.equal(finalized.operation, "note-finalize");
+  assert.ok(finalized.formatting.applied >= 1);
+  assert.doesNotMatch(await readFile(join(vault, "00 Inbox", "Alpha.md"), "utf8"), /date_modified: 2026-06-23T/);
+  assert.match(run(env, ["--profile", "ipa-test", "note", "finalize", "Alpha"]), /Note finalize[\s\S]*validation issues\s+0/);
+
   // formatter plan surfaces apply-gated rule patches without writing.
   const planHelp = run(env, ["digest", "--help"]);
   assert.match(planHelp, /Summarize an index or root note/);
@@ -675,8 +692,9 @@ test("harness status lists selected and omitted components per target", async ()
   run(harnessEnv, ["--json", "harness", "install", "claude", "--without", "hook:evidence"]);
   run(harnessEnv, ["--json", "harness", "install", "opencode"]);
   const text = run(harnessEnv, ["harness", "status"]);
-  assert.match(text, /omitted \(codex\)\s+-/);
-  assert.match(text, /omitted \(claude\)\s+hook:evidence/);
+  assert.match(text, /omitted \(codex\)\s+local-skills/);
+  assert.match(text, /omitted \(claude\)\s+local-skills/);
+  assert.match(text, /hook:evidence/);
   const json = JSON.parse(run(harnessEnv, ["--json", "harness", "status"]));
   assert.equal(json.global.codex.outdated_components.includes("local-prompt"), false);
   assert.equal(json.global.opencode.outdated_components.includes("local-prompt"), false);

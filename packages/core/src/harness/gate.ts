@@ -41,10 +41,7 @@ return async function harnessSessionGate(vaultPath, options = {}) {
         message: [
           `Formatter gate blocked final response. ${plan.summary.patches} pending formatter patch(es) for: ${ownedTitles.join(", ")}`,
           "Run:",
-          `ipa validator --note ${noteArgs}`,
-          `ipa formatter plan --note ${noteArgs}`,
-          `ipa formatter apply --note ${noteArgs}`,
-          "Do not stop at formatter plan; run formatter apply after reviewing the plan."
+          `ipa note finalize ${noteArgs}`
         ].join("\n")
       });
     }
@@ -55,8 +52,8 @@ return async function harnessSessionGate(vaultPath, options = {}) {
   if (gatePlugins.length) {
     const { config, mapping } = await deps.readVaultConfig(vaultPath);
     const notes = await deps.loadNotes(vaultPath, mapping);
-    // Mutation ledger: ipa dry-run mutations recorded by the mutation-ledger hook
-    // that were never followed by an --apply/apply sighting. Unlike formatter
+    // Mutation ledger: ipa dry-run mutations recorded directly by the CLI that
+    // were never followed by an --apply/apply command. Unlike formatter
     // pending, the gate never clears these — only an --apply sighting or the 48h
     // TTL does, so a warning survives across gate runs until the plan is applied.
     const mutationPath = join(vaultPath, ".ipa", "harness", "mutation-pending.json");
