@@ -27,7 +27,13 @@ jobs:
 
       - run: cp dist/release/ipa-cli.js ipa-cli.js && sha256sum ipa-cli.js > SHA256SUMS
 
-      - run: node ipa-cli.js --version
+      - name: Verify standalone CLI and harness templates
+        run: |
+          node ipa-cli.js --version
+          probe_home="$(mktemp -d)"
+          cp -R packages/test-vaults/fixtures/mini-vault "$probe_home/vault"
+          IPA_HARNESS_HOME="$probe_home" node ipa-cli.js --vault "$probe_home/vault" harness install codex --without prompt
+          IPA_HARNESS_HOME="$probe_home" node ipa-cli.js --vault "$probe_home/vault" harness update codex --without prompt
 
       - run: gh release create "$GITHUB_REF_NAME" ipa-cli.js SHA256SUMS --generate-notes
         env:
