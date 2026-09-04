@@ -573,7 +573,7 @@ test("configured file excludes and code fences keep validator focused on notes",
   );
   await writeFile(
     configPath,
-    `${await readFile(configPath, "utf8")}\nfiles:\n  exclude:\n    - AGENTS.md\n    - 99 Fixtures/**\n    - "**/🏠 *"\n`,
+    `${await readFile(configPath, "utf8")}\nfiles:\n  exclude:\n    - AGENTS.md\n    - 99 Fixtures/Excluded Target.md\n    - "**/🏠 *"\n`,
     "utf8"
   );
 
@@ -586,6 +586,30 @@ test("configured file excludes and code fences keep validator focused on notes",
   const validation = await validateVault(vault);
   assert.equal(validation.status, "ok");
   assert.equal(validation.issues.some((item) => item.message.includes("Excluded Target") || item.message.includes("Home")), false);
+});
+
+test("configured directory excludes are pruned before traversal", async () => {
+  const vault = await fixtureVault();
+  const configPath = join(vault, ".ipa", "config.yaml");
+  const excludedDir = join(vault, "99 Workbench");
+  await mkdir(join(excludedDir, "private"), { recursive: true });
+  await writeFile(join(excludedDir, "private", "Hidden.md"), "# Hidden\n", "utf8");
+  await writeFile(
+    configPath,
+    `${await readFile(configPath, "utf8")}\nfiles:\n  exclude:\n    - 99 Workbench/**\n`,
+    "utf8"
+  );
+  await chmod(excludedDir, 0o000);
+
+  try {
+    const notes = await loadNotes(vault, (await readVaultConfig(vault)).mapping);
+    assert.equal(notes.some((note) => note.id === "Hidden"), false);
+    assert.ok((await searchVault(vault, "Alpha", { showAll: true })).results.some((hit) => hit.note === "Alpha"));
+    assert.equal((await validateVault(vault)).status, "ok");
+    assert.ok((await formatVault(vault)).summary);
+  } finally {
+    await chmod(excludedDir, 0o700);
+  }
 });
 
 test("excalidraw markdown scenes are excluded from active note operations", async () => {

@@ -470,7 +470,7 @@ function operatingRulesFragmentTemplate() {
   ].join("\n");
 }
 
-async function walkFiles(root, predicate, base = root) {
+async function walkFiles(root, predicate, base = root, excludes = []) {
   if (!existsSync(root)) return [];
   const entries = await readdir(root, { withFileTypes: true });
   const out = [];
@@ -479,8 +479,8 @@ async function walkFiles(root, predicate, base = root) {
     const path = join(root, entry.name);
     const rel = toPosix(relative(base, path));
     if (entry.isDirectory()) {
-      if (rel === ".ipa" || rel.startsWith(".ipa/")) continue;
-      out.push(...await walkFiles(path, predicate, base));
+      if (rel === ".ipa" || rel.startsWith(".ipa/") || isExcludedPath(rel, excludes)) continue;
+      out.push(...await walkFiles(path, predicate, base, excludes));
     } else if (predicate(path, rel)) {
       out.push(path);
     }
@@ -1076,8 +1076,11 @@ function noteFromFile(vaultPath, path, raw, mapping = DEFAULT_MAPPING) {
 // excalidraw 노트는 캐시에 들어가지 않으니 매 diff마다 다시 읽히지만 수가 적다.
 async function activeMarkdownFileStats(vaultPath, mapping = DEFAULT_MAPPING, entries = null) {
   const excludes = asList(mapping.exclude);
-  const files = await walkFiles(vaultPath, (path, relPath) =>
-    extname(path).toLowerCase() === ".md" && !isExcludedPath(relPath, excludes)
+  const files = await walkFiles(
+    vaultPath,
+    (path, relPath) => extname(path).toLowerCase() === ".md" && !isExcludedPath(relPath, excludes),
+    vaultPath,
+    excludes
   );
   const entriesByPath = entries
     ? new Map(entries.map((entry) => [toPosix(entry.path).normalize("NFC"), entry]))
@@ -1111,8 +1114,11 @@ async function activeMarkdownFileStats(vaultPath, mapping = DEFAULT_MAPPING, ent
 
 async function activeMarkdownFiles(vaultPath, mapping = DEFAULT_MAPPING, options = {}) {
   const excludes = asList(mapping.exclude);
-  const files = await walkFiles(vaultPath, (path, relPath) =>
-    extname(path).toLowerCase() === ".md" && !isExcludedPath(relPath, excludes)
+  const files = await walkFiles(
+    vaultPath,
+    (path, relPath) => extname(path).toLowerCase() === ".md" && !isExcludedPath(relPath, excludes),
+    vaultPath,
+    excludes
   );
   const rows = [];
   for (const path of files.sort()) {
@@ -3919,7 +3925,7 @@ export async function validateVault(vaultPath, notes = null, options = {}) {
 // from the already-loaded notes — so no active file is read a second time.
 async function loadLinkTargetTitles(vaultPath, mapping, notes) {
   const excludes = asList(mapping.exclude);
-  const files = await walkFiles(vaultPath, () => true);
+  const files = await walkFiles(vaultPath, () => true, vaultPath, excludes);
   const notePaths = new Set(notes.map((note) => note.relPath));
   const activePaths = notes.map((note) => note.path);
   const excludedMarkdown = [];

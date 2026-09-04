@@ -339,11 +339,12 @@ body text under ignored headings is skipped, so vault-specific formats
 
 `files.exclude` removes Markdown files from the active note set for
 search, traversal, validation, review, cache, and refactor operations.
-Exclude patterns are vault-relative paths or globs, and emoji characters
-can be used directly in those patterns, for example `**/🏠 *` for
-emoji-prefixed utility notes.
-Validation ignores refs and wikilinks that point at excluded files, so
-utility notes can stay outside the IPA graph without creating link noise.
+Matching directories are pruned before traversal, so their contents are
+not read or treated as link targets. Exclude patterns are vault-relative
+paths or globs, and emoji characters can be used directly in those
+patterns, for example `**/🏠 *` for emoji-prefixed utility notes.
+Validation still recognizes individually excluded files as link targets,
+so utility files can stay outside the IPA graph without creating link noise.
 
 Portable runtime state stays in the vault:
 
