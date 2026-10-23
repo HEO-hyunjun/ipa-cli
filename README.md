@@ -191,7 +191,7 @@ ipa harness doctor
 `harness init` is an alias for `harness install`. `install <target>` supports
 `codex`, `claude`, and `opencode`; the default target is `codex`. A normal
 install keeps only the global skill/prompt, vault prompt, session environment,
-write guard, silent edit ledger, and formatter gate (plus Claude permissions).
+silent edit ledger, and Stop lint gate (plus Claude permissions).
 Prompt evidence, call counting, path nudges, vault-local helper skills, and the
 plugin authoring scaffold are opt-in components.
 
@@ -200,7 +200,7 @@ Component selectors adjust an install:
 ```sh
 ipa harness install opencode --with hook:evidence
 ipa harness install opencode --only skill,prompt
-ipa harness install codex --only hook:guard
+ipa harness install codex --only hook:formatter-gate
 ```
 
 Harness install/init adds user-global IPA skills/hooks for Codex, Claude, or
@@ -539,8 +539,8 @@ run a search for a prompt, only the prompt event remains.
 metadata under `.ipa/harness/`. `install <target>` supports `codex`, `claude`,
 and `opencode`; `init <target>` is the same bootstrap command. The default
 target is `codex`. The lean default installs `skill`, `prompt`, `local-prompt`,
-`hook:session-env`, `hook:guard`, `hook:markdown-nudge` (a silent edit ledger),
-and `hook:formatter-gate`; Claude also installs `permissions`, while OpenCode
+`hook:session-env`, `hook:markdown-nudge` (a silent edit ledger), and
+`hook:formatter-gate` (the Stop lint gate); Claude also installs `permissions`, while OpenCode
 adds its required plugin adapter. Component selectors adjust an install:
 `--only <component...>` installs just the named components, `--with
 <component...>` adds components to the default set, and `--without
@@ -557,7 +557,7 @@ names.
 ```sh
 ipa harness install opencode --with hook:evidence
 ipa harness install opencode --only skill,prompt
-ipa harness install codex --only hook:guard
+ipa harness install codex --only hook:formatter-gate
 ```
 
 Installed harness files are generated from templates inside the CLI. After a
@@ -593,11 +593,9 @@ For the selected target, install writes:
 - user-global IPA CLI skill: `~/.codex/skills/ipa/SKILL.md`,
   `~/.claude/skills/ipa/SKILL.md`, or `~/.config/opencode/skills/ipa/SKILL.md`
 - user-global `SessionStart` environment hook that carries the harness session ID and exports `IPA_SEARCH_LOG=1`
-- user-global inbox creation guard hook
 - user-global silent post-write Markdown edit ledger
-- user-global `Stop` formatter gate that blocks final responses while edited
-  vault notes still have formatter patches
-- vault-local manifest and guard helper under `.ipa/harness/<target>/`
+- user-global `Stop` lint gate that formats and validates edited vault notes
+- vault-local manifest under `.ipa/harness/<target>/`
 - vault-local system prompt block in `AGENTS.md` for Codex/OpenCode or
   `CLAUDE.md` for Claude
 - optional (`--with hook:evidence`) prompt evidence recorder
@@ -620,25 +618,10 @@ additional model context into the running turn. The IPA nudge instructions
 reach the model only through the managed `AGENTS.md` and skill text, not via a
 hook-injected context block.
 
-The built-in guard policy is intentionally small: new Markdown files must be
-created under the configured inbox folder, while existing Markdown edits,
-non-Markdown files, and paths excluded from note indexing are allowed. This
-supports editor/agent hooks without hard-coding one user's vault naming
-convention.
-
-Vaults can widen the policy declaratively instead of bypassing the guard. Add
-allow patterns to `.ipa/config.yaml`; new Markdown under a matching path is
-allowed even outside the inbox (for example, an approved workflow that files
-meeting notes directly into the archive):
-
-```yaml
-harness:
-  guard:
-    allow:
-      - "02 Archive/회의록/**"
-```
-
-`ipa harness guard status` lists the active allow patterns.
+The harness does not restrict where agents write: vault Markdown can be created
+and edited directly in any folder. The inbox-first lifecycle stays a convention
+taught by the prompts and `ipa convention`; a vault that wants to enforce it can
+add a gate plugin under `.ipa/plugins/gates/`.
 
 The opt-in call-counter hook (`--with hook:call-counter`) warns an agent that is making an
 unusual number of `ipa` calls in a single session. Its thresholds are
@@ -674,14 +657,18 @@ index, `ipa help --all` is the complete index, and `ipa <command> --help` is
 the syntax source of truth.
 
 When a vault note is edited through a raw editor tool, the post-write hook
-silently records it under `.ipa/harness/formatter-pending.json`. Run
-`ipa note finalize "Note A" "Note B"` once to format and validate all edited
-notes. Core-backed writes such as `inbox add`, `note set --apply`, and
-`note replace --apply` perform that postflight automatically. The `Stop` gate
-only blocks when formatting work remains.
+silently records it under `.ipa/harness/formatter-pending.json`. At session end
+the `Stop` gate finalizes those notes itself (formatter apply plus note-scoped
+validation), so agents never call `ipa note finalize`. Only validator errors
+block, and only once per edit: the linted notes leave the ledger, so an error
+the agent cannot fix never locks the session, while a fix re-records the note.
+Warnings are surfaced without blocking. Outside a harness session, run
+`ipa note finalize "Note A" "Note B"` for the same postflight; core-backed
+writes such as `inbox add`, `note set --apply`, and `note replace --apply`
+perform it automatically.
 
 The vault-local prompt stays pointer-level: it identifies the mapped folders,
-`ipa convention`, CLI help, and the one-call postflight. Exact plugin and
+`ipa convention`, CLI help, and the Stop lint. Exact plugin and
 maintenance workflows remain in the CLI help and optional helper skills.
 
 The optional helper skills split specialized IPA operations into focused workflows:

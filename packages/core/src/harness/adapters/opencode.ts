@@ -8,14 +8,12 @@ const defaultComponents = [
   "prompt",
   "local-prompt",
   "hook:session-env",
-  "hook:guard",
   "hook:markdown-nudge",
   "hook:formatter-gate"
 ];
 
 const pluginMarkers = {
   "hook:session-env": 'hooks["shell.env"]',
-  "hook:guard": 'hooks["tool.execute.before"]',
   "hook:markdown-nudge": 'hooks["tool.execute.after"]',
   "hook:call-counter": "callCounterHandler",
   "hook:formatter-gate": "runSessionGate",

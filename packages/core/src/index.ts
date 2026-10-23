@@ -39,7 +39,6 @@ import {
   vaultLocalSkillStatus
 } from "./harness/lifecycle.js";
 import { createHarnessSessionGate } from "./harness/gate.js";
-import { createHarnessGuard, guardAllowPatterns } from "./harness/guard.js";
 
 export const DEFAULT_MAPPING = {
   note_type: "type",
@@ -6919,24 +6918,18 @@ export async function selfUpdate(options = {}) {
 }
 
 // Session gate: the single check the Stop hook consults before a session may
-// end. Combines the builtin formatter check over this session's pending edits
-// with vault-owned gate plugins (.ipa/plugins/gates/*.js). On pass, the
-// session's ledger entries are cleared. Gate plugin errors are reported but
-// never block — a broken plugin must not lock the session shut.
+// end. Lints this session's edited notes (finalize: formatter apply + validate)
+// and runs vault-owned gate plugins (.ipa/plugins/gates/*.js). Gate plugin
+// errors are reported but never block — a broken plugin must not lock the
+// session shut.
 const harnessSessionGateImpl = createHarnessSessionGate({
+  finalizeNotes,
   formatVault,
   loadPluginModules,
   normalizeGatePlugin,
   readVaultConfig,
   loadNotes,
   makeNoteLookup
-});
-
-const harnessGuard = createHarnessGuard({
-  readVaultConfig,
-  asList,
-  toPosix,
-  isExcludedPath
 });
 
 const harnessApplication = createHarnessService({
@@ -6946,7 +6939,6 @@ const harnessApplication = createHarnessService({
   pluginScaffoldStatus,
   outdatedComponents: harnessOutdatedComponents,
   userOwnedComponents: harnessUserOwnedComponents,
-  guardStatus: harnessGuardStatus,
   pluginInit,
   cliVersionInfo,
   nowIso,
@@ -6986,20 +6978,11 @@ export async function harnessSessionGate(vaultPath, options = {}) {
   return harnessSessionGateImpl(vaultPath, options);
 }
 
-export async function harnessGuardStatus(vaultPath) {
-  return harnessGuard.status(vaultPath);
-}
-
-export async function harnessGuardCheck(vaultPath, relPath, options = {}) {
-  return harnessGuard.check(vaultPath, relPath, options);
-}
-
 // `ipa convention show`: the built-in IPA concepts rendered through the active
 // config (real field/folder names) plus the vault's own operating rules from
 // .ipa/harness/fragments/ — the same source the harness inlines into prompts.
 export async function conventionShow(vaultPath) {
-  const { config, mapping } = await readVaultConfig(vaultPath);
-  const guardAllow = guardAllowPatterns(config, asList);
+  const { mapping } = await readVaultConfig(vaultPath);
   const sections = [
     {
       title: "Concepts",
@@ -7054,21 +7037,19 @@ export async function conventionShow(vaultPath) {
     {
       title: "Folders And Lifecycle",
       body: [
-        `\`${mapping.inbox_dir}\` — every new note is created here (\`ipa inbox add\`); the harness guard blocks new markdown elsewhere.`,
+        `\`${mapping.inbox_dir}\` — new notes normally start here.`,
         `\`${mapping.project_dir}\` — active project material.`,
-        `\`${mapping.archive_dir}\` — triaged notes that carry \`${mapping.refs}\`.`,
-        guardAllow.length
-          ? `Guard allow patterns from .ipa/config.yaml permit new markdown outside the inbox: ${guardAllow.map((pattern) => `\`${pattern}\``).join(", ")}.`
-          : null
-      ].filter(Boolean).join("\n")
+        `\`${mapping.archive_dir}\` — triaged notes that carry \`${mapping.refs}\`.`
+      ].join("\n")
     },
     {
       title: "Editing Workflow",
       body: [
         "Read with `ipa view`/`ipa digest`, discover with `ipa search`/`ipa context`.",
-        "Edit note bodies with `ipa note replace`, frontmatter with `ipa note set`.",
-        "After editing, run `ipa validator --note \"Note\"` and finish with",
-        "`ipa formatter plan --note ...` + `ipa formatter apply --note ...`.",
+        "Create and edit Markdown directly anywhere in the vault; `ipa note replace`",
+        "and `ipa note set` remain for exact body/frontmatter edits.",
+        "The harness Stop hook formats and lints edited notes; without the harness,",
+        "run `ipa note finalize \"Note\"`.",
         "Vault-specific rule enforcement lives in `.ipa/plugins/rules/*.js`."
       ].join("\n")
     }

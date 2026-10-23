@@ -1,9 +1,8 @@
 export const HOOK_REGISTRATIONS = {
   "hook:session-env": { event: "SessionStart", matcher: null, statusMessage: "Setting IPA search logging environment...", timeout: 5 },
-  "hook:guard": { event: "PreToolUse", matcher: "Write|Edit|MultiEdit", statusMessage: "Checking IPA inbox write policy...", timeout: 5 },
   "hook:markdown-nudge": { event: "PostToolUse", matcher: "Write|Edit|MultiEdit", statusMessage: null, timeout: 5 },
   "hook:call-counter": { event: "PostToolUse", matcher: "Bash", statusMessage: null, timeout: 5 },
-  "hook:formatter-gate": { event: "Stop", matcher: null, statusMessage: "Checking IPA formatter apply gate...", timeout: 20 },
+  "hook:formatter-gate": { event: "Stop", matcher: null, statusMessage: "Linting edited IPA notes...", timeout: 20 },
   "hook:vault-ref": { event: "UserPromptSubmit", matcher: null, statusMessage: null, timeout: 5 },
   "hook:evidence": { event: "UserPromptSubmit", matcher: null, statusMessage: null, timeout: 5 }
 };
@@ -18,6 +17,7 @@ export function hookSpecificOutput(event, messageExpression) {
 
 export const IPA_MANAGED_HOOK_SCRIPTS = [
   "ipa-session-env.mjs",
+  // Legacy inbox guard: kept so update/uninstall drop its old registration.
   "ipa-inbox-guard.mjs",
   "ipa-user-prompt-nudge.mjs",
   "ipa-md-write-nudge.mjs",

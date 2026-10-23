@@ -9,7 +9,6 @@ const defaultComponents = [
   "local-prompt",
   "permissions",
   "hook:session-env",
-  "hook:guard",
   "hook:markdown-nudge",
   "hook:formatter-gate"
 ];

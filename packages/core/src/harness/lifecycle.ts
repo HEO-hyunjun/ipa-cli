@@ -123,6 +123,7 @@ export async function uninstallGlobalHarness(spec) {
   const removed = [];
   const scripts = [
     join(spec.hooksDir, "ipa-session-env.mjs"),
+    // Legacy hook removed when vault Markdown writes became unrestricted.
     join(spec.hooksDir, "ipa-inbox-guard.mjs"),
     join(spec.hooksDir, "ipa-user-prompt-nudge.mjs"),
     join(spec.hooksDir, "ipa-prompt-evidence.mjs"),

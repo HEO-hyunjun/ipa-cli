@@ -2,6 +2,10 @@ import { existsSync } from "node:fs";
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
+function lintMessage(heading, issues) {
+  return [heading, ...issues.map((issue) => `- ${issue.note ?? issue.path ?? "vault"}: ${issue.code} ${issue.message}`)].join("\n");
+}
+
 export function createHarnessSessionGate(deps) {
 return async function harnessSessionGate(vaultPath, options = {}) {
   const sessionId = options.session ?? null;
@@ -24,26 +28,33 @@ return async function harnessSessionGate(vaultPath, options = {}) {
   const owned = sessionId
     ? entries.filter((item) => !item.session_id || item.session_id === sessionId)
     : entries;
+  // A note renamed or deleted after its edit drops out here; otherwise one
+  // missing title would make finalize skip every other edited note.
   const ownedTitles = [...new Set(owned
+    .filter((item) => typeof item.path !== "string" || existsSync(join(vaultPath, item.path)))
     .map((item) => typeof item.title === "string" ? item.title.trim() : "")
     .filter(Boolean))];
   const blocks = [];
   const errors = [];
   const warnings = [];
   if (ownedTitles.length) {
-    // patchesOnly skips formatVault's internal validateVault (a second full
-    // checkNote pass): the gate reads patches, not issues.
-    const plan = await deps.formatVault(vaultPath, false, { notes: ownedTitles, ruleApply: true, patchesOnly: true });
-    if (plan.summary.patches > 0) {
-      const noteArgs = ownedTitles.map((title) => JSON.stringify(title)).join(" ");
-      blocks.push({
-        source: "formatter",
-        message: [
-          `Formatter gate blocked final response. ${plan.summary.patches} pending formatter patch(es) for: ${ownedTitles.join(", ")}`,
-          "Run:",
-          `ipa note finalize ${noteArgs}`
-        ].join("\n")
-      });
+    // Stop-time lint: finalize (formatter apply + validate) this session's
+    // edited notes here, so the agent never runs `ipa note finalize` itself.
+    // Only validator errors block. A finalize failure (e.g. a note renamed
+    // after its edit) is reported, never blocking.
+    try {
+      const lint = await deps.finalizeNotes(vaultPath, ownedTitles);
+      const issues = lint.validation.issues ?? [];
+      const lintErrors = issues.filter((issue) => issue.severity === "error");
+      const lintWarnings = issues.filter((issue) => issue.severity !== "error");
+      if (lintErrors.length) {
+        blocks.push({ source: "validator", message: lintMessage(`Stop lint found ${lintErrors.length} validator error(s) in edited notes. Fix them before finishing:`, lintErrors) });
+      }
+      if (lintWarnings.length) {
+        warnings.push({ source: "validator", message: lintMessage(`${lintWarnings.length} validator warning(s) in edited notes:`, lintWarnings) });
+      }
+    } catch (error) {
+      errors.push({ source: "validator", message: error.message });
     }
   }
   const gatePlugins = (await deps.loadPluginModules(vaultPath, "gates"))
@@ -103,9 +114,12 @@ return async function harnessSessionGate(vaultPath, options = {}) {
       }
     }
   }
-  if (!blocks.length) {
-    // Owned entries are formatter-clean here (a dirty owned note blocks above), so
-    // they leave the ledger. Foreign entries (a different non-null session_id) are
+  // Owned entries are consumed once linted, so a validator error blocks once: a
+  // fix re-records the note through the edit ledger, while an error the agent
+  // cannot resolve must not lock the session. Gate plugin blocks keep the ledger
+  // because plugins read session.edits on the next Stop.
+  if (!blocks.some((item) => item.source !== "validator")) {
+    // Owned entries leave the ledger here. Foreign entries (a different non-null session_id) are
     // re-checked against the formatter and dropped when clean too — ownership must
     // not strand a clean note until the 48h TTL, or a multi-turn --resume that
     // rotates the session id would let it resurface and wrongly gate a later turn.

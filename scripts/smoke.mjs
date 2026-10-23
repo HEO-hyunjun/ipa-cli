@@ -108,8 +108,6 @@ const commands = [
   ["--profile", "ipa-test", "harness", "doctor", "--json"],
   ["--profile", "ipa-test", "harness", "uninstall", "opencode", "--json"],
   ["--profile", "ipa-test", "harness", "doctor", "--json"],
-  ["--profile", "ipa-test", "harness", "guard", "status", "--json"],
-  ["--profile", "ipa-test", "harness", "guard", "check", "00 Inbox/New.md", "--json"],
   ["--profile", "ipa-test", "tune", "eval"],
   ["--profile", "ipa-test", "tune", "--trials", "2", "--json"],
   ["--profile", "ipa-test", "tune", "list", "--json"],

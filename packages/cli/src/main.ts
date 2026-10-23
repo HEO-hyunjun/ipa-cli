@@ -26,8 +26,6 @@ import {
   finalizeNotes,
   graphTopology,
   harnessDoctor,
-  harnessGuardCheck,
-  harnessGuardStatus,
   harnessInstall,
   harnessStatus,
   harnessUninstall,
@@ -162,10 +160,7 @@ const COMMAND_DESCRIPTIONS = {
   "harness uninstall": "Remove managed harness components",
   "harness update": "Update installed harness components",
   "harness doctor": "Validate installed harness files",
-  "harness gate": "Run the session-end formatter gate",
-  "harness guard": "Inspect or evaluate the inbox write guard",
-  "harness guard status": "Show inbox write guard state",
-  "harness guard check": "Evaluate one path against the inbox write guard",
+  "harness gate": "Run the session-end lint gate",
   cache: "Inspect and maintain the vault-local parsed cache",
   "cache status": "Show stale cache entries",
   "cache rebuild": "Rebuild manifest, files, and graph cache",
@@ -321,7 +316,7 @@ function formatHelp(program, options = {}) {
   ] : [
     ["ipa search \"ipa cli\" \"harness\"", "Search several facets in one call"],
     ["ipa view \"Note A\" \"Note B\" --full", "Read selected notes in one call"],
-    ["ipa note finalize \"Edited Note\"", "Finish a raw Markdown edit"]
+    ["ipa inbox add draft.md --title \"Memo\"", "Capture a draft into the inbox from any directory"]
   ]));
   lines.push("", styleMuted(options.all
     ? "Run `ipa <command> --help` for command-specific help."
@@ -401,9 +396,8 @@ function render(payload) {
   if (payload.operation === "obsidian-sync") return renderObsidianSync(payload);
   if (payload.file && Object.hasOwn(payload, "config_updated") && Object.hasOwn(payload, "created")) return renderKeyValues("Tune testset", payload);
   if (payload.testsets) return renderTableReport("Tune testsets", ["Active", "File"], payload.testsets.map((item) => [payload.active === item ? "yes" : "", item]));
-  if (Object.hasOwn(payload, "allowed")) return renderKeyValues("Harness guard", payload);
   if (payload.convention && payload.markdown) return `${styleTitle("IPA convention")}\n\n${payload.markdown.trimEnd()}`;
-  if (payload.installed && payload.guard) return renderHarnessStatus(payload);
+  if (payload.installed && payload.plugin_scaffold) return renderHarnessStatus(payload);
   if (payload.target && Object.hasOwn(payload, "installed") && (payload.files || payload.removed)) return renderHarnessChange(payload);
   if (payload.plugin_root && payload.created && payload.skipped) return renderPluginInit(payload);
   if (payload.installed && payload.issues) return renderHarnessDoctor(payload);
@@ -916,21 +910,16 @@ function renderHarnessStatus(payload) {
       ["installed", payload.installed.length ? payload.installed.join(", ") : "-"],
       ["manifest", payload.manifest ?? "-"],
       ["plugin scaffold", payload.plugin_scaffold?.types ? "yes" : "no"],
-      ["guard policy", payload.guard?.policy ?? "-"],
-      ["inbox", payload.guard?.inbox_dir ?? "-"],
-      ["archive", payload.guard?.archive_dir ?? "-"],
-      ["guard allow", (payload.guard?.allow ?? []).length ? payload.guard.allow.join(", ") : "-"],
       ["fragments", (payload.fragments ?? []).length ? payload.fragments.join(", ") : "-"]
     ])
   ];
   const globalRows = Object.entries(payload.global ?? {}).map(([target, state]) => [
     target,
     state.skill ? "yes" : "no",
-    state.guard_hook ? "yes" : "no",
     state.prompt ? "yes" : "no",
     state.markdown_nudge_hook ? "yes" : "no"
   ]);
-  if (globalRows.length) lines.push("", table(["target", "skill", "guard", "prompt", "md ledger"], globalRows));
+  if (globalRows.length) lines.push("", table(["target", "skill", "prompt", "md ledger"], globalRows));
   const componentRows = Object.entries(payload.global ?? {}).flatMap(([target, state]) => {
     if (!state.selected_components) return [];
     const rows = [
@@ -1788,21 +1777,6 @@ function buildProgram() {
         print(result, jsonOutput(program));
         if (result.block) process.exitCode = 1;
       });
-    });
-  const guardCommand = harnessCommand.command("guard");
-  guardCommand
-    .command("status")
-    .action(async () => {
-      await withVault(globalOptions(program), async (vault) => print(await harnessGuardStatus(vault), jsonOutput(program)));
-    });
-  guardCommand
-    .command("check")
-    .argument("<path>", "Markdown path")
-    .option("--action <action>", "Write action")
-    .action(async (path, options) => {
-      await withVault(globalOptions(program), async (vault) => print(await harnessGuardCheck(vault, path, {
-        action: options.action
-      }), jsonOutput(program)));
     });
 
   const cacheCommand = setHelp(program.command("cache"), "cache");

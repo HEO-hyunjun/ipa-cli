@@ -119,7 +119,6 @@ export function createHarnessService(deps) {
         cli_commit: targetManifest?.cli_commit ?? null,
         skill: hasManagedFile(spec.skillFile),
         session_env_hook: hasManagedFile(join(spec.hooksDir, "ipa-session-env.mjs")),
-        guard_hook: hasManagedFile(join(spec.hooksDir, "ipa-inbox-guard.mjs")),
         prompt_hook: hasManagedFile(join(spec.hooksDir, "ipa-user-prompt-nudge.mjs")),
         markdown_nudge_hook: hasManagedFile(join(spec.hooksDir, "ipa-md-write-nudge.mjs")),
         formatter_gate_hook: hasManagedFile(join(spec.hooksDir, "ipa-formatter-gate.mjs")),
@@ -143,8 +142,7 @@ export function createHarnessService(deps) {
         ? `harness components are older than the installed CLI templates; run: ${outdatedTargets.map((target) => `ipa harness update ${target}`).join(", ")}`
         : null,
       fragments: await listFragments(vaultPath),
-      plugin_scaffold: deps.pluginScaffoldStatus(vaultPath),
-      guard: await deps.guardStatus(vaultPath)
+      plugin_scaffold: deps.pluginScaffoldStatus(vaultPath)
     };
   };
 
@@ -176,15 +174,7 @@ export function createHarnessService(deps) {
     });
     await mkdir(dir, { recursive: true });
     await writeFile(join(dir, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n", "utf8");
-    await writeFile(join(dir, "guard.mjs"), [
-      "#!/usr/bin/env node",
-      "import { spawnSync } from 'node:child_process';",
-      "const target = process.argv[2] ?? '';",
-      "const result = spawnSync('ipa', ['harness', 'guard', 'check', target, '--json'], { stdio: 'inherit' });",
-      "process.exit(result.status ?? 1);",
-      ""
-    ].join("\n"), "utf8");
-    const files = [`.ipa/harness/${spec.name}/manifest.json`, `.ipa/harness/${spec.name}/guard.mjs`, ".ipa/harness/manifest.json"];
+    const files = [`.ipa/harness/${spec.name}/manifest.json`, ".ipa/harness/manifest.json"];
     const skippedUserOwned = [];
     for (const artifact of deps.expectedArtifacts(vaultPath, spec, mapping, selected, options)) {
       if (artifact.scope !== "vault") continue;
@@ -315,7 +305,6 @@ export function createHarnessService(deps) {
         issues.push({ severity: "warn", code: "harness.component_outdated", target, message: `component ${component} differs from the current CLI template; run ipa harness update ${target}` });
       }
       if (!existsSync(resolve(vaultPath, entry.path))) issues.push({ severity: "error", code: "harness.manifest_missing", target, message: `missing ${entry.path}` });
-      if (!existsSync(join(harnessRoot(vaultPath), target, "guard.mjs"))) issues.push({ severity: "warn", code: "harness.guard_missing", target, message: "guard script is missing" });
       if (componentSelected(selected, "skill") && managedFileState(spec.skillFile) === "missing") {
         issues.push({ severity: "warn", code: "harness.global_skill_missing", target, message: `missing managed IPA skill at ${spec.adapter.skillDisplayPath}` });
       }

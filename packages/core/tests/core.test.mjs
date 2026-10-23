@@ -49,8 +49,6 @@ import {
   prepareSearchContext,
   traversal,
   harnessDoctor,
-  harnessGuardCheck,
-  harnessGuardStatus,
   harnessInstall,
   harnessStatus,
   harnessSessionGate,
@@ -1005,7 +1003,7 @@ test("no-op refactor does not rewrite every note", async () => {
   assert.equal(await readFile(alphaPath, "utf8"), before);
 });
 
-test("harness install, doctor and guard enforce inbox-only new markdown writes", async () => {
+test("harness install, doctor and the Stop lint gate cover raw vault Markdown writes", async () => {
   const vault = await fixtureVault();
   const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
   const options = {
@@ -1016,7 +1014,11 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   // Hook scripts now resolve the vault via `ipa config show`, which reads env +
   // the global profile registry. Point that resolution at this test's vault so
   // the spawned hooks operate on the fixture instead of the developer's vault.
-  const hookEnv = { ...process.env, IPA_VAULT_PATH: vault };
+  // The hooks spawn `ipa`, so shim it to this checkout's build rather than
+  // whatever release happens to be installed on PATH.
+  const shimDir = await mkdtemp(join(tmpdir(), "ipa-shim-"));
+  await writeFile(join(shimDir, "ipa"), `#!/bin/sh\nexec "${process.execPath}" "${join(root, "packages", "cli", "dist", "main.js")}" "$@"\n`, { mode: 0o755 });
+  const hookEnv = { ...process.env, IPA_VAULT_PATH: vault, PATH: `${shimDir}:${process.env.PATH}` };
   assert.deepEqual((await harnessStatus(vault, options)).installed, []);
   const install = await harnessInstall(vault, "codex", options);
   assert.equal(install.installed, true);
@@ -1048,8 +1050,9 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   assert.match(skill, /ipa help --all/);
   assert.match(skill, /Never hand-edit `date_created` or `date_modified`/);
   assert.match(skill, /ipa convention/);
-  assert.match(skill, /ipa note finalize "Note Title"/);
-  assert.match(skill, /Core-backed mutations/);
+  assert.match(skill, /Create and edit vault Markdown directly with Write\/Edit; new notes normally start in `00 Inbox\/`/);
+  assert.match(skill, /ipa inbox add <file> --title "Title"/);
+  assert.doesNotMatch(skill, /note finalize|guard blocks|Core-backed mutations/);
   assert.doesNotMatch(skill, /## Evidence Recall|## Skill Routing|formatter plan --note/);
   assert.match(skill, new RegExp(`${vault.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}/\\.agents/skills/`));
   // The global prompt block is pointer-level: it names the entry commands and
@@ -1062,9 +1065,10 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   assert.match(globalPrompt, /ipa help --all/);
   assert.match(globalPrompt, /ipa convention/);
   assert.match(globalPrompt, /skills\/ipa\/SKILL\.md/);
-  assert.match(globalPrompt, /ipa note finalize/);
+  assert.match(globalPrompt, /Create and edit vault Markdown directly; the Stop hook formats and lints edited notes/);
+  assert.doesNotMatch(globalPrompt, /ipa inbox add|note finalize/);
   assert.doesNotMatch(globalPrompt, /even if the user did not mention notes|Meeting or scrum/);
-  assert.match(await readFile(join(home, ".codex", "hooks", "ipa-inbox-guard.mjs"), "utf8"), /shared IPA inbox creation guard/);
+  assert.equal(existsSync(join(home, ".codex", "hooks", "ipa-inbox-guard.mjs")), false);
   const markdownNudge = await readFile(join(home, ".codex", "hooks", "ipa-md-write-nudge.mjs"), "utf8");
   assert.match(markdownNudge, /silently track IPA vault Markdown edits/);
   assert.doesNotMatch(markdownNudge, /additionalContext|formatter plan --note/);
@@ -1093,7 +1097,8 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   assert.match(agentsPrompt, /inbox `00 Inbox`/);
   assert.match(agentsPrompt, /ipa convention/);
   assert.match(agentsPrompt, /ipa <command> --help/);
-  assert.match(agentsPrompt, /ipa note finalize/);
+  assert.match(agentsPrompt, /the Stop hook formats and lints edited notes/);
+  assert.doesNotMatch(agentsPrompt, /note finalize/);
   assert.doesNotMatch(agentsPrompt, /\.agents\/skills|ipa plugin validate|formatter plan --note|ipa-triage/);
   const ruleSkill = await readFile(join(vault, ".agents", "skills", "ipa-rule", "SKILL.md"), "utf8");
   assert.match(ruleSkill, /name: ipa-rule/);
@@ -1164,7 +1169,7 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   const hooks = await readFile(join(home, ".codex", "hooks.json"), "utf8");
   assert.match(hooks, /ipa-session-env\.mjs/);
   assert.match(hooks, /SessionStart/);
-  assert.match(hooks, /ipa-inbox-guard\.mjs/);
+  assert.doesNotMatch(hooks, /ipa-inbox-guard\.mjs|PreToolUse/);
   assert.match(hooks, /ipa-prompt-evidence\.mjs/);
   assert.match(hooks, /ipa-md-write-nudge\.mjs/);
   assert.match(hooks, /ipa-formatter-gate\.mjs/);
@@ -1199,20 +1204,6 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   const promptCwdKey = createHash("sha256").update(promptCwd).digest("hex").slice(0, 16);
   const scopedPrompt = JSON.parse(await readFile(join(vault, ".ipa", "tune", "logs", `current-prompt-${promptCwdKey}.json`), "utf8"));
   assert.equal(scopedPrompt.event_id, promptLog.events[0].event_id);
-  const guardScript = join(home, ".codex", "hooks", "ipa-inbox-guard.mjs");
-  const blocked = spawnSync(process.execPath, [guardScript], {
-    input: JSON.stringify({ tool_name: "Write", tool_input: { file_path: join(vault, "02 Archive", "New.md") } }),
-    env: hookEnv,
-    encoding: "utf8"
-  });
-  assert.equal(blocked.status, 2);
-  assert.match(blocked.stderr, /IPA guard blocked/);
-  const allowed = spawnSync(process.execPath, [guardScript], {
-    input: JSON.stringify({ tool_name: "Write", tool_input: { file_path: join(vault, "00 Inbox", "New.md") } }),
-    env: hookEnv,
-    encoding: "utf8"
-  });
-  assert.equal(allowed.status, 0);
   const nudge = spawnSync(process.execPath, [join(home, ".codex", "hooks", "ipa-md-write-nudge.mjs")], {
     input: JSON.stringify({ tool_name: "Edit", tool_input: { file_path: join(vault, "00 Inbox", "Alpha.md") } }),
     env: hookEnv,
@@ -1234,26 +1225,15 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
     encoding: "utf8"
   });
   assert.equal(needsFormatNudge.status, 0);
+  // The Stop gate formats edited notes itself; formatter patches never block.
   const formatterGate = join(home, ".codex", "hooks", "ipa-formatter-gate.mjs");
-  const blockedFormatter = spawnSync(process.execPath, [formatterGate], {
+  const lintedGate = spawnSync(process.execPath, [formatterGate], {
     input: "{}",
     env: hookEnv,
     encoding: "utf8"
   });
-  assert.equal(blockedFormatter.status, 2);
-  assert.match(blockedFormatter.stderr, /Formatter gate blocked final response/);
-  const blockedFormatterPayload = JSON.parse(blockedFormatter.stdout);
-  assert.deepEqual(Object.keys(blockedFormatterPayload).sort(), ["decision", "reason"]);
-  assert.equal(blockedFormatterPayload.decision, "block");
-  assert.match(blockedFormatterPayload.reason, /note finalize/);
-
-  await formatVault(vault, true, { notes: ["Alpha", "Needs Format"] });
-  const passedFormatter = spawnSync(process.execPath, [formatterGate], {
-    input: "{}",
-    env: hookEnv,
-    encoding: "utf8"
-  });
-  assert.equal(passedFormatter.status, 0);
+  assert.equal(lintedGate.status, 0, lintedGate.stderr);
+  assert.doesNotMatch(await readFile(join(vault, "00 Inbox", "Needs Format.md"), "utf8"), /date_modified: 2026-06-23T/);
   assert.equal(existsSync(pendingPath), false);
 
   // Session-scoped gating: pending notes from another session must not block.
@@ -1281,21 +1261,53 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   });
   assert.equal(otherSessionGate.status, 0);
   assert.equal(existsSync(pendingPath), true);
+  assert.match(await readFile(join(vault, "00 Inbox", "Needs Format.md"), "utf8"), /date_modified: 2026-06-23T/, "another session's edit must not be linted");
+  // A tracked note deleted after its edit must not stop the rest from linting.
+  await writeFile(join(vault, "00 Inbox", "Gone.md"), "# Gone\n", "utf8");
+  spawnSync(process.execPath, [join(home, ".codex", "hooks", "ipa-md-write-nudge.mjs")], {
+    input: JSON.stringify({ session_id: "sess-a", tool_name: "Write", tool_input: { file_path: join(vault, "00 Inbox", "Gone.md") } }),
+    env: hookEnv,
+    encoding: "utf8"
+  });
+  await rm(join(vault, "00 Inbox", "Gone.md"));
   const sameSessionGate = spawnSync(process.execPath, [formatterGate], {
     input: JSON.stringify({ session_id: "sess-a" }),
     env: hookEnv,
     encoding: "utf8"
   });
-  assert.equal(sameSessionGate.status, 2);
-  assert.match(sameSessionGate.stderr, /Formatter gate blocked final response/);
-  await formatVault(vault, true, { notes: ["Needs Format"] });
-  const sameSessionPass = spawnSync(process.execPath, [formatterGate], {
-    input: JSON.stringify({ session_id: "sess-a" }),
+  assert.equal(sameSessionGate.status, 0, sameSessionGate.stderr);
+  assert.doesNotMatch(await readFile(join(vault, "00 Inbox", "Needs Format.md"), "utf8"), /date_modified: 2026-06-23T/);
+  assert.equal(existsSync(pendingPath), false);
+
+  // A validator error blocks once; the linted entry leaves the ledger, so an
+  // error the agent cannot fix never locks the session.
+  await writeFile(
+    join(vault, "00 Inbox", "Bad Type.md"),
+    `---\ndate_created: 2026/05/10 (Sun) 00:00:00\ndate_modified: 2026/05/10 (Sun) 00:00:00\ntype: bogus\nref: ["[[🔖 Topic Index]]"]\ntags: []\n---\n# Bad Type\n\nBody\n`,
+    "utf8"
+  );
+  spawnSync(process.execPath, [join(home, ".codex", "hooks", "ipa-md-write-nudge.mjs")], {
+    input: JSON.stringify({ session_id: "sess-c", tool_name: "Write", tool_input: { file_path: join(vault, "00 Inbox", "Bad Type.md") } }),
     env: hookEnv,
     encoding: "utf8"
   });
-  assert.equal(sameSessionPass.status, 0);
-  assert.equal(existsSync(pendingPath), false);
+  const errorGate = spawnSync(process.execPath, [formatterGate], {
+    input: JSON.stringify({ session_id: "sess-c" }),
+    env: hookEnv,
+    encoding: "utf8"
+  });
+  assert.equal(errorGate.status, 2);
+  assert.match(errorGate.stderr, /Stop lint found 1 validator error/);
+  assert.match(errorGate.stderr, /Bad Type: ipa\.frontmatter\.invalid_type/);
+  const errorGatePayload = JSON.parse(errorGate.stdout);
+  assert.deepEqual(Object.keys(errorGatePayload).sort(), ["decision", "reason"]);
+  assert.equal(errorGatePayload.decision, "block");
+  const errorGateRetry = spawnSync(process.execPath, [formatterGate], {
+    input: JSON.stringify({ session_id: "sess-c" }),
+    env: hookEnv,
+    encoding: "utf8"
+  });
+  assert.equal(errorGateRetry.status, 0, errorGateRetry.stderr);
 
   const claudeInstall = await harnessInstall(vault, "claude", options);
   assert.equal(claudeInstall.installed, true);
@@ -1307,12 +1319,6 @@ test("harness install, doctor and guard enforce inbox-only new markdown writes",
   const claudeTuneSkill = await readFile(join(vault, ".claude", "skills", "ipa-tune", "SKILL.md"), "utf8");
   assert.match(claudeTuneSkill, /name: ipa-tune/);
   assert.match(claudeTuneSkill, /Label Confirmation Protocol/);
-
-  assert.equal((await harnessGuardCheck(vault, "00 Inbox/New.md")).allowed, true);
-  const denied = await harnessGuardCheck(vault, "02 Archive/New.md");
-  assert.equal(denied.allowed, false);
-  assert.match(denied.reason, /inbox/);
-  assert.equal((await harnessGuardCheck(vault, "02 Archive/Topic.md", { action: "edit" })).allowed, true);
 
   const uninstall = await harnessUninstall(vault, "codex", options);
   assert.equal(uninstall.installed, false);
@@ -1352,7 +1358,7 @@ test("harness install registers home-relative ~ hook paths and migrates legacy/d
   const ipaCommands = allCommands.filter((c) => /ipa-[a-z-]+\.mjs/.test(c));
 
   // Every IPA hook is a home-relative ~ path; no absolute or other-machine path remains.
-  assert.equal(ipaCommands.length, 4, "lean default registers only session, guard, raw-edit ledger, and Stop gate hooks");
+  assert.equal(ipaCommands.length, 3, "lean default registers only session, raw-edit ledger, and Stop lint hooks");
   for (const command of ipaCommands) {
     assert.match(command, /^node ~\/\.claude\/hooks\/ipa-[a-z-]+\.mjs$/, `expected ~ path, got: ${command}`);
   }
@@ -1386,7 +1392,7 @@ test("hook scripts resolve the vault path via homedir() with profile fallback in
     components: { with: ["hook:evidence", "hook:call-counter", "hook:vault-ref"] }
   });
 
-  const scripts = ["ipa-inbox-guard.mjs", "ipa-prompt-evidence.mjs", "ipa-md-write-nudge.mjs", "ipa-call-counter.mjs", "ipa-formatter-gate.mjs", "ipa-vault-ref-nudge.mjs"];
+  const scripts = ["ipa-prompt-evidence.mjs", "ipa-md-write-nudge.mjs", "ipa-call-counter.mjs", "ipa-formatter-gate.mjs", "ipa-vault-ref-nudge.mjs"];
   for (const name of scripts) {
     const src = await readFile(join(home, ".claude", "hooks", name), "utf8");
     assert.ok(!src.includes(`const vaultPath = "${vault}"`), `${name} must not hard-code the absolute vault path`);
@@ -1449,7 +1455,7 @@ test("harness install opencode creates OpenCode-native managed artifacts and uni
   const skill = await readFile(join(opencodeHome, "skills", "ipa", "SKILL.md"), "utf8");
   assert.ok(skill.startsWith("---\nname: ipa\n"), "skill YAML frontmatter must be first");
   assert.match(skill, /Do not proactively search the vault/);
-  assert.match(skill, /ipa note finalize/);
+  assert.match(skill, /Create and edit vault Markdown directly/);
 
   // Then: the global OpenCode AGENTS.md prompt keeps explicit recall.
   const globalPrompt = await readFile(join(opencodeHome, "AGENTS.md"), "utf8");
@@ -1587,7 +1593,7 @@ test("harness install with --without hook:evidence keeps the lean default and om
   assert.ok(install.global_files.some((file) => file.endsWith(".codex/skills/ipa/SKILL.md")));
   assert.ok(install.global_files.some((file) => file.endsWith(".codex/AGENTS.md")));
   assert.ok(install.global_files.some((file) => file.endsWith(".codex/hooks/ipa-session-env.mjs")));
-  assert.ok(install.global_files.some((file) => file.endsWith(".codex/hooks/ipa-inbox-guard.mjs")));
+  assert.ok(!install.global_files.some((file) => file.endsWith(".codex/hooks/ipa-inbox-guard.mjs")));
   assert.ok(install.global_files.some((file) => file.endsWith(".codex/hooks/ipa-md-write-nudge.mjs")));
   assert.ok(install.global_files.some((file) => file.endsWith(".codex/hooks/ipa-formatter-gate.mjs")));
 
@@ -1601,14 +1607,14 @@ test("harness install with --without hook:evidence keeps the lean default and om
     .flatMap((groups) => groups.flatMap((g) => (g.hooks ?? []).map((h) => h.command)));
   assert.ok(!allCommands.some((c) => /ipa-prompt-evidence\.mjs/.test(c)), "evidence hook must not be registered");
   assert.ok(allCommands.some((c) => /ipa-session-env\.mjs/.test(c)), "session-env hook must remain");
-  assert.ok(allCommands.some((c) => /ipa-inbox-guard\.mjs/.test(c)), "guard hook must remain");
+  assert.ok(allCommands.some((c) => /ipa-formatter-gate\.mjs/.test(c)), "Stop lint hook must remain");
 
   // Then: the manifest records hook:evidence as omitted and lean-default components as selected.
   const manifest = JSON.parse(await readFile(join(vault, ".ipa", "harness", "codex", "manifest.json"), "utf8"));
   assert.ok(Array.isArray(manifest.components));
   assert.ok(!manifest.components.includes("hook:evidence"), "evidence must be omitted");
   assert.ok(manifest.components.includes("skill"), "skill must remain in the lean default");
-  assert.ok(manifest.components.includes("hook:guard"), "guard must remain in the lean default");
+  assert.ok(manifest.components.includes("hook:formatter-gate"), "Stop lint must remain in the lean default");
   assert.ok(manifest.components.includes("hook:session-env"), "session-env must remain");
 
   // Then: status reports hook:evidence as omitted.
@@ -1636,9 +1642,9 @@ test("harness install/update preserve user-owned forks whose harness marker was 
   const localSkillPath = join(vault, ".claude", "skills", "ipa-rule", "SKILL.md");
   const forkedSkill = forkOf(await readFile(localSkillPath, "utf8"));
   await writeFile(localSkillPath, forkedSkill, "utf8");
-  const guardHookPath = join(home, ".claude", "hooks", "ipa-inbox-guard.mjs");
-  const forkedHook = forkOf(await readFile(guardHookPath, "utf8"));
-  await writeFile(guardHookPath, forkedHook, "utf8");
+  const forkedHookPath = join(home, ".claude", "hooks", "ipa-formatter-gate.mjs");
+  const forkedHook = forkOf(await readFile(forkedHookPath, "utf8"));
+  await writeFile(forkedHookPath, forkedHook, "utf8");
 
   // When: harness update runs (uninstall + reinstall).
   const update = await harnessUpdate(vault, "claude", options);
@@ -1646,43 +1652,43 @@ test("harness install/update preserve user-owned forks whose harness marker was 
   // Then: both forks survive byte-for-byte, are reported as skipped, and no
   // .bak backup is dropped next to them.
   assert.equal(await readFile(localSkillPath, "utf8"), forkedSkill, "user-owned vault-local skill must survive update");
-  assert.equal(await readFile(guardHookPath, "utf8"), forkedHook, "user-owned hook script must survive update");
+  assert.equal(await readFile(forkedHookPath, "utf8"), forkedHook, "user-owned hook script must survive update");
   assert.ok(update.skipped_user_owned.includes(".claude/skills/ipa-rule/SKILL.md"), "vault-local fork must be reported as skipped");
-  assert.ok(update.skipped_user_owned.some((path) => path.endsWith("ipa-inbox-guard.mjs")), "global fork must be reported as skipped");
+  assert.ok(update.skipped_user_owned.some((path) => path.endsWith("ipa-formatter-gate.mjs")), "global fork must be reported as skipped");
   const skillDir = await readdir(dirname(localSkillPath));
-  const hooksDir = await readdir(dirname(guardHookPath));
+  const hooksDir = await readdir(dirname(forkedHookPath));
   assert.ok(![...skillDir, ...hooksDir].some((name) => name.includes(".bak")), "user-owned files must not leave .bak backups");
 
   // Then: doctor treats the forks as user-owned, not missing or outdated.
   const doctor = await harnessDoctor(vault, options);
   const codes = (doctor.issues ?? []).map((issue) => issue.code);
   assert.ok(!codes.includes("harness.local_skill_missing"), "forked vault-local skill must not be flagged missing");
-  assert.ok(!codes.includes("harness.global_guard_hook_missing"), "forked hook must not be flagged missing");
+  assert.ok(!codes.includes("harness.global_formatter-gate_hook_missing"), "forked hook must not be flagged missing");
   assert.ok(!codes.includes("harness.component_outdated"), "forks must not be flagged outdated");
 
   // Then: the forked hook still gets a registration check — deleting its
   // hooks-config entry is a real problem even for user-owned scripts.
   const settingsPath = join(home, ".claude", "settings.json");
   const settings = JSON.parse(await readFile(settingsPath, "utf8"));
-  settings.hooks.PreToolUse = (settings.hooks.PreToolUse ?? []).filter((group) =>
-    !(group.hooks ?? []).some((hook) => hook.command.includes("ipa-inbox-guard.mjs")));
+  settings.hooks.Stop = (settings.hooks.Stop ?? []).filter((group) =>
+    !(group.hooks ?? []).some((hook) => hook.command.includes("ipa-formatter-gate.mjs")));
   await writeFile(settingsPath, JSON.stringify(settings, null, 2), "utf8");
   const unregistered = await harnessDoctor(vault, options);
   assert.ok(
-    (unregistered.issues ?? []).some((issue) => issue.code === "harness.global_guard_hook_unregistered"),
+    (unregistered.issues ?? []).some((issue) => issue.code === "harness.global_formatter-gate_hook_unregistered"),
     "user-owned hook without a hooks-config entry must still be flagged as unregistered"
   );
 
   // Then: status lists the forked components as user-owned.
   const status = await harnessStatus(vault, options);
   assert.ok(status.global.claude.user_owned_components.includes("local-skills"));
-  assert.ok(status.global.claude.user_owned_components.includes("hook:guard"));
+  assert.ok(status.global.claude.user_owned_components.includes("hook:formatter-gate"));
 
   await harnessUninstall(vault, "claude", options);
 
   // Then: uninstall also leaves user-owned forks in place.
   assert.equal(await readFile(localSkillPath, "utf8"), forkedSkill, "user-owned vault-local skill must survive uninstall");
-  assert.equal(await readFile(guardHookPath, "utf8"), forkedHook, "user-owned hook script must survive uninstall");
+  assert.equal(await readFile(forkedHookPath, "utf8"), forkedHook, "user-owned hook script must survive uninstall");
 });
 
 test("harness install prunes retired managed skills and preserves user-owned forks", async () => {
@@ -1982,7 +1988,9 @@ test("harness prompt surfaces render field and folder names from the config mapp
 
   const globalPrompt = await readFile(join(home, ".claude", "CLAUDE.md"), "utf8");
   assert.match(globalPrompt, /ipa help --all/);
-  assert.match(globalPrompt, /ipa note finalize/);
+  assert.match(globalPrompt, /the Stop hook formats and lints edited notes/);
+  // The direct-write guidance renders the mapped inbox folder.
+  assert.match(skill, /new notes normally start in `10 Intake\/`/);
 
   await harnessUninstall(vault, "claude", options);
 });
@@ -2063,7 +2071,8 @@ test("convention show renders concepts through the active config mapping and vau
   assert.equal(result.status, "ok");
   assert.match(result.markdown, /`link` — wikilinks to parent index\/root notes/);
   assert.match(result.markdown, /--field link --add/);
-  assert.match(result.markdown, /`10 Intake` — every new note is created here/);
+  assert.match(result.markdown, /`10 Intake` — new notes normally start here/);
+  assert.doesNotMatch(result.markdown, /guard|formatter plan --note/);
   assert.doesNotMatch(result.markdown, /`ref` — wikilinks/);
 
   // Then: the design-intent SoT section renders with the mapped field names.
@@ -2084,17 +2093,17 @@ test("convention show renders concepts through the active config mapping and vau
   assert.deepEqual(bare.fragments, []);
 });
 
-test("harness install with --only hook:guard creates guard hook and required opencode-plugin dependency for opencode", async () => {
+test("harness install with --only hook:markdown-nudge creates the edit ledger and required opencode-plugin dependency for opencode", async () => {
   // Given: a fixture vault and an isolated home directory.
   const vault = await fixtureVault();
   const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
-  const options = { homeDir: home, profile: "ipa-test", components: { only: ["hook:guard"] } };
+  const options = { homeDir: home, profile: "ipa-test", components: { only: ["hook:markdown-nudge"] } };
   const opencodeHome = join(home, ".config", "opencode");
 
   // Given: no target is installed yet.
   assert.deepEqual((await harnessStatus(vault, options)).installed, []);
 
-  // When: install opencode with only the guard hook component.
+  // When: install opencode with only the edit ledger hook component.
   const install = await harnessInstall(vault, "opencode", options);
 
   // Then: install succeeds.
@@ -2104,28 +2113,28 @@ test("harness install with --only hook:guard creates guard hook and required ope
   assert.ok(install.global_files.some((file) => file.endsWith(".config/opencode/plugins/ipa-harness.js")));
   assert.ok(existsSync(join(opencodeHome, "plugins", "ipa-harness.js")));
 
-  // Then: the global skill is NOT created because only hook:guard was selected.
+  // Then: the global skill is NOT created because only hook:markdown-nudge was selected.
   assert.equal(existsSync(join(opencodeHome, "skills", "ipa", "SKILL.md")), false);
 
   // Then: the global prompt is NOT created.
   assert.equal(existsSync(join(opencodeHome, "AGENTS.md")), false);
 
-  // Then: the manifest records exactly hook:guard and opencode-plugin as selected components.
+  // Then: the manifest records exactly hook:markdown-nudge and opencode-plugin as selected components.
   const manifest = JSON.parse(await readFile(join(vault, ".ipa", "harness", "opencode", "manifest.json"), "utf8"));
   assert.ok(Array.isArray(manifest.components));
-  assert.ok(manifest.components.includes("hook:guard"), "guard must be selected");
+  assert.ok(manifest.components.includes("hook:markdown-nudge"), "edit ledger must be selected");
   assert.ok(manifest.components.includes("opencode-plugin"), "opencode-plugin must be auto-selected as a dependency of hook:*");
   assert.ok(!manifest.components.includes("skill"), "skill must not be selected");
   assert.ok(!manifest.components.includes("hook:evidence"), "evidence must not be selected");
   assert.ok(!manifest.components.includes("prompt"), "prompt must not be selected");
 
-  // Then: status reports hook:guard as selected and skill/prompt as omitted.
+  // Then: status reports hook:markdown-nudge as selected and skill/prompt as omitted.
   const status = await harnessStatus(vault, options);
-  assert.ok(status.components.selected.includes("hook:guard"));
+  assert.ok(status.components.selected.includes("hook:markdown-nudge"));
   assert.ok(status.components.omitted.includes("skill"));
   assert.ok(status.components.omitted.includes("prompt"));
 
-  // Then: doctor is ok because only the guard hook is required.
+  // Then: doctor is ok because only the edit ledger hook is required.
   assert.equal((await harnessDoctor(vault, options)).status, "ok");
 
   await harnessUninstall(vault, "opencode", options);
@@ -2488,33 +2497,20 @@ test("opencode plugin hook:markdown-nudge records pending formatter state after 
   }
 });
 
-test("opencode plugin hook:guard blocks new markdown outside inbox on tool.execute.before", async () => {
+test("opencode plugin default install never blocks vault Markdown writes", async () => {
   const vault = await fixtureVault();
   const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
-  const options = { homeDir: home, profile: "ipa-test", components: { only: ["hook:guard"] } };
-  const opencodeHome = join(home, ".config", "opencode");
+  const options = { homeDir: home, profile: "ipa-test" };
   const previousVaultEnv = process.env.IPA_VAULT_PATH;
   process.env.IPA_VAULT_PATH = vault;
 
   try {
     await harnessInstall(vault, "opencode", options);
-
-    const pluginPath = join(opencodeHome, "plugins", "ipa-harness.js");
-    const pluginModule = await import(pathToFileURL(pluginPath).href);
-    const plugin = await pluginModule.IPAHarnessPlugin();
-    const beforeHook = plugin.hooks["tool.execute.before"];
-    assert.ok(typeof beforeHook === "function", "tool.execute.before hook must be registered for guard");
-
-    const outsideInboxRel = "01 Project/OutsideNote.md";
-    const outsideAbs = join(vault, outsideInboxRel);
-    const decision = await beforeHook({ output: { args: { filePath: outsideAbs } }, cwd: vault });
-    assert.equal(decision.decision, "block", "guard must block new markdown outside inbox");
-    assert.match(decision.reason, /IPA guard blocked/);
-
-    const inboxRel = "00 Inbox/InboxNote.md";
-    const inboxAbs = join(vault, inboxRel);
-    const allowed = await beforeHook({ output: { args: { filePath: inboxAbs } }, cwd: vault });
-    assert.notEqual(allowed.decision, "block", "guard must not block new markdown inside inbox");
+    const pluginPath = join(home, ".config", "opencode", "plugins", "ipa-harness.js");
+    assert.doesNotMatch(await readFile(pluginPath, "utf8"), /guard/);
+    const plugin = await (await import(pathToFileURL(pluginPath).href)).IPAHarnessPlugin();
+    assert.equal(plugin.hooks["tool.execute.before"], undefined, "no pre-write hook may block raw Markdown writes");
+    assert.equal(typeof plugin.hooks["tool.execute.after"], "function", "the edit ledger still records writes for Stop lint");
 
     await harnessUninstall(vault, "opencode", options);
   } finally {
@@ -2569,7 +2565,6 @@ test("opencode full install reports plugin-backed hook components as present in 
   const status = await harnessStatus(vault, options);
   const components = status.global.opencode.components;
   assert.equal(components["hook:session-env"], true, "hook:session-env must be present via plugin");
-  assert.equal(components["hook:guard"], true, "hook:guard must be present via plugin");
   assert.equal(components["hook:markdown-nudge"], true, "hook:markdown-nudge must be present via plugin");
   assert.equal(components["hook:formatter-gate"], true, "hook:formatter-gate must be present via plugin");
   assert.equal(components["hook:evidence"], true, "hook:evidence must be present via plugin");
@@ -2972,16 +2967,16 @@ test("harness status/doctor flag outdated components and harness update reinstal
   assert.match(status.global.codex.cli_version ?? "", /^\d+\.\d+\.\d+/);
 
   // Simulate files written by an older CLI: managed marker intact, content stale.
-  const guardHook = join(home, ".codex", "hooks", "ipa-inbox-guard.mjs");
-  await writeFile(guardHook, `${await readFile(guardHook, "utf8")}\n// stale template line\n`, "utf8");
+  const ledgerHook = join(home, ".codex", "hooks", "ipa-md-write-nudge.mjs");
+  await writeFile(ledgerHook, `${await readFile(ledgerHook, "utf8")}\n// stale template line\n`, "utf8");
   const localPrompt = join(vault, "AGENTS.md");
   const promptText = await readFile(localPrompt, "utf8");
   await writeFile(localPrompt, promptText.replace("<!-- IPA_HARNESS_MANAGED_BEGIN:ipa-harness -->", "<!-- IPA_HARNESS_MANAGED_BEGIN:ipa-harness -->\nSTALE"), "utf8");
 
   status = await harnessStatus(vault, options);
-  assert.deepEqual([...status.outdated.codex].sort(), ["hook:guard", "local-prompt"]);
+  assert.deepEqual([...status.outdated.codex].sort(), ["hook:markdown-nudge", "local-prompt"]);
   assert.match(status.update_hint, /ipa harness update codex/);
-  assert.deepEqual(status.global.codex.outdated_components.sort(), ["hook:guard", "local-prompt"]);
+  assert.deepEqual(status.global.codex.outdated_components.sort(), ["hook:markdown-nudge", "local-prompt"]);
   const doctorReport = await harnessDoctor(vault, options);
   const outdatedIssues = doctorReport.issues.filter((issue) => issue.code === "harness.component_outdated");
   assert.equal(outdatedIssues.length, 2);
@@ -2997,7 +2992,7 @@ test("harness status/doctor flag outdated components and harness update reinstal
   status = await harnessStatus(vault, options);
   assert.deepEqual(status.outdated, {});
   assert.equal(existsSync(join(home, ".codex", "hooks", "ipa-prompt-evidence.mjs")), false, "omitted evidence hook must stay uninstalled after update");
-  assert.equal(existsSync(guardHook), true);
+  assert.equal(existsSync(ledgerHook), true);
 
   const missing = await harnessUpdate(vault, "claude", options);
   assert.equal(missing.status, "error");
@@ -3477,49 +3472,6 @@ test("searchVaultMany runs several queries against one prepared context", async 
   assert.deepEqual(many.queries[0].results, single.results);
 });
 
-test("harness guard check allows paths excluded from note indexing", async () => {
-  const vault = await fixtureVault();
-  const configPath = join(vault, ".ipa", "config.yaml");
-  const config = await readFile(configPath, "utf8");
-  await writeFile(configPath, `${config.trimEnd()}\nfiles:\n  exclude:\n    - .tmp/**\n`, "utf8");
-
-  const tmp = await harnessGuardCheck(vault, ".tmp/scratch.md", { action: "create" });
-  assert.equal(tmp.allowed, true, JSON.stringify(tmp));
-  const nested = await harnessGuardCheck(vault, ".tmp/deep/plan.md", { action: "create" });
-  assert.equal(nested.allowed, true, JSON.stringify(nested));
-  const ipaDir = await harnessGuardCheck(vault, ".ipa/plans/plan.md", { action: "create" });
-  assert.equal(ipaDir.allowed, true, JSON.stringify(ipaDir));
-
-  const blocked = await harnessGuardCheck(vault, "01 Project/New Note.md", { action: "create" });
-  assert.equal(blocked.allowed, false, JSON.stringify(blocked));
-});
-
-test("harness guard check honors harness.guard.allow patterns from config", async () => {
-  const vault = await fixtureVault();
-  const configPath = join(vault, ".ipa", "config.yaml");
-  const config = await readFile(configPath, "utf8");
-  await writeFile(
-    configPath,
-    `${config.trimEnd()}\nharness:\n  guard:\n    allow:\n      - "02 Archive/회의록/**"\n      - "01 Project"\n`,
-    "utf8"
-  );
-
-  // Allowed: new markdown under a declared allow pattern.
-  const meeting = await harnessGuardCheck(vault, "02 Archive/회의록/2026-07 주간회의.md", { action: "create" });
-  assert.equal(meeting.allowed, true, JSON.stringify(meeting));
-  assert.match(meeting.reason, /guard allow pattern/);
-  const project = await harnessGuardCheck(vault, "01 Project/plan.md", { action: "create" });
-  assert.equal(project.allowed, true, JSON.stringify(project));
-
-  // Still blocked: archive paths outside the allow patterns.
-  const blocked = await harnessGuardCheck(vault, "02 Archive/직행 노트.md", { action: "create" });
-  assert.equal(blocked.allowed, false, JSON.stringify(blocked));
-
-  // Guard status exposes the configured allow patterns.
-  const guard = await harnessGuardStatus(vault);
-  assert.deepEqual(guard.allow, ["02 Archive/회의록/**", "01 Project"]);
-});
-
 test("doctor --check runs a single check and rejects unknown names", async () => {
   const vault = await fixtureVault();
   await rm(join(vault, ".ipa", "config.yaml"), { force: true });
@@ -3643,13 +3595,13 @@ test("harness doctor flags installed hook scripts that lost their hooks-config r
 
   const hooksConfigPath = join(home, ".codex", "hooks.json");
   const config = JSON.parse(await readFile(hooksConfigPath, "utf8"));
-  config.hooks.PreToolUse = (config.hooks.PreToolUse ?? []).filter(
-    (group) => !(group.hooks ?? []).some((hook) => (hook.command ?? "").includes("ipa-inbox-guard.mjs"))
+  config.hooks.Stop = (config.hooks.Stop ?? []).filter(
+    (group) => !(group.hooks ?? []).some((hook) => (hook.command ?? "").includes("ipa-formatter-gate.mjs"))
   );
   await writeFile(hooksConfigPath, JSON.stringify(config, null, 2), "utf8");
 
   report = await harnessDoctor(vault, options);
-  const unregistered = report.issues.filter((issue) => issue.code === "harness.global_guard_hook_unregistered");
+  const unregistered = report.issues.filter((issue) => issue.code === "harness.global_formatter-gate_hook_unregistered");
   assert.equal(unregistered.length, 1, JSON.stringify(report.issues));
   assert.equal(unregistered[0].target, "codex");
   assert.match(unregistered[0].message, /ipa harness update codex/);

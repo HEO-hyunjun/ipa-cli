@@ -7,7 +7,6 @@ export const HARNESS_COMPONENTS = [
   "opencode-plugin",
   "permissions",
   "hook:session-env",
-  "hook:guard",
   "hook:markdown-nudge",
   "hook:call-counter",
   "hook:formatter-gate",
@@ -17,7 +16,6 @@ export const HARNESS_COMPONENTS = [
 
 export const HARNESS_HOOK_COMPONENT_TO_SCRIPT = {
   "hook:session-env": "ipa-session-env.mjs",
-  "hook:guard": "ipa-inbox-guard.mjs",
   "hook:markdown-nudge": "ipa-md-write-nudge.mjs",
   "hook:call-counter": "ipa-call-counter.mjs",
   "hook:formatter-gate": "ipa-formatter-gate.mjs",

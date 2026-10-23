@@ -60,7 +60,8 @@ test("CLI help and key smoke commands run through ipa-test profile", async () =>
   assert.match(help, /help\s+Show help for any registered command path/);
   assert.doesNotMatch(help, /list-channels/);
   assert.doesNotMatch(help, /plugin dry-run/);
-  assert.match(help, /ipa note finalize "Edited Note"/);
+  assert.match(help, /ipa inbox add draft\.md --title "Memo"/);
+  assert.doesNotMatch(help, /ipa note finalize/);
   const allHelp = run(env, ["help", "--all"]);
   assert.match(allHelp, /Core commands:/);
   assert.match(allHelp, /convention/);
@@ -429,8 +430,8 @@ test("harness help lists opencode target, selector options, and default install"
   assert.match(help, /--with <component\.\.\.>/);
   assert.match(help, /--without <component\.\.\.>/);
   const parent = run(env, ["harness", "--help"]);
-  assert.match(parent, /gate\s+Run the session-end formatter gate/);
-  assert.match(parent, /guard\s+Inspect or evaluate the inbox write guard/);
+  assert.match(parent, /gate\s+Run the session-end lint gate/);
+  assert.doesNotMatch(parent, /guard/);
 });
 
 test("harness install accepts component selectors for opencode and codex", async () => {
@@ -454,9 +455,9 @@ test("harness install accepts component selectors for opencode and codex", async
   assert.equal(without.target, "opencode");
   assert.equal(without.installed, true);
 
-  // JSON: install codex --only hook:guard
+  // JSON: install codex --only hook:formatter-gate
   const codexOnly = JSON.parse(
-    run(harnessEnv, ["--json", "harness", "install", "codex", "--only", "hook:guard"])
+    run(harnessEnv, ["--json", "harness", "install", "codex", "--only", "hook:formatter-gate"])
   );
   assert.equal(codexOnly.status, "ok");
   assert.equal(codexOnly.target, "codex");
@@ -630,10 +631,10 @@ test("harness status flags stale components and harness update reinstalls them v
   const harnessEnv = { ...env, IPA_HARNESS_HOME: home };
   run(harnessEnv, ["--json", "harness", "install", "codex"]);
 
-  const hook = join(home, ".codex", "hooks", "ipa-inbox-guard.mjs");
+  const hook = join(home, ".codex", "hooks", "ipa-session-env.mjs");
   await writeFile(hook, `${await readFile(hook, "utf8")}\n// stale\n`, "utf8");
   const status = JSON.parse(run(harnessEnv, ["--json", "harness", "status"]));
-  assert.deepEqual(status.outdated, { codex: ["hook:guard"] });
+  assert.deepEqual(status.outdated, { codex: ["hook:session-env"] });
   assert.match(status.update_hint, /ipa harness update codex/);
 
   const updated = JSON.parse(run(harnessEnv, ["--json", "harness", "update", "codex"]));
@@ -708,7 +709,7 @@ test("harness status prompt column reflects the global prompt block, not the evi
   const status = run(harnessEnv, ["harness", "status"]);
   const row = status.split("\n").find((line) => line.trim().startsWith("claude"));
   assert.ok(row, `missing claude row in:\n${status}`);
-  assert.match(row, /claude\s+yes\s+yes\s+yes\s+yes/);
+  assert.match(row, /claude\s+yes\s+yes\s+yes/);
 });
 
 test("harness doctor text output groups issues per installed target", async () => {
@@ -717,7 +718,7 @@ test("harness doctor text output groups issues per installed target", async () =
   const harnessEnv = { ...env, IPA_HARNESS_HOME: home };
   run(harnessEnv, ["--json", "harness", "install", "codex"]);
   run(harnessEnv, ["--json", "harness", "install", "claude"]);
-  const hook = join(home, ".codex", "hooks", "ipa-inbox-guard.mjs");
+  const hook = join(home, ".codex", "hooks", "ipa-session-env.mjs");
   await writeFile(hook, `${await readFile(hook, "utf8")}\n// stale\n`, "utf8");
   const text = run(harnessEnv, ["harness", "doctor"]);
   assert.match(text, /codex[\s\S]*harness\.component_outdated/);

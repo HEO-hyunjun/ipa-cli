@@ -8,7 +8,6 @@ const defaultComponents = [
   "prompt",
   "local-prompt",
   "hook:session-env",
-  "hook:guard",
   "hook:markdown-nudge",
   "hook:formatter-gate"
 ];

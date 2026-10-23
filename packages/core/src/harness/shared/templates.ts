@@ -18,7 +18,7 @@ This ${tool} environment has the IPA CLI installed for the user's private note v
 - Code and git are authoritative for current behavior. Use vault notes for intent and private history, and report conflicts.
 - The CLI help is the command source of truth: \`ipa help\`, \`ipa help --all\`, and \`ipa <command> --help\`. IPA concepts and active vault rules: \`ipa convention\`.
 - Full workflow: the \`ipa\` skill at \`${skillPath}\`.
-- Create notes with \`ipa inbox add\`. Core note mutations finalize themselves; after a raw Markdown edit run one \`ipa note finalize "Note Title"\` call.`;
+- Create and edit vault Markdown directly; the Stop hook formats and lints edited notes.`;
 }
 
 function profileRegistryDisplay() {
@@ -314,9 +314,8 @@ Profile registry: ${profileRegistryDisplay()}
 
 ## Write
 
-- Create Markdown through \`${prefix} inbox add\`; the guard blocks new notes outside the mapped inbox.
-- Core-backed mutations such as \`${prefix} inbox add\`, \`${prefix} note set --apply\`, and \`${prefix} note replace --apply\` format and validate in the same call.
-- After a raw editor Write/Edit, run \`${prefix} note finalize "Note Title"\` once. The Stop gate checks any edited note still pending.
+- Create and edit vault Markdown directly with Write/Edit; new notes normally start in \`${mapping.inbox_dir}/\`. The Stop hook formats edited notes and lints them, blocking only on validator errors.
+- To capture into the inbox from outside the vault, run \`${prefix} inbox add <file> --title "Title"\`: it resolves the vault and fills frontmatter, so the vault path is not needed.
 - Mutations preview unless the command says otherwise. For an already-authorized single-note change, apply it; for bulk changes, show the plan and obtain confirmation first.
 - Never hand-edit \`${mapping.created_at}\` or \`${mapping.updated_at}\`.
 
@@ -339,6 +338,6 @@ This vault has an IPA CLI harness installed. For explicit vault work, use the gl
 - Folders: inbox \`${mapping.inbox_dir}\`, project \`${mapping.project_dir}\`, archive \`${mapping.archive_dir}\`
 - Vault config: .ipa/config.yaml; profile registry: ${profileRegistryDisplay()}
 - Concepts and policy: \`${prefix} convention\`. Exact commands: \`${prefix} help\` and \`${prefix} <command> --help\`.
-- Core note mutations finalize themselves; after raw Markdown edits run \`${prefix} note finalize "Note Title"\` once.
+- Create and edit Markdown directly; the Stop hook formats and lints edited notes.
 `;
 }

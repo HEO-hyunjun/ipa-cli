@@ -21,7 +21,7 @@ test("harness provider registry exposes complete, independent adapters", () => {
   assert.equal(opencode.targetSpec("/tmp/home").pluginFile, "/tmp/home/.config/opencode/plugins/ipa-harness.js");
   assert.equal(codex.hookRegistration("hook:vault-ref").event, "UserPromptSubmit");
   assert.equal(claude.hookRegistration("hook:formatter-gate").event, "Stop");
-  assert.equal(opencode.hookRegistration("hook:guard"), null);
+  assert.equal(opencode.hookRegistration("hook:formatter-gate"), null);
 
   assert.equal(codex.userPromptOutput("message"), '{ hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: message } }');
   assert.equal(codex.stopBlockOutput("message"), '{ decision: "block", reason: message }');
@@ -31,8 +31,8 @@ test("harness provider registry exposes complete, independent adapters", () => {
 
 test("harness component selection delegates provider dependencies to the adapter", () => {
   const providers = Object.fromEntries(harnessProviders().map((provider) => [provider.id, provider]));
-  const opencode = resolveHarnessComponents(providers.opencode, { components: { only: ["hook:guard"] } });
-  assert.deepEqual(opencode.selected, ["hook:guard", "opencode-plugin"]);
+  const opencode = resolveHarnessComponents(providers.opencode, { components: { only: ["hook:formatter-gate"] } });
+  assert.deepEqual(opencode.selected, ["hook:formatter-gate", "opencode-plugin"]);
   assert.throws(
     () => resolveHarnessComponents(providers.codex, { components: { only: ["permissions"] } }),
     /unknown harness component: permissions/
@@ -49,7 +49,6 @@ test("common harness layers contain no provider-name conditionals", async () => 
     "packages/core/src/harness/managedFiles.ts",
     "packages/core/src/harness/manifest.ts",
     "packages/core/src/harness/gate.ts",
-    "packages/core/src/harness/guard.ts",
     "packages/core/src/harness/shared/hookConfig.ts",
     "packages/core/src/harness/shared/hookTemplates.ts",
     "packages/core/src/harness/shared/templates.ts"

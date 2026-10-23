@@ -63,18 +63,14 @@ export function createTargetManifest({ adapter, spec, selected, omitted, selecti
         },
         policy: "enable search-event logging for plain ipa search commands in agent sessions"
       },
-      guard: {
-        command: "ipa harness guard check <vault-relative-path>",
-        policy: "new markdown files must be created under the configured inbox folder"
-      },
       prompt_evidence: {
         policy: "record prompt/search pairs for tuning when hook:evidence is selected"
       },
       markdown_edit_ledger: {
-        policy: "silently record raw Markdown edits for the session-end formatter gate"
+        policy: "silently record raw Markdown edits for the session-end lint"
       },
       formatter_gate: {
-        policy: "block final response while edited vault notes still have formatter patches"
+        policy: "format and lint edited vault notes at session end; block once on validator errors"
       }
     }
   };
