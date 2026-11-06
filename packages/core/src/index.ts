@@ -4893,7 +4893,10 @@ function buildLinkSuggestionIdf(notes, stopwords = LINK_SUGGEST_QUERY_STOPWORDS)
       ...(note.headings ?? []).map((heading) => heading.title),
       stripLinkSuggestionSource(note.body)
     ].filter(Boolean).join("\n"));
-    for (const token of new Set(linkSuggestionTokenList(text, stopwords))) {
+    // A note counts once per token, so each distinct token is filtered once
+    // (linkSuggestionTokenList would filter every occurrence).
+    for (const token of new Set(tokenize(text))) {
+      if (!usefulLinkSuggestionQueryToken(token, stopwords)) continue;
       documentFrequency.set(token, (documentFrequency.get(token) ?? 0) + 1);
     }
   }
