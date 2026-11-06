@@ -4882,26 +4882,84 @@ function linkSuggestionTokenList(text, stopwords = LINK_SUGGEST_QUERY_STOPWORDS)
     .filter((token) => usefulLinkSuggestionQueryToken(token, stopwords));
 }
 
-function buildLinkSuggestionIdf(notes, stopwords = LINK_SUGGEST_QUERY_STOPWORDS) {
-  const documentFrequency = new Map();
-  for (const note of notes) {
-    const text = searchableTitle([
-      note.id,
-      ...(note.aliases ?? []),
-      ...(note.refs ?? []),
-      ...(note.tags ?? []),
-      ...(note.headings ?? []).map((heading) => heading.title),
-      stripLinkSuggestionSource(note.body)
-    ].filter(Boolean).join("\n"));
-    // A note counts once per token, so each distinct token is filtered once
-    // (linkSuggestionTokenList would filter every occurrence).
-    for (const token of new Set(tokenize(text))) {
-      if (!usefulLinkSuggestionQueryToken(token, stopwords)) continue;
-      documentFrequency.set(token, (documentFrequency.get(token) ?? 0) + 1);
+// The distinct tokens of everything a note is known by plus its prose — the
+// unit the link-suggestion IDF counts. Stopwords are filtered later, so the
+// token sets do not depend on the vault's link vocabulary.
+function linkSuggestionNoteTokens(note) {
+  const text = searchableTitle([
+    note.id,
+    ...(note.aliases ?? []),
+    ...(note.refs ?? []),
+    ...(note.tags ?? []),
+    ...(note.headings ?? []).map((heading) => heading.title),
+    stripLinkSuggestionSource(note.body)
+  ].filter(Boolean).join("\n"));
+  return [...new Set(tokenize(text))];
+}
+
+const LINK_IDF_CACHE_VERSION = 1;
+
+function linkIdfCachePath(vaultPath) {
+  return join(vaultPath, ".ipa", "cache", "link-idf.json");
+}
+
+// Per-note token sets for the IDF, cached in .ipa/cache/link-idf.json by file
+// (mtime, size) like bm25.bin: a CLI run, or an Obsidian context rebuilt after
+// one edit, re-tokenizes only the notes that changed. Tokenizing the whole
+// vault was most of a one-shot `link suggest`. Returns null when a note file
+// cannot be stat'ed; the caller then tokenizes everything without the cache.
+function cachedLinkSuggestionTokens(vaultPath, notes, mapping) {
+  const stats = bm25NoteStats(notes);
+  if (!stats) return null;
+  const mappingKey = mappingFingerprint(mapping ?? DEFAULT_MAPPING);
+  const path = linkIdfCachePath(vaultPath);
+  let cached = null;
+  try {
+    const parsed = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : null;
+    if (parsed?.version === LINK_IDF_CACHE_VERSION && parsed.mapping === mappingKey) cached = parsed;
+  } catch {
+    cached = null;
+  }
+  let dirty = !cached || Object.keys(cached.files ?? {}).length !== notes.length;
+  const tokensByNote = notes.map((note) => {
+    const [mtime, size] = stats.get(note.relPath);
+    const entry = cached?.files?.[note.relPath];
+    if (entry && entry[0] === mtime && entry[1] === size) return entry[2].map((index) => cached.terms[index]);
+    dirty = true;
+    return linkSuggestionNoteTokens(note);
+  });
+  if (dirty) {
+    try {
+      const termIndex = new Map();
+      const files = {};
+      notes.forEach((note, i) => {
+        const [mtime, size] = stats.get(note.relPath);
+        files[note.relPath] = [mtime, size, tokensByNote[i].map((token) => {
+          let index = termIndex.get(token);
+          if (index === undefined) termIndex.set(token, (index = termIndex.size));
+          return index;
+        })];
+      });
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(`${path}.tmp`, JSON.stringify({ version: LINK_IDF_CACHE_VERSION, mapping: mappingKey, terms: [...termIndex.keys()], files }));
+      renameSync(`${path}.tmp`, path);
+    } catch {
+      // The cache is an optimization; never fail a suggestion over it.
     }
+  }
+  return tokensByNote;
+}
+
+function buildLinkSuggestionIdf(notes, stopwords = LINK_SUGGEST_QUERY_STOPWORDS, options = {}) {
+  const tokensByNote = (options.vaultPath && cachedLinkSuggestionTokens(options.vaultPath, notes, options.mapping)) ||
+    notes.map(linkSuggestionNoteTokens);
+  const documentFrequency = new Map();
+  for (const tokens of tokensByNote) {
+    for (const token of tokens) documentFrequency.set(token, (documentFrequency.get(token) ?? 0) + 1);
   }
   const idf = new Map();
   for (const [token, count] of documentFrequency.entries()) {
+    if (!usefulLinkSuggestionQueryToken(token, stopwords)) continue;
     idf.set(token, Math.log(1 + notes.length / (1 + count)));
   }
   return idf;
@@ -5076,7 +5134,7 @@ export async function suggestLinks(vaultPath, noteName = null, options = {}) {
   // 전체 본문을 토큰화해서, 제안 한 번에 드는 시간의 1/4을 차지했다.
   const shared = noteName
     ? (context.linkSuggestShared ??= {
-        idf: buildLinkSuggestionIdf(notes, vocab.stopwords),
+        idf: buildLinkSuggestionIdf(notes, vocab.stopwords, { vaultPath, mapping: context.mapping }),
         rootSets: buildRootSets(notes, lookup)
       })
     : null;

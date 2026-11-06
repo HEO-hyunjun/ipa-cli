@@ -337,6 +337,33 @@ test("link suggestions offer the indexes similar notes ref, project indexes firs
   assert.ok(after.includes("🔖 Arch Index"));
 });
 
+test("link suggestion IDF cache follows note edits", async () => {
+  const vault = await fixtureVault();
+  await mkdir(join(vault, "02 Archive"), { recursive: true });
+  const note = (body) =>
+    `---\ndate_created: 2026/05/10 (Sun) 00:00:00\ndate_modified: 2026/05/10 (Sun) 00:00:00\nref: []\ntags: []\ntype: note\n---\n## Notes\n\n${body}\n`;
+  await writeFile(join(vault, "00 Inbox", "Source.md"), note("quasar telemetry pipeline backpressure tuning for the ingest cluster"), "utf8");
+  await writeFile(join(vault, "02 Archive", "Neighbor.md"), note("quasar telemetry pipeline backpressure details"), "utf8");
+  const otherPath = join(vault, "02 Archive", "Other.md");
+  await writeFile(otherPath, note("unrelated gardening notes about tomatoes"), "utf8");
+  const cachePath = join(vault, ".ipa", "cache", "link-idf.json");
+  const suggest = async () => JSON.stringify(await suggestLinks(vault, "Source"));
+  const fresh = async () => {
+    await rm(cachePath, { force: true });
+    return suggest();
+  };
+
+  const before = await fresh();
+  assert.ok(existsSync(cachePath));
+  assert.equal(await suggest(), before);
+  // The edit makes the query words common, which lowers their IDF and so the
+  // suggestion scores; a cache that missed the edit would keep the old ones.
+  await writeFile(otherPath, note("quasar telemetry pipeline backpressure ingest cluster tuning everywhere"), "utf8");
+  const afterEdit = await suggest();
+  assert.notEqual(afterEdit, before);
+  assert.equal(afterEdit, await fresh());
+});
+
 test("search, view, traversal and context work in the JS runtime", async () => {
   const vault = await fixtureVault();
   const search = await searchVault(vault, "Alpha", { threshold: 0, maxResults: 3 });
