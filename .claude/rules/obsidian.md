@@ -20,7 +20,9 @@ verified: 8ac0c4f4069ca3452b78c6bbc4e0ecb6e58d804f
 - 새 뷰는 `src/views/BaseIpaView.ts`를 상속해 `client`/`adapter` 접근과
   `buildShell`/`showError`/`showEmpty` 렌더 헬퍼를 재사용한다.
 - 빌드는 `scripts/build-obsidian.mjs` + `packages/obsidian/build-spec.json`(esbuild, cjs,
-  externals: obsidian/electron)이며 `npm test`는 이 번들을 빌드하지 않는다. 배포는
+  externals: obsidian/electron)이며 `npm test`는 이 번들을 빌드하지 않는다. esbuild는 타입을 검사하지
+  않으므로 플러그인 소스는 `npm run typecheck`로 확인한다. core 시그니처를 바꾸면
+  `types/ipa-core.d.ts`도 맞춘다. 배포는
   `ipa obsidian install|sync` — release 자산(main.js, manifest.json, styles.css, versions.json)만
   복사하고 사용자 설정 `data.json`은 절대 건드리지 않는다.
 - 데스크톱 전용: `ObsidianVaultAdapter`는 `FileSystemAdapter` 기반 볼트를 요구하며 아니면 throw.

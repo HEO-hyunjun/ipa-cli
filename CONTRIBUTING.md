@@ -127,4 +127,6 @@ entrypoints directly through `packages/obsidian/src/core/ipaClient.ts`
 `formatVault`, plugin list/doctor). When you change a core signature or return
 shape, grep `ipaClient.ts` for the symbol and run `npm run build` — the build
 compiles both the core and Obsidian bundles, while `npm test` only builds the
-core bundle. Deployment into a vault is `ipa obsidian install|sync`.
+core bundle. esbuild does not type-check, so also run `npm run typecheck` for
+the plugin sources (core is plain JS; its surface is declared in
+`packages/obsidian/types/ipa-core.d.ts`). Deployment into a vault is `ipa obsidian install|sync`.

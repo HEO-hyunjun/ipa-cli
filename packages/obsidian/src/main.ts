@@ -43,7 +43,7 @@ function hasMethod<K extends string>(
 }
 
 export default class IpaPlugin extends Plugin {
-  settings!: IpaSettings;
+  declare settings: IpaSettings;
   adapter!: ObsidianVaultAdapter;
   client!: IpaClient;
   private warmTimer: number | null = null;

@@ -30,11 +30,20 @@ declare module "@ipa/core" {
     noteName: string,
     options?: Record<string, unknown>
   ): Promise<any>;
-  export function traversal(vaultPath: string, mode: string, noteName: string): Promise<any>;
+  export function traversal(
+    vaultPath: string,
+    mode: string,
+    noteName: string,
+    options?: { notes?: any[] | null }
+  ): Promise<any>;
   export function traversalAll(vaultPath: string, noteName: string, notes?: any[] | null): Promise<any>;
   export function loadNotes(vaultPath: string, mapping?: any): Promise<any[]>;
   export function loadNotesForView(vaultPath: string, mapping?: any): Promise<any[]>;
-  export function suggestLinks(vaultPath: string, noteName?: string | null): Promise<any>;
+  export function suggestLinks(
+    vaultPath: string,
+    noteName?: string | null,
+    options?: { context?: any }
+  ): Promise<any>;
 
   // Validation / format
   export function validateVault(vaultPath: string, notes?: any[] | null): Promise<any>;
