@@ -1827,7 +1827,7 @@ function prepareSearchNotes(notes, mapping = DEFAULT_MAPPING, options = {}) {
   const lookup = makeNoteLookup(notes);
   const inProjectDir = (folder) => folder === projectDir || folder.startsWith(`${projectDir}/`);
   const isIndexLike = (note) => note.type === "index" || note.type === "root";
-  const prepared = notes.map((note) => {
+  const prepared = notes.map((note, index) => {
     const names = [note.id, ...note.aliases];
     const searchNames = names.map(searchableTitle).filter(Boolean);
     const searchNameLowers = searchNames.map((name) => name.toLowerCase());
@@ -1840,6 +1840,7 @@ function prepareSearchNotes(notes, mapping = DEFAULT_MAPPING, options = {}) {
     let bodyTokenSet = null;
     let keywordText = null;
     return {
+      index,
       note,
       names,
       nameKeys: names.map((name) => searchableKey(name)),
@@ -1864,7 +1865,7 @@ function prepareSearchNotes(notes, mapping = DEFAULT_MAPPING, options = {}) {
           const target = lookup(ref);
           return target && inProjectDir(target.folder);
         }),
-      childBodyLowers: []
+      childIndexes: []
     };
   });
   // Map each index/root note to its children via an inverted ref index instead
@@ -1881,7 +1882,7 @@ function prepareSearchNotes(notes, mapping = DEFAULT_MAPPING, options = {}) {
   for (const item of prepared) {
     if (!isIndexLike(item.note)) continue;
     const children = childrenByRefKey.get(searchableKey(item.note.id)) ?? [];
-    item.childBodyLowers = children.map((candidate) => candidate.bodyLower);
+    item.childIndexes = children.map((candidate) => candidate.index);
   }
   // child_body_match의 bm25 전파(자식 점수 -> index/root 부모)에 쓰는 간선은 노트에만
   // 의존하므로, 쿼리마다 refs를 다시 resolve하지 않도록 한 번만 만들어 둔다.
@@ -1896,6 +1897,7 @@ function prepareSearchNotes(notes, mapping = DEFAULT_MAPPING, options = {}) {
     if (parents.length) indexLikeParentsByNote.set(note.id, parents);
   }
   prepared.indexLikeParentsByNote = indexLikeParentsByNote;
+  prepared.tokenHits = new Map();
   prepared.notes = notes;
   prepared.noteById = noteById;
   prepared.lookup = lookup;
@@ -1904,6 +1906,30 @@ function prepareSearchNotes(notes, mapping = DEFAULT_MAPPING, options = {}) {
   // when the channel is disabled for the vault.
   prepared.relatedCandidatesBySeed = options.related === false ? new Map() : buildRelatedCandidateIndex(notes);
   return prepared;
+}
+
+// 토큰마다 노트별 부분 문자열 일치(1: 본문, 2: refs·tags·aliases)를 한 번만 계산해
+// context에 둔다. keyword·body_match·child_body_match가 같은 토큰으로 본문을 따로
+// 훑지 않고, 토큰을 공유하는 질의(link suggestion은 노트 하나에 질의 24개, 검색창은
+// 입력할 때마다 앞부분이 같은 질의)가 결과를 재사용한다.
+const TOKEN_HITS_CACHE_MAX = 4096;
+
+function tokenHits(preparedNotes, token) {
+  const cache = preparedNotes.tokenHits;
+  let hits = cache?.get(token);
+  if (hits) return hits;
+  hits = new Uint8Array(preparedNotes.length);
+  for (let i = 0; i < preparedNotes.length; i += 1) {
+    const prepared = preparedNotes[i];
+    hits[i] = (prepared.bodyLower.includes(token) ? 1 : 0) | (prepared.metaLower.includes(token) ? 2 : 0);
+  }
+  if (cache) {
+    // ponytail: 가득 차면 통째로 비운다(토큰 하나에 노트 수만큼의 바이트, 최대 약 3MB).
+    // 적중률이 문제가 되면 LRU로 바꾼다.
+    if (cache.size >= TOKEN_HITS_CACHE_MAX) cache.clear();
+    cache.set(token, hits);
+  }
+  return hits;
 }
 
 function prepareSearchQuery(query, preparedNotes) {
@@ -1932,11 +1958,13 @@ function prepareSearchQuery(query, preparedNotes) {
       }
     }
   }
+  const tokens = tokenize(raw);
   return {
     raw,
     lower,
     noSpace: lower.replace(/\s+/g, ""),
-    tokens: tokenize(raw),
+    tokens,
+    tokenHits: tokens.map((token) => tokenHits(preparedNotes, token)),
     trigramSet: new Set(trigrams),
     bm25Scores,
     childBm25Scores
@@ -1944,16 +1972,16 @@ function prepareSearchQuery(query, preparedNotes) {
 }
 
 // 하위 노트 본문이 많은 index에서 배열 전개(Math.max(0, ...))가 인자 한도에 걸리지
-// 않도록 루프로 최대값을 구한다.
-function maxChildBodyCoverage(tokens, bodies) {
-  if (!tokens.length) return 0;
+// 않도록 루프로 최대값을 구한다. 본문 일치는 토큰별 tokenHits에서 읽는다.
+function maxChildBodyCoverage(tokenHitList, childIndexes) {
+  if (!tokenHitList.length) return 0;
   let best = 0;
-  for (const body of bodies) {
+  for (const child of childIndexes) {
     let hits = 0;
-    for (const token of tokens) {
-      if (body.includes(token)) hits += 1;
+    for (const tokenHit of tokenHitList) {
+      if (tokenHit[child] & 1) hits += 1;
     }
-    const coverage = hits / tokens.length;
+    const coverage = hits / tokenHitList.length;
     if (coverage > best) best = coverage;
   }
   return best;
@@ -1996,24 +2024,25 @@ function scorePreparedChannels(prepared, query) {
   if (channelScores.filename_partial) reasons.filename_partial = { coverage: channelScores.filename_partial };
 
   const keyword = query.tokens.length
-    ? query.tokens.filter((token) => prepared.metaLower.includes(token) || prepared.bodyLower.includes(token)).length / query.tokens.length
+    ? query.tokenHits.filter((hits) => hits[prepared.index]).length / query.tokens.length
     : 0;
   channelScores.keyword = keyword;
   if (keyword) reasons.keyword = { coverage: keyword };
 
   const body = query.tokens.length
-    ? query.tokens.filter((token) => prepared.bodyLower.includes(token)).length / query.tokens.length
+    ? query.tokenHits.filter((hits) => hits[prepared.index] & 1).length / query.tokens.length
     : 0;
   // 토큰 단위 일치(coverage)는 bm25 점수가 없는 노트에서만 쓰이므로 그때만 센다.
   channelScores.body_match = query.bm25Scores.get(note.id) ?? Math.max(body, query.tokens.length
-    ? query.tokens.filter((token) =>
-        prepared.searchNameLowers.some((name) => hasToken(name, token)) || hasToken(prepared.bodyLower, token)
+    ? query.tokens.filter((token, k) =>
+        prepared.searchNameLowers.some((name) => hasToken(name, token)) ||
+        ((query.tokenHits[k][prepared.index] & 1) && hasToken(prepared.bodyLower, token))
       ).length / query.tokens.length
     : 0);
   if (channelScores.body_match) reasons.body_match = { coverage: channelScores.body_match };
 
   const childBody = prepared.isIndexLike
-    ? (query.childBm25Scores.get(note.id) ?? maxChildBodyCoverage(query.tokens, prepared.childBodyLowers))
+    ? (query.childBm25Scores.get(note.id) ?? maxChildBodyCoverage(query.tokenHits, prepared.childIndexes))
     : 0;
   channelScores.child_body_match = childBody;
   if (childBody) reasons.child_body_match = { coverage: childBody };
@@ -5018,8 +5047,16 @@ export async function suggestLinks(vaultPath, noteName = null, options = {}) {
   const lookup = preparedNotes.lookup;
   const vocab = linkSuggestVocab(context.config);
   const selected = noteName ? [lookup(noteName)].filter(Boolean) : notes;
-  const idf = noteName ? buildLinkSuggestionIdf(notes, vocab.stopwords) : null;
-  const rootSets = noteName ? buildRootSets(notes, lookup) : new Map();
+  // IDF와 root 집합은 노트 전체에만 의존하므로 context에 한 번 만들어 둔다. IDF는 볼트
+  // 전체 본문을 토큰화해서, 제안 한 번에 드는 시간의 1/4을 차지했다.
+  const shared = noteName
+    ? (context.linkSuggestShared ??= {
+        idf: buildLinkSuggestionIdf(notes, vocab.stopwords),
+        rootSets: buildRootSets(notes, lookup)
+      })
+    : null;
+  const idf = shared?.idf ?? null;
+  const rootSets = shared?.rootSets ?? new Map();
   const suggestions = [];
   for (const note of selected) {
     const byTarget = new Map();
