@@ -18,7 +18,8 @@ interface Issue {
 }
 
 export class ValidationView extends BaseIpaView {
-  private scope: ValidationScope;
+  // Not `scope`: View.scope is Obsidian's keymap Scope for this view.
+  private validationScope: ValidationScope;
   private scopeTabsEl!: HTMLElement;
   private summaryEl!: HTMLElement;
   private issuesEl!: HTMLElement;
@@ -30,7 +31,7 @@ export class ValidationView extends BaseIpaView {
 
   constructor(leaf: WorkspaceLeaf, plugin: IpaPlugin) {
     super(leaf, plugin);
-    this.scope = plugin.settings.defaultValidationScope;
+    this.validationScope = plugin.settings.defaultValidationScope;
   }
 
   getViewType(): string {
@@ -46,7 +47,7 @@ export class ValidationView extends BaseIpaView {
   }
 
   setScope(scope: ValidationScope): void {
-    this.scope = scope;
+    this.validationScope = scope;
     if (this.summaryEl) {
       this.syncScopeTabs();
       void this.validate();
@@ -67,7 +68,7 @@ export class ValidationView extends BaseIpaView {
 
     this.registerEvent(
       this.adapter.onActiveChange(() => {
-        if (this.scope === "current") this.scheduleValidate();
+        if (this.validationScope === "current") this.scheduleValidate();
       })
     );
 
@@ -89,9 +90,9 @@ export class ValidationView extends BaseIpaView {
         cls: "ipa-tab",
         text: scope === "current" ? "Note" : "Vault"
       });
-      if (scope === this.scope) button.addClass("is-active");
+      if (scope === this.validationScope) button.addClass("is-active");
       button.addEventListener("click", () => {
-        this.scope = scope;
+        this.validationScope = scope;
         this.syncScopeTabs();
         void this.validate();
       });
@@ -107,7 +108,7 @@ export class ValidationView extends BaseIpaView {
   private syncScopeTabs(): void {
     const buttons = Array.from(this.scopeTabsEl.children) as HTMLElement[];
     const order: ValidationScope[] = ["current", "vault"];
-    buttons.forEach((button, index) => button.toggleClass("is-active", order[index] === this.scope));
+    buttons.forEach((button, index) => button.toggleClass("is-active", order[index] === this.validationScope));
   }
 
   private scheduleValidate(): void {
@@ -129,7 +130,7 @@ export class ValidationView extends BaseIpaView {
       this.showError(this.issuesEl, "IPA requires a desktop vault backed by the file system.");
       return;
     }
-    if (this.scope === "current" && this.currentNotes().length === 0) {
+    if (this.validationScope === "current" && this.currentNotes().length === 0) {
       this.summaryEl.setText("Current note");
       this.showEmpty(this.issuesEl, "Open a note to validate it.");
       return;
@@ -137,7 +138,7 @@ export class ValidationView extends BaseIpaView {
     // Excluded (non-IPA-managed) files are out of scope: show an empty state
     // instead of letting core throw "note not found" into the error banner.
     const activePath = this.adapter.getActiveNotePath();
-    if (this.scope === "current" && activePath && !(await this.client.isManagedPath(activePath))) {
+    if (this.validationScope === "current" && activePath && !(await this.client.isManagedPath(activePath))) {
       this.summaryEl.setText("Current note");
       this.showEmpty(this.issuesEl, "Not an IPA-managed note (excluded from indexing).");
       return;
@@ -148,9 +149,9 @@ export class ValidationView extends BaseIpaView {
     try {
       const result = await this.client.validate();
       const allIssues: Issue[] = Array.isArray(result?.issues) ? result.issues : [];
-      const issues = this.scope === "current" ? this.filterToActive(allIssues) : allIssues;
+      const issues = this.validationScope === "current" ? this.filterToActive(allIssues) : allIssues;
 
-      const planNotes = this.scope === "current" ? this.currentNotes() : undefined;
+      const planNotes = this.validationScope === "current" ? this.currentNotes() : undefined;
       const plan = await this.client.formatPlan(planNotes);
       const patches: Array<{ rules?: unknown }> = Array.isArray(plan?.patches) ? plan.patches : [];
       this.fixableRules = new Set<string>(
@@ -177,7 +178,7 @@ export class ValidationView extends BaseIpaView {
   }
 
   private renderIssues(result: { status?: string }, issues: Issue[]): void {
-    const scopeLabel = this.scope === "current" ? `Note · ${this.adapter.getActiveNoteTitle() ?? ""}` : "Vault";
+    const scopeLabel = this.validationScope === "current" ? `Note · ${this.adapter.getActiveNoteTitle() ?? ""}` : "Vault";
     const fixableCount = issues.filter((issue) => this.isFixable(issue)).length;
     const fixable = fixableCount ? ` · ${fixableCount} fixable` : "";
     const status = result?.status ? ` · ${result.status}` : "";
@@ -216,12 +217,12 @@ export class ValidationView extends BaseIpaView {
       new Notice("IPA requires a desktop vault.");
       return;
     }
-    if (this.scope === "current" && this.currentNotes().length === 0) {
+    if (this.validationScope === "current" && this.currentNotes().length === 0) {
       new Notice("IPA: open a note to apply fixes.");
       return;
     }
 
-    const notes = this.scope === "current" ? this.currentNotes() : undefined;
+    const notes = this.validationScope === "current" ? this.currentNotes() : undefined;
     const run = async () => {
       try {
         const result = await applyFixes(this.app, this.client, notes);
@@ -233,7 +234,7 @@ export class ValidationView extends BaseIpaView {
     };
 
     // Confirm only when writing fixes to disk across the whole vault.
-    if (this.scope === "vault" && this.plugin.settings.confirmIpaFlow) {
+    if (this.validationScope === "vault" && this.plugin.settings.confirmIpaFlow) {
       new ConfirmModal(this.app, {
         title: "Apply fixes across the vault?",
         body: "This writes formatter fixes to every note that has available fixes.",
