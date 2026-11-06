@@ -1,7 +1,7 @@
 {
   "id": "ipa-obsidian",
   "name": "IPA",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "minAppVersion": "1.4.0",
   "description": "Search, traversal, validation, apply, and IPA Flow for IPA-convention vaults. Shares @ipa/core with the IPA CLI.",
   "author": "IPA",
