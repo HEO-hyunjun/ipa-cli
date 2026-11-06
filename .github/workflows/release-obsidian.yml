@@ -29,6 +29,8 @@ jobs:
 
       - run: cd packages/obsidian/dist && sha256sum main.js manifest.json styles.css versions.json > SHA256SUMS
 
+      # --latest=false: "Latest" must stay on the CLI release (vX.Y.Z); installers
+      # resolve the CLI through releases/latest and reject other tag shapes.
       - run: >
           gh release create "$GITHUB_REF_NAME"
           packages/obsidian/dist/main.js
@@ -37,5 +39,6 @@ jobs:
           packages/obsidian/dist/versions.json
           packages/obsidian/dist/SHA256SUMS
           --generate-notes
+          --latest=false
         env:
           GH_TOKEN: ${{ github.token }}
