@@ -1,23 +1,67 @@
-import { WorkspaceLeaf } from "obsidian";
+import { Keymap, WorkspaceLeaf, setIcon } from "obsidian";
 import { BaseIpaView } from "./BaseIpaView";
-import { TRAVERSAL_TAB_LABELS, VIEW_TYPE_TRAVERSAL } from "../util/constants";
-import type { TraversalTab } from "../util/constants";
-import { refLabel } from "../util/format";
+import { VIEW_TYPE_TRAVERSAL } from "../util/constants";
 import type IpaPlugin from "../main";
 
 const REFRESH_DEBOUNCE_MS = 200;
-const LIST_LIMIT = 5;
+// Two hops of data: the direct neighbours are shown, the second hop starts
+// folded under each neighbour. Following a name re-centres on that note.
+const GRAPH_DEPTH = 2;
+const GRAPH_MAX_NODES = 300;
+const SHOWN_PER_LIST = 8;
 
-interface TreeNode {
-  note?: string;
-  id?: string;
-  children?: TreeNode[];
+interface Relation {
+  kind: string; // "ref" | "link"
+  direction: string; // "out" | "in"
 }
 
-// Shows up / down / siblings / root / backlinks for the active note together, one
-// section each, instead of a single tab at a time.
+interface GraphNode {
+  id: string;
+  type?: string;
+  distance: number;
+  parent: string | null;
+  relations: Relation[];
+}
+
+interface CrossEdge {
+  from: string;
+  to: string;
+  relations: Relation[];
+}
+
+interface Graph {
+  center: string;
+  nodes: GraphNode[];
+  cross_edges?: CrossEdge[];
+  truncated_nodes?: number;
+}
+
+type Entry = { node: GraphNode; relations: Relation[]; cross: boolean };
+
+// Parents (ref →) first, then children (ref ←), then plain links.
+const RELATION_RANK: Record<string, number> = { "ref:out": 0, "ref:in": 1, "link:out": 2, "link:in": 3 };
+const TYPE_RANK: Record<string, number> = { root: 0, index: 1 };
+
+function relationRank(relations: Relation[]): number {
+  return Math.min(4, ...relations.map((r) => RELATION_RANK[`${r.kind}:${r.direction}`] ?? 4));
+}
+
+// Same wording as `ipa graph`: "ref →", "link ←", "ref → · link ↔".
+function relationLabel(relations: Relation[]): string {
+  const kinds = [...new Set(relations.map((r) => r.kind))];
+  return kinds
+    .map((kind) => {
+      const directions = new Set(relations.filter((r) => r.kind === kind).map((r) => r.direction));
+      const arrow = directions.has("out") && directions.has("in") ? "↔" : directions.has("out") ? "→" : "←";
+      return `${kind} ${arrow}`;
+    })
+    .join(" · ");
+}
+
+// The note's neighbourhood as a tree, the way `ipa graph` prints it: each row
+// is a relation and a clickable note, and a neighbour's own neighbours unfold
+// under it.
 export class TraversalView extends BaseIpaView {
-  private noteTitle: string | null = null;
   private notePath: string | null = null;
   private bodyEl!: HTMLElement;
   private debounceTimer: number | null = null;
@@ -60,179 +104,125 @@ export class TraversalView extends BaseIpaView {
     }, REFRESH_DEBOUNCE_MS);
   }
 
-  private async refresh(force = false): Promise<void> {
+  async refresh(force = false): Promise<void> {
     const path = this.adapter.getActiveNotePath();
-
-    // Focus / window changes fire active-leaf-change with no active markdown
-    // file (or the same one). Keep the current view instead of clearing it, so
-    // switching windows or clicking the panel doesn't make it flicker.
     if (!path) {
       if (force) {
         this.notePath = null;
-        this.noteTitle = null;
-        this.bodyEl.empty();
         this.showEmpty(this.bodyEl, "Open a note to see its IPA graph.");
       }
       return;
     }
     if (!force && path === this.notePath) return;
-
     if (!this.adapter.hasFileSystemAccess()) {
-      this.bodyEl.empty();
       this.showError(this.bodyEl, "IPA requires a desktop vault backed by the file system.");
       return;
     }
-
     this.notePath = path;
-    this.noteTitle = this.adapter.getActiveNoteTitle();
-    const title = this.noteTitle ?? "";
-
-    // Excluded (non-IPA-managed) files have no graph: show an empty state
-    // instead of letting core throw "note not found" into the error banner.
+    const title = this.adapter.getActiveNoteTitle() ?? "";
     if (!(await this.client.isManagedPath(path))) {
       if (this.notePath !== path) return;
-      this.bodyEl.empty();
       this.showEmpty(this.bodyEl, "Not an IPA-managed note (excluded from indexing).");
       return;
     }
-
     try {
-      // One load (reused from cache) covers up/down/siblings/root in a single pass.
-      const data = await this.client.traversalAll(title);
-      // Drop stale results if the active note changed while we were loading.
+      const graph = (await this.client.graph(title, GRAPH_DEPTH, GRAPH_MAX_NODES)) as Graph;
       if (this.notePath !== path) return;
-      const backlinks = this.adapter.getBacklinks();
-
-      const tree = data?.tree;
-      const upPaths = Array.isArray(data?.paths) ? data.paths : [];
-      const downChildren = Array.isArray(tree?.children) ? tree.children : [];
-      const siblingList = Array.isArray(data?.siblings) ? data.siblings : [];
-      const rootList = Array.isArray(data?.roots) ? data.roots : [];
-
-      // Swap content in one step after loading (no empty-then-load gap).
-      this.bodyEl.empty();
-      this.bodyEl.createDiv({ cls: "ipa-item__meta", text: title });
-      this.renderSection("up", upPaths.length, (container) => this.renderPaths(container, upPaths));
-      this.renderSection("down", downChildren.length, (container) => this.renderTree(container, tree));
-      this.renderSection("siblings", siblingList.length, (container) =>
-        this.renderList(container, siblingList, "No siblings.")
-      );
-      this.renderSection("root", rootList.length, (container) => this.renderList(container, rootList, "No root found."));
-      this.renderSection("backlinks", backlinks.length, (container) =>
-        this.renderList(container, backlinks, "No backlinks.")
-      );
+      this.render(graph);
     } catch (error) {
       if (this.notePath !== path) return;
-      this.bodyEl.empty();
       this.showError(this.bodyEl, error);
     }
   }
 
-  private renderSection(tab: TraversalTab, count: number, render: (container: HTMLElement) => void): void {
-    const section = this.bodyEl.createEl("details", { cls: "ipa-section" });
-    section.open = true;
-    const summary = section.createEl("summary", { cls: "ipa-section__header" });
-    summary.createSpan({ cls: "ipa-view__title", text: TRAVERSAL_TAB_LABELS[tab] });
-    summary.createSpan({ cls: "ipa-section__count", text: String(count) });
-    const body = section.createDiv({ cls: "ipa-section__body" });
-    render(body);
-  }
+  private render(graph: Graph): void {
+    const byId = new Map(graph.nodes.map((node) => [node.id, node]));
+    const entries = new Map<string, Entry[]>();
+    const push = (parent: string, entry: Entry) => {
+      const list = entries.get(parent) ?? [];
+      list.push(entry);
+      entries.set(parent, list);
+    };
+    for (const node of graph.nodes) {
+      if (node.parent) push(node.parent, { node, relations: node.relations, cross: false });
+    }
+    for (const edge of graph.cross_edges ?? []) {
+      const node = byId.get(edge.to);
+      if (node) push(edge.from, { node, relations: edge.relations, cross: true });
+    }
+    for (const list of entries.values()) {
+      list.sort(
+        (a, b) =>
+          Number(a.cross) - Number(b.cross) ||
+          relationRank(a.relations) - relationRank(b.relations) ||
+          (TYPE_RANK[a.node.type ?? ""] ?? 2) - (TYPE_RANK[b.node.type ?? ""] ?? 2) ||
+          a.node.id.localeCompare(b.node.id)
+      );
+    }
 
-  private renderPaths(container: HTMLElement, paths: unknown[], limit = LIST_LIMIT): void {
-    if (paths.length === 0) {
-      container.createDiv({ cls: "ipa-empty", text: "No upward paths." });
+    this.bodyEl.empty();
+    const tree = this.bodyEl.createDiv({ cls: "ipa-graph" });
+    const center = byId.get(graph.center);
+    const head = tree.createDiv({ cls: "ipa-graph__row ipa-graph__row--center" });
+    head.createSpan({ cls: "ipa-graph__mark", text: "◎" });
+    head.createSpan({ cls: "ipa-graph__name", text: graph.center });
+    if (center?.type) head.createSpan({ cls: "ipa-graph__type", text: center.type });
+
+    const neighbours = entries.get(graph.center) ?? [];
+    if (neighbours.length === 0) {
+      tree.createDiv({ cls: "ipa-empty", text: "No refs or links." });
       return;
     }
-    const list = container.createEl("ul", { cls: "ipa-list" });
-    const renderSlice = (slice: unknown[]) => {
-      for (const path of slice) this.renderPathRow(list, path);
-    };
-    renderSlice(paths.slice(0, limit));
-    if (paths.length > limit) {
-      this.renderMore(container, paths.length - limit, () => renderSlice(paths.slice(limit)));
+    this.renderList(tree, neighbours, entries);
+    if ((graph.truncated_nodes ?? 0) > 0) {
+      tree.createDiv({ cls: "ipa-item__meta", text: `… ${graph.truncated_nodes} more notes not loaded` });
     }
   }
 
-  private renderPathRow(list: HTMLElement, path: unknown): void {
-    const row = list.createEl("li", { cls: "ipa-path" });
-    const nodes = Array.isArray(path) ? path : [path];
-    nodes.forEach((node, index) => {
-      const link = row.createSpan({ cls: "ipa-path__node", text: refLabel(node) });
-      link.addEventListener("click", () => this.openNode(node));
-      if (index < nodes.length - 1) row.createSpan({ cls: "ipa-path__sep", text: " → " });
-    });
+  private renderList(container: HTMLElement, list: Entry[], entries: Map<string, Entry[]>): void {
+    const ul = container.createEl("ul", { cls: "ipa-graph__list" });
+    const renderSlice = (slice: Entry[]) => slice.forEach((entry) => this.renderEntry(ul, entry, entries));
+    renderSlice(list.slice(0, SHOWN_PER_LIST));
+    if (list.length > SHOWN_PER_LIST) {
+      const more = ul.createEl("li").createEl("a", { cls: "ipa-more", text: `Show ${list.length - SHOWN_PER_LIST} more` });
+      more.addEventListener("click", () => {
+        more.parentElement?.remove();
+        renderSlice(list.slice(SHOWN_PER_LIST));
+      });
+    }
   }
 
-  private renderTree(container: HTMLElement, tree: TreeNode | undefined, limit = LIST_LIMIT): void {
-    const children = tree?.children ?? [];
-    if (children.length === 0) {
-      container.createDiv({ cls: "ipa-empty", text: "No children." });
+  private renderEntry(ul: HTMLElement, entry: Entry, entries: Map<string, Entry[]>): void {
+    const li = ul.createEl("li");
+    const row = li.createDiv({ cls: "ipa-graph__row" });
+    if (entry.cross) row.addClass("is-cross");
+    row.createSpan({ cls: "ipa-graph__rel", text: relationLabel(entry.relations) });
+    const name = row.createSpan({ cls: "ipa-graph__name is-link", text: entry.node.id });
+    name.addEventListener("click", (event) => void this.adapter.open(null, entry.node.id, Keymap.isModEvent(event)));
+    if (entry.node.type && entry.node.type !== "note") row.createSpan({ cls: "ipa-graph__type", text: entry.node.type });
+
+    // A cross edge points at a note already shown elsewhere in the tree.
+    if (entry.cross) {
+      row.createSpan({ cls: "ipa-graph__type", text: "↩" });
       return;
     }
-    const list = container.createEl("ul", { cls: "ipa-list" });
-    const renderSlice = (slice: TreeNode[]) => {
-      for (const child of slice) this.renderTreeNode(list, child, 0);
-    };
-    renderSlice(children.slice(0, limit));
-    if (children.length > limit) {
-      this.renderMore(container, children.length - limit, () => renderSlice(children.slice(limit)));
-    }
-  }
-
-  private renderTreeNode(container: HTMLElement, node: TreeNode, depth: number): void {
-    const title = node.note ?? node.id ?? "?";
-    const row = container.createEl("li", { cls: "ipa-item", attr: { tabindex: "0" } });
-    row.style.marginLeft = `${depth * 14}px`;
-    row.createDiv({ cls: "ipa-item__title", text: title });
-    row.addEventListener("click", () => void this.adapter.open(null, title));
-    for (const child of node.children ?? []) {
-      this.renderTreeNode(container, child, depth + 1);
-    }
-  }
-
-  private renderList(container: HTMLElement, items: unknown, emptyMessage: string, limit = LIST_LIMIT): void {
-    const entries = Array.isArray(items) ? items : [];
-    if (entries.length === 0) {
-      container.createDiv({ cls: "ipa-empty", text: emptyMessage });
-      return;
-    }
-    const list = container.createEl("ul", { cls: "ipa-list" });
-    const renderSlice = (slice: unknown[]) => {
-      for (const entry of slice) this.renderListItem(list, entry);
-    };
-    renderSlice(entries.slice(0, limit));
-    if (entries.length > limit) {
-      this.renderMore(container, entries.length - limit, () => renderSlice(entries.slice(limit)));
-    }
-  }
-
-  private renderListItem(list: HTMLElement, entry: unknown): void {
-    const record = entry as { title?: string; id?: string; note?: string; path?: string } | string;
-    const title = typeof record === "string" ? record : record.title ?? record.id ?? record.note ?? String(record);
-    const path = typeof record === "object" ? record.path ?? null : null;
-    const row = list.createEl("li", { cls: "ipa-item", attr: { tabindex: "0", role: "button" } });
-    row.createDiv({ cls: "ipa-item__title", text: title });
-    const open = () => void this.adapter.open(path, title);
-    row.addEventListener("click", open);
-    row.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" || event.key === " ") {
-        event.preventDefault();
-        open();
+    const children = entries.get(entry.node.id) ?? [];
+    if (children.length === 0) return;
+    // Obsidian's chevron icon, not a ▸ glyph: UI fonts often lack the glyph.
+    const toggle = row.createSpan({ cls: "ipa-graph__toggle", attr: { "aria-label": "Show neighbours" } });
+    const icon = toggle.createSpan({ cls: "ipa-graph__chevron" });
+    toggle.createSpan({ text: String(children.length) });
+    setIcon(icon, "chevron-right");
+    let body: HTMLElement | null = null;
+    toggle.addEventListener("click", () => {
+      if (body) {
+        body.remove();
+        body = null;
+      } else {
+        body = li.createDiv();
+        this.renderList(body, children, entries);
       }
+      setIcon(icon, body ? "chevron-down" : "chevron-right");
     });
-  }
-
-  // Shared "Show N more" link used by every section (paths, tree, lists).
-  private renderMore(container: HTMLElement, remaining: number, expand: () => void): void {
-    const more = container.createEl("a", { cls: "ipa-more", text: `Show ${remaining} more` });
-    more.addEventListener("click", () => {
-      expand();
-      more.remove();
-    });
-  }
-
-  private openNode(node: unknown): void {
-    const title = typeof node === "string" ? node : ((node as { id?: string })?.id ?? null);
-    if (title) void this.adapter.open(null, title);
   }
 }

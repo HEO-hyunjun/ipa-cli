@@ -114,15 +114,6 @@
   color: var(--text-normal);
 }
 
-.ipa-path {
-  font-size: var(--font-ui-small);
-  color: var(--text-muted);
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--size-2-1);
-}
-
 /* Match the path node text to the list item title so every clickable note
    link looks the same. */
 .ipa-path__node {
@@ -134,10 +125,6 @@
 .ipa-path__node:hover {
   color: var(--text-accent);
   text-decoration: underline;
-}
-
-.ipa-path__sep {
-  opacity: 0.5;
 }
 
 /* Validation */
@@ -202,57 +189,6 @@
   align-items: center;
 }
 
-/* Traversal sections (up / down / siblings / root / backlinks shown together,
-   each collapsible) */
-.ipa-section {
-  display: flex;
-  flex-direction: column;
-  gap: var(--size-2-1);
-  margin-bottom: var(--size-4-3);
-}
-
-.ipa-section__header {
-  display: flex;
-  align-items: center;
-  gap: var(--size-2-1);
-  border-bottom: 1px solid var(--background-modifier-border);
-  padding-bottom: var(--size-2-1);
-  cursor: pointer;
-  list-style: none;
-}
-
-.ipa-section__header::-webkit-details-marker {
-  display: none;
-}
-
-.ipa-section__header::before {
-  content: "▾";
-  width: 1em;
-  color: var(--text-faint);
-  font-size: 0.8em;
-}
-
-.ipa-section:not([open]) > .ipa-section__header::before {
-  content: "▸";
-}
-
-.ipa-section__header .ipa-view__title {
-  flex: 1;
-}
-
-.ipa-section__count {
-  font-size: var(--font-ui-smaller);
-  color: var(--text-faint);
-  font-variant-numeric: tabular-nums;
-}
-
-.ipa-section__body {
-  display: flex;
-  flex-direction: column;
-  gap: var(--size-2-1);
-  padding-top: var(--size-2-1);
-}
-
 .ipa-more {
   align-self: flex-start;
   color: var(--text-accent);
@@ -275,4 +211,81 @@
 .ipa-ref-trail .view-header-breadcrumb.is-unresolved {
   cursor: default;
   opacity: 0.6;
+}
+
+/* Traversal graph (views/TraversalView.ts): the `ipa graph` tree with
+   clickable notes. Nested lists draw the tree lines. */
+.ipa-graph {
+  font-size: var(--font-ui-small);
+}
+
+.ipa-graph__list {
+  list-style: none;
+  margin: 0;
+  padding-left: var(--size-4-3);
+  border-left: 1px solid var(--background-modifier-border);
+  margin-left: var(--size-2-3);
+}
+
+.ipa-graph__row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--size-4-1);
+  padding: 2px 0;
+  min-width: 0;
+}
+
+.ipa-graph__row--center {
+  font-weight: var(--font-semibold);
+  padding-bottom: var(--size-4-1);
+}
+
+.ipa-graph__mark,
+.ipa-graph__rel,
+.ipa-graph__type,
+.ipa-graph__toggle {
+  flex: none;
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+}
+
+.ipa-graph__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ipa-graph__name.is-link {
+  color: var(--text-normal);
+  cursor: pointer;
+}
+
+.ipa-graph__name.is-link:hover {
+  color: var(--text-accent);
+  text-decoration: underline;
+}
+
+.ipa-graph__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+}
+
+.ipa-graph__chevron {
+  display: inline-flex;
+}
+
+.ipa-graph__chevron svg {
+  width: 12px;
+  height: 12px;
+}
+
+.ipa-graph__toggle:hover {
+  color: var(--text-accent);
+}
+
+.ipa-graph__row.is-cross .ipa-graph__name {
+  color: var(--text-muted);
 }

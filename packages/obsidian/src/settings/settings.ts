@@ -1,5 +1,3 @@
-import type { TraversalTab } from "../util/constants";
-
 export type ValidationScope = "current" | "vault";
 
 export interface IpaSettings {
@@ -17,8 +15,6 @@ export interface IpaSettings {
   // Search
   searchResultLimit: number;
   showSearchScore: boolean;
-  // Traversal
-  defaultTraversalTab: TraversalTab;
   // Show the ref path (root / index / note) instead of the folder path in note headers.
   showRefTrail: boolean;
 }
@@ -32,6 +28,5 @@ export const DEFAULT_SETTINGS: IpaSettings = {
   showPluginLoadErrors: true,
   searchResultLimit: 25,
   showSearchScore: true,
-  defaultTraversalTab: "up",
   showRefTrail: true
 };

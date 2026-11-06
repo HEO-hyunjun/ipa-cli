@@ -37,6 +37,11 @@ declare module "@ipa/core" {
     options?: { notes?: any[] | null }
   ): Promise<any>;
   export function traversalAll(vaultPath: string, noteName: string, notes?: any[] | null): Promise<any>;
+  export function graphTopology(
+    vaultPath: string,
+    noteName: string,
+    options?: { depth?: number; maxNodes?: number; notes?: any[] | null }
+  ): Promise<any>;
   export function loadNotes(vaultPath: string, mapping?: any): Promise<any[]>;
   export function loadNotesForView(vaultPath: string, mapping?: any): Promise<any[]>;
   export function suggestLinks(

@@ -95,8 +95,9 @@ export class IpaClient {
     return core.traversal(this.vault, mode, note, { notes: await this.loadNotesCached() });
   }
 
-  async traversalAll(note: string): Promise<any> {
-    return core.traversalAll(this.vault, note, await this.loadNotesCached());
+  // The neighbourhood graph `ipa graph` prints, from the cached note summaries.
+  async graph(note: string, depth: number, maxNodes: number): Promise<any> {
+    return core.graphTopology(this.vault, note, { depth, maxNodes, notes: await this.loadNotesCached() });
   }
 
   // The ref trail shown in a note's header: the first upward path (it follows
