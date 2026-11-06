@@ -333,8 +333,9 @@ export function localPromptContent(vaultPath, spec, mapping, options = {}) {
   const prefix = commandPrefix(vaultPath, options, true);
   return `## IPA CLI Harness
 
-This vault has an IPA CLI harness installed. For explicit vault work, use the global \`ipa\` skill and the \`${prefix}\` CLI.
+This vault has an IPA CLI harness installed. For vault work, use the global \`ipa\` skill and the \`${prefix}\` CLI.
 
+- In this vault, a request to find or recall something the user wrote down is vault work even when it does not say "note" or "vault". Start with \`${prefix} search\`, not Grep or Glob, and if the vault has no match, say so instead of searching other machines or services.
 - Folders: inbox \`${mapping.inbox_dir}\`, project \`${mapping.project_dir}\`, archive \`${mapping.archive_dir}\`
 - Vault config: .ipa/config.yaml; profile registry: ${profileRegistryDisplay()}
 - Concepts and policy: \`${prefix} convention\`. Exact commands: \`${prefix} help\` and \`${prefix} <command> --help\`.
