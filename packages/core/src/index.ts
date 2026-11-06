@@ -4215,11 +4215,22 @@ export async function formatVault(vaultPath, apply = false, options = {}) {
 export async function finalizeNotes(vaultPath, noteNames, options = {}) {
   const requested = [...new Set(asList(noteNames).map((name) => String(name).trim()).filter(Boolean))];
   if (!requested.length) throw new Error("note finalize requires at least one note title");
+  // The vault is read once: validation reuses the formatter's notes and re-reads
+  // only the files the formatter rewrote (the write also stamps updated_at).
+  const { mapping } = await readVaultConfig(vaultPath);
+  const notes = await loadNotes(vaultPath, mapping);
   const formatting = await formatVault(vaultPath, true, {
     notes: requested,
-    patchesOnly: true
+    patchesOnly: true,
+    loadedNotes: notes
   });
-  const validation = await validateVault(vaultPath, null, { notes: requested });
+  const rewritten = new Set((formatting.applied ?? []).map((item) => item.path));
+  const current = rewritten.size
+    ? await Promise.all(notes.map(async (note) => rewritten.has(note.relPath)
+      ? noteFromFile(vaultPath, note.path, await readFile(note.path, "utf8"), mapping)
+      : note))
+    : notes;
+  const validation = await validateVault(vaultPath, current, { notes: requested });
   return {
     operation: "note-finalize",
     notes: requested,
