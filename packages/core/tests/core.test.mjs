@@ -490,6 +490,20 @@ test("search graph roles come from type, not title decoration", async () => {
   assert.equal(decorative.results.find((item) => item.note === "🔖 Decorative Note")?.reasons?.child_body_match, undefined);
 });
 
+test("body_match without a bm25 score counts whole tokens in names and body", async () => {
+  const vault = await fixtureVault();
+  const fm = `---\ndate_created: 2026/05/10 (Sun) 00:00:00\ndate_modified: 2026/05/10 (Sun) 00:00:00\ntype: note\nref: []\ntags: []\n---\n`;
+  // Neither note shares a jamo trigram with "qz wv" ("qz ", "z w", " wv"), so
+  // body_match falls back to token coverage: "qz" is a title token in both;
+  // "wv" is a whole body token only in the first ("wvwv" merely contains it).
+  await writeFile(join(vault, "00 Inbox", "qz.a.md"), `${fm}wv\n`, "utf8");
+  await writeFile(join(vault, "00 Inbox", "qz.b.md"), `${fm}wvwv\n`, "utf8");
+  const result = await searchVault(vault, "qz wv", { threshold: 0, maxResults: 50 });
+  const bodyMatch = (note) => result.results.find((item) => item.note === note)?.reasons?.body_match?.coverage;
+  assert.equal(bodyMatch("qz.a"), 1);
+  assert.equal(bodyMatch("qz.b"), 0.5);
+});
+
 test("core note rewrite helpers resolve notes before editing", async () => {
   const vault = await fixtureVault();
   const dryRun = await rewriteNote(vault, "Alpha", (document) => document.text.replace("Alpha mentions Beta", "Alpha mentions Gamma"), { apply: false });

@@ -1365,6 +1365,22 @@ function tokenize(text) {
     .match(/[\p{L}\p{N}_-]+/gu) ?? [];
 }
 
+// tokenize(text).includes(token)을 토큰 배열 없이 판정한다. 토큰은 [\p{L}\p{N}_-]의
+// 최대 연속이므로, 앞뒤 글자가 토큰 문자가 아닌 출현이 하나라도 있으면 된다.
+// text와 token은 이미 소문자여야 한다. 앞 글자는 서로게이트 쌍이면 두 코드 유닛을
+// 잘라 ^로 판정한다: Node 26(V8)에서 /[\p{L}]$/u는 서로게이트 쌍 글자를 놓친다.
+const TOKEN_CHAR_RE = /^[\p{L}\p{N}_-]/u;
+const SURROGATE_PAIR_RE = /^[\uD800-\uDBFF][\uDC00-\uDFFF]$/;
+
+function hasToken(text, token) {
+  for (let i = text.indexOf(token); i >= 0; i = text.indexOf(token, i + 1)) {
+    const end = i + token.length;
+    const start = i >= 2 && SURROGATE_PAIR_RE.test(text.slice(i - 2, i)) ? i - 2 : i - 1;
+    if ((i === 0 || !TOKEN_CHAR_RE.test(text.slice(start, i))) && !TOKEN_CHAR_RE.test(text.slice(end, end + 2))) return true;
+  }
+  return false;
+}
+
 function subsequenceScore(needle, haystack) {
   return subsequenceScoreLower(needle.toLowerCase(), haystack.toLowerCase());
 }
@@ -1802,8 +1818,14 @@ function prepareSearchNotes(notes, mapping = DEFAULT_MAPPING, options = {}) {
     const names = [note.id, ...note.aliases];
     const searchNames = names.map(searchableTitle).filter(Boolean);
     const searchNameLowers = searchNames.map((name) => name.toLowerCase());
-    const bodySearch = searchableTitle(note.body);
+    const bodyLower = searchableTitle(note.body).toLowerCase();
+    const metaLower = searchableTitle(`${note.refs.join(" ")} ${note.tags.join(" ")} ${note.aliases.join(" ")}`).toLowerCase();
     const isProject = inProjectDir(note.folder);
+    // bodyTokenSet과 keywordText는 본문 크기만 한 사본이라 준비 시간과 메모리를 가장
+    // 많이 쓰는데, builtin 채널은 쓰지 않는다(hasToken, metaLower + bodyLower로 같은
+    // 판정을 한다). 검색 플러그인 계약(PreparedNote)으로는 남겨 두고 처음 읽을 때 만든다.
+    let bodyTokenSet = null;
+    let keywordText = null;
     return {
       note,
       names,
@@ -1814,9 +1836,15 @@ function prepareSearchNotes(notes, mapping = DEFAULT_MAPPING, options = {}) {
       nameTrigramSets: searchNames.map((name) => new Set(jamoTrigrams(name))),
       isIndexLike: isIndexLike(note),
       idKey: searchableKey(note.id),
-      bodyLower: bodySearch.toLowerCase(),
-      bodyTokenSet: new Set(tokenize(`${searchNames.join(" ")} ${bodySearch}`)),
-      keywordText: searchableTitle(`${note.refs.join(" ")} ${note.tags.join(" ")} ${note.aliases.join(" ")} ${note.body}`).toLowerCase(),
+      bodyLower,
+      metaLower,
+      get bodyTokenSet() {
+        return (bodyTokenSet ??= new Set(tokenize(`${searchNames.join(" ")} ${bodyLower}`)));
+      },
+      // searchableTitle(refs tags aliases body)와 같다: 공백 정리 뒤 두 부분은 공백 하나로 이어진다.
+      get keywordText() {
+        return (keywordText ??= [metaLower, bodyLower].filter(Boolean).join(" "));
+      },
       isProject,
       hasProjectContext: isProject ||
         note.refs.some((ref) => {
@@ -1943,9 +1971,6 @@ function scorePreparedChannels(prepared, query) {
   channelScores.fuzzy = fuzzy;
   if (fuzzy) reasons.fuzzy = { score: fuzzy };
 
-  const coverage = query.tokens.length
-    ? query.tokens.filter((token) => prepared.bodyTokenSet.has(token)).length / query.tokens.length
-    : 0;
   channelScores.sequence_match = query.tokens.length && query.tokens.every((token) =>
     prepared.searchNameLowers.some((name) => name.includes(token))
   ) ? 1 : 0;
@@ -1958,7 +1983,7 @@ function scorePreparedChannels(prepared, query) {
   if (channelScores.filename_partial) reasons.filename_partial = { coverage: channelScores.filename_partial };
 
   const keyword = query.tokens.length
-    ? query.tokens.filter((token) => prepared.keywordText.includes(token)).length / query.tokens.length
+    ? query.tokens.filter((token) => prepared.metaLower.includes(token) || prepared.bodyLower.includes(token)).length / query.tokens.length
     : 0;
   channelScores.keyword = keyword;
   if (keyword) reasons.keyword = { coverage: keyword };
@@ -1966,7 +1991,12 @@ function scorePreparedChannels(prepared, query) {
   const body = query.tokens.length
     ? query.tokens.filter((token) => prepared.bodyLower.includes(token)).length / query.tokens.length
     : 0;
-  channelScores.body_match = query.bm25Scores.get(note.id) ?? Math.max(body, coverage);
+  // 토큰 단위 일치(coverage)는 bm25 점수가 없는 노트에서만 쓰이므로 그때만 센다.
+  channelScores.body_match = query.bm25Scores.get(note.id) ?? Math.max(body, query.tokens.length
+    ? query.tokens.filter((token) =>
+        prepared.searchNameLowers.some((name) => hasToken(name, token)) || hasToken(prepared.bodyLower, token)
+      ).length / query.tokens.length
+    : 0);
   if (channelScores.body_match) reasons.body_match = { coverage: channelScores.body_match };
 
   const childBody = prepared.isIndexLike
@@ -5607,8 +5637,9 @@ export interface SearchHit {
 }
 
 // Per-note precomputation shared with the builtin channels: lowercased body,
-// token set, keyword text, and normalized names. Score against these instead
-// of re-normalizing note.body per query.
+// lowercased refs/tags/aliases, and normalized names. Score against these
+// instead of re-normalizing note.body per query. bodyTokenSet and keywordText
+// are built on first read (each is another body-sized copy).
 export interface PreparedNote {
   note: Note;
   names: string[];
@@ -5616,8 +5647,9 @@ export interface PreparedNote {
   searchNameLowers: string[];
   idKey: string;
   bodyLower: string;
-  bodyTokenSet: Set<string>;
-  keywordText: string;
+  metaLower: string;
+  readonly bodyTokenSet: Set<string>;
+  readonly keywordText: string;
   isProject: boolean;
   hasProjectContext: boolean;
 }
