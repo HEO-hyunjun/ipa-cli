@@ -444,6 +444,22 @@ test("cache rebuild updates changed notes without reparsing unchanged files", as
   }
 });
 
+test("view reads rebuild a cache made stale by a plugin edit, but never create one", async () => {
+  const fresh = await fixtureVault();
+  await viewNote(fresh, "Alpha");
+  assert.equal(existsSync(join(fresh, ".ipa", "cache", "manifest.json")), false);
+
+  const vault = await fixtureVault();
+  await rebuildCache(vault);
+  await mkdir(join(vault, ".ipa", "plugins", "rules"), { recursive: true });
+  await writeFile(join(vault, ".ipa", "plugins", "rules", "noop.js"), "export const rules = [];\n", "utf8");
+  assert.notDeepEqual((await cacheStatus(vault)).stale, []);
+  await viewNote(vault, "Alpha");
+  const status = await cacheStatus(vault);
+  assert.deepEqual(status.stale, []);
+  assert.equal(status.manifest.rebuild_mode, "full");
+});
+
 test("note-name search and lookup ignore emoji markers but preserve display names", async () => {
   const vault = await fixtureVault();
   const search = await searchVault(vault, "Topic Index", { threshold: 0, maxResults: 5 });

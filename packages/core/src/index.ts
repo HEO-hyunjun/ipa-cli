@@ -1250,20 +1250,33 @@ function cacheChangeSummary(diff) {
 
 // 캐시가 살아 있으면 요약을, 파일만 달라졌으면 증분 재빌드 결과를 그대로 돌려준다.
 // fingerprint 계산과 볼트 스캔은 각각 한 번만 — 재빌드 후 캐시를 디스크에서
-// 다시 읽지 않는다. 쓸 수 없는 캐시는 null이고, 호출자가 loadNotes로 폴백한다.
+// 다시 읽지 않는다. 캐시가 없으면 null이고, 호출자가 loadNotes로 폴백한다.
+//
+// 만든 적 있는 캐시가 schema·mapping·plugin fingerprint 변경으로 낡았으면 전체를
+// 다시 만든다. 폴백만 하면 규칙 플러그인을 한 번 고친 뒤로 캐시가 다시 살아나지
+// 않아 view·graph·traversal이 매번 볼트 전체를 읽는다. 쓰기에 실패하면 폴백한다.
 async function loadCachedNoteSummaries(vaultPath, mapping = DEFAULT_MAPPING) {
   const currentPluginFingerprint = await pluginFingerprint(vaultPath);
   const currentMappingFingerprint = mappingFingerprint(mapping);
   const manifest = await readCacheManifest(vaultPath);
-  if (manifest?.cache_schema !== CACHE_SCHEMA) return null;
-  if (manifest?.mapping_fingerprint !== currentMappingFingerprint) return null;
-  if (manifest?.plugin_fingerprint !== currentPluginFingerprint) return null;
-  const entries = await readCacheFileEntries(vaultPath);
-  if (!entries) return null;
-  const diff = await cacheFileDiff(vaultPath, mapping, entries);
-  if (!diff) return null;
-  if (!hasCacheFileChanges(diff)) return entries.map((entry) => noteSummaryFromCacheEntry(vaultPath, entry));
+  if (!manifest) return null;
   const cacheDir = join(vaultPath, ".ipa", "cache");
+  const entries = await readCacheFileEntries(vaultPath);
+  const diff = manifest.cache_schema === CACHE_SCHEMA &&
+    manifest.mapping_fingerprint === currentMappingFingerprint &&
+    manifest.plugin_fingerprint === currentPluginFingerprint &&
+    entries
+    ? await cacheFileDiff(vaultPath, mapping, entries)
+    : null;
+  if (!diff) {
+    try {
+      const result = await rebuildCacheFull(vaultPath, mapping, cacheDir, currentPluginFingerprint, currentMappingFingerprint);
+      return result.files.map((entry) => noteSummaryFromCacheEntry(vaultPath, entry));
+    } catch {
+      return null;
+    }
+  }
+  if (!hasCacheFileChanges(diff)) return entries.map((entry) => noteSummaryFromCacheEntry(vaultPath, entry));
   const result = await rebuildCacheIncremental(
     vaultPath, mapping, cacheDir, diff, currentPluginFingerprint, currentMappingFingerprint
   );
