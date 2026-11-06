@@ -1,4 +1,4 @@
-import { Notice, Plugin, TFile, WorkspaceLeaf, normalizePath } from "obsidian";
+import { Editor, MarkdownFileInfo, MarkdownView, Notice, Plugin, TFile, WorkspaceLeaf, normalizePath } from "obsidian";
 import { readFile, stat } from "node:fs/promises";
 import {
   ICON_ID,
@@ -12,6 +12,7 @@ import { ObsidianVaultAdapter } from "./adapter/ObsidianVaultAdapter";
 import { IpaClient } from "./core/ipaClient";
 import { SearchView } from "./views/SearchView";
 import { SearchModal } from "./views/SearchModal";
+import { AddLinkModal } from "./views/AddLinkModal";
 import { TraversalView } from "./views/TraversalView";
 import { ValidationView } from "./views/ValidationView";
 import { RefTrail } from "./views/RefTrail";
@@ -283,6 +284,27 @@ export default class IpaPlugin extends Plugin {
     return true;
   }
 
+  // Link suggestions plus search for the note in the editor; see AddLinkModal.
+  private async openAddLinkModal(editor: Editor, ctx: MarkdownView | MarkdownFileInfo): Promise<void> {
+    const file = ctx.file;
+    if (!file || file.extension !== "md") return;
+    if (!this.adapter.hasFileSystemAccess()) {
+      new Notice("IPA requires a desktop vault backed by the file system.");
+      return;
+    }
+    if (!(await this.client.isManagedPath(file.path))) {
+      new Notice("IPA: this note is excluded from indexing.");
+      return;
+    }
+    const { mapping } = await this.client.readConfig();
+    new AddLinkModal(this.app, this, {
+      file,
+      editor,
+      view: ctx instanceof MarkdownView ? ctx : null,
+      refsKey: typeof mapping?.refs === "string" ? mapping.refs : "ref"
+    }).open();
+  }
+
   private registerCommands(): void {
     this.addCommand({
       id: "search",
@@ -296,6 +318,12 @@ export default class IpaPlugin extends Plugin {
       callback: () => {
         void this.activateView(VIEW_TYPE_SEARCH);
       }
+    });
+
+    this.addCommand({
+      id: "add-link",
+      name: "Add link",
+      editorCallback: (editor, ctx) => void this.openAddLinkModal(editor, ctx)
     });
 
     this.addCommand({

@@ -430,3 +430,46 @@
   color: var(--text-faint);
   font-size: var(--font-ui-smaller);
 }
+
+/* Add link modal: search-popup rows with a pick box, grouped suggestions. */
+.ipa-add-link__group {
+  margin-bottom: 4px;
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-semibold);
+  color: var(--text-muted);
+}
+
+.ipa-add-link__row {
+  display: flex;
+  gap: var(--size-4-2);
+  align-items: flex-start;
+}
+
+.ipa-add-link__row input[type="checkbox"] {
+  margin-top: 3px;
+  pointer-events: none;
+}
+
+.ipa-add-link__main {
+  flex: 1;
+  min-width: 0;
+}
+
+.ipa-add-link__picked {
+  padding: var(--size-4-2) var(--size-4-3);
+  border-top: 1px solid var(--background-modifier-border);
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+
+.ipa-add-link__picked-names {
+  color: var(--text-normal);
+}
+
+.ipa-add-link__mode {
+  cursor: pointer;
+}
+
+.ipa-add-link__mode:hover {
+  color: var(--text-accent);
+}
