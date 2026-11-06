@@ -3913,12 +3913,24 @@ export async function validateVault(vaultPath, notes = null, options = {}) {
     ...await loadLinkTargetTitles(vaultPath, mapping, notes)
   };
   const rules = options.rules ?? await activeRulesForVault(vaultPath, config);
+  // Note-scoped run: note rules check only the requested notes; vault rules
+  // still see every note (ctx.notes) and their issues are filtered below.
+  const scopedNames = asList(options.notes ?? options.note);
+  const targets = scopedNames.length
+    ? scopedNames.map((name) => {
+        const note = findNote(notes, name);
+        if (!note) throw new Error(`note not found: ${name}`);
+        return note;
+      })
+    : null;
+  const targetIds = targets ? new Set(targets.map((note) => note.id)) : null;
   let issues = [];
   const rawCaptureRule = rules.find((rule) => rule.code === "ipa.inbox.raw_capture");
   const noteRules = rules.filter((rule) => rule.checkNote && rule.code !== "ipa.inbox.raw_capture");
   const vaultRules = rules.filter((rule) => rule.checkVault);
 
   for (const note of notes) {
+    if (targetIds && !targetIds.has(note.id)) continue;
     if (isRawInboxCapture(note, mapping)) {
       if (rawCaptureRule) issues.push(...normalizeRuleIssues(await rawCaptureRule.checkNote(note, ctx), rawCaptureRule, note));
       continue;
@@ -3928,24 +3940,14 @@ export async function validateVault(vaultPath, notes = null, options = {}) {
   for (const rule of vaultRules) {
     if (rule.checkVault) issues.push(...normalizeRuleIssues(await rule.checkVault(ctx), rule));
   }
-  // Note-scoped output: validation still runs vault-wide (vault-scope rules
-  // need every note), but only issues attached to the requested notes are
-  // returned — keeps agent-facing output proportional to the edit.
-  const scopedNames = asList(options.notes ?? options.note);
-  let scoped = null;
-  if (scopedNames.length) {
-    const targets = scopedNames.map((name) => {
-      const note = findNote(notes, name);
-      if (!note) throw new Error(`note not found: ${name}`);
-      return note;
-    });
-    const targetIds = new Set(targets.map((note) => note.id));
+  // Only issues attached to the requested notes are returned — keeps
+  // agent-facing output proportional to the edit.
+  if (targets) {
     const targetPaths = new Set(targets.map((note) => note.relPath));
     issues = issues.filter((item) => targetIds.has(item.note) || targetPaths.has(item.path));
-    scoped = targets.map((note) => note.id);
   }
   const result = { notes: notes.length, issues, status: issues.some((item) => item.severity === "error") ? "error" : "ok" };
-  if (scoped) result.scope_notes = scoped;
+  if (targets) result.scope_notes = targets.map((note) => note.id);
   return result;
 }
 
@@ -4159,12 +4161,13 @@ export async function formatVault(vaultPath, apply = false, options = {}) {
     if (!note) throw new Error(`note not found: ${noteName}`);
     if (!targets.some((item) => item.id === note.id)) targets.push(note);
   }
-  const targetIds = new Set(targets.map((note) => note.id));
   const notes = targets.length ? targets : allNotes;
-  const validation = options.patchesOnly ? { issues: [] } : await validateVault(vaultPath, allNotes, { rules, config, mapping });
-  const issues = targetIds.size
-    ? validation.issues.filter((item) => targetIds.has(item.note) || notes.some((note) => note.relPath === item.path))
-    : validation.issues;
+  // Scoped like the patches: validateVault resolves the same names against the
+  // same notes, checks only those notes, and returns only their issues.
+  const validation = options.patchesOnly
+    ? { issues: [] }
+    : await validateVault(vaultPath, allNotes, { rules, config, mapping, notes: requested });
+  const issues = validation.issues;
   const patches = [];
   const ruleContext = {
     config,
