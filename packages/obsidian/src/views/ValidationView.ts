@@ -147,11 +147,12 @@ export class ValidationView extends BaseIpaView {
     this.busy = true;
     this.summaryEl.setText("Validating…");
     try {
-      const result = await this.client.validate();
+      // Note scope validates only the active note instead of filtering a vault run.
+      const planNotes = this.validationScope === "current" ? this.currentNotes() : undefined;
+      const result = await this.client.validate(planNotes);
       const allIssues: Issue[] = Array.isArray(result?.issues) ? result.issues : [];
       const issues = this.validationScope === "current" ? this.filterToActive(allIssues) : allIssues;
 
-      const planNotes = this.validationScope === "current" ? this.currentNotes() : undefined;
       const plan = await this.client.formatPlan(planNotes);
       const patches: Array<{ rules?: unknown }> = Array.isArray(plan?.patches) ? plan.patches : [];
       this.fixableRules = new Set<string>(

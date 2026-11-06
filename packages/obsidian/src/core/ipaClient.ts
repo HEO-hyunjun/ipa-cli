@@ -139,7 +139,11 @@ export class IpaClient {
   // switching the active note re-runs validate() but doesn't change note
   // contents, so the vault-wide issue set is reused until a vault edit
   // invalidates it. That makes the common "click between notes" flow instant.
-  async validate(): Promise<any> {
+  //
+  // A note-scoped run (the validation panel's Note scope) checks only those
+  // notes, which is cheap, so it is not cached; vault rules still see every note.
+  async validate(notes?: string[]): Promise<any> {
+    if (notes?.length) return core.validateVault(this.vault, await this.loadFullNotesCached(), { notes });
     if (!this.validationCache) {
       this.validationCache = await core.validateVault(this.vault, await this.loadFullNotesCached());
     }
