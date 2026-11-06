@@ -28,7 +28,7 @@ One line per top directory; full map in `ARCHITECTURE.md`.
 - `packages/` — the JS/TS workspace: `core` (all logic in `src/index.ts`),
   `cli` (commander wiring), `obsidian` (plugin build), `builtin-rules`,
   `test-vaults`.
-- `bench/` — Tier 3 behavioral benchmark (headless agent sessions).
+- `bench/` — optional behavioral benchmark (headless agent sessions).
 - `docs/` — historical planning docs (`superpowers/`).
 - `examples/` — copy-paste vault plugin sample.
 - `scripts/` — build, install, lint, smoke.
@@ -66,9 +66,7 @@ are the norm here. Split commits by meaning, not by file.
 
 ## Branching & release
 
-- `main` is always releasable: `npm test` green is required, and any harness /
-  prompt / CLI-surface change must clear the Bench Gate (smoke, then full before
-  adoption — see Test tiers below).
+- `main` is always releasable: `npm test` green is required.
 - Work on a meaning-scoped topic branch even solo: `feat/…`, `fix/…`,
   `bench/…`, `docs/…`.
 - Merge fast-forward when the commits are already clean meaning-units;
@@ -82,20 +80,11 @@ are the norm here. Split commits by meaning, not by file.
 
 ## Test tiers
 
-- **Tier 1/2 — `npm test`.** The `node:test` suites over core, cli, and bench.
-  Pure internal refactoring that leaves the prompt and CLI surfaces unchanged is
-  fully covered here.
-- **Tier 3 — Bench Gate.** Any change to a harness/skill/prompt template, a
-  global/vault prompt string, or a CLI command surface (flags, output format)
-  must also pass the behavioral benchmark:
-  1. After the change: `npm run bench -- --smoke`.
-  2. Before adopting (merge/commit): `npm run bench -- --full`.
-  3. On a passing full run: `npm run bench -- --full --update-baseline`, then
-     commit `bench/results/baseline.jsonl` and `history.jsonl` with the change.
-  4. If a run fails or a baseline shows `regressed` / `cost_up`, put the
-     root-cause analysis in the commit message.
-
-  See `bench/README.md` for the eval model.
+- **`npm test`** — the `node:test` suites over core, cli, and bench. Required
+  before merging.
+- **Behavioral benchmark** — `npm run bench` runs headless agent sessions
+  against sandbox vaults. It is optional: run it when you want to measure how a
+  harness or prompt change affects agent behavior. See `bench/README.md`.
 
 ## Adding a harness component
 

@@ -742,7 +742,7 @@ Behavioral benchmark (LLM sessions, on-demand — see [bench/README.md](bench/RE
 
 ```sh
 npm run bench -- --smoke   # 6 scenarios × sonnet
-npm run bench -- --full    # full catalog, run before adopting harness/prompt changes
+npm run bench -- --full    # full catalog
 ```
 
 ## License

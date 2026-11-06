@@ -21,10 +21,6 @@ Commit convention / Branching & release)에 맞춰 의미 단위 커밋·브랜�
   그 변경이 통째로 사라지는가"가 분리 기준.
 - **의미가 다른 변경 묶음은 브랜치도 분리**하여 제안한다 (예: 기능 수정 +
   무관한 문서 정리가 섞여 있으면 `fix/…`와 `docs/…` 두 브랜치).
-- **Bench Gate**: 하네스/스킬/프롬프트 템플릿, 전역·볼트 프롬프트 문구,
-  CLI 명령 표면(플래그·출력 형식)을 건드린 커밋이 계획에 포함되면, 커밋 확정
-  전에 `npm run bench -- --smoke` 통과가 필요함을 사용자에게 고지한다
-  (full은 채택 직전 — `CLAUDE.md`의 Bench Gate 절 참조).
 - 코드(`packages/`, `scripts/`) 변경이 포함되면 커밋 전 `npm test` 통과를
   확인한다 (main은 항상 releasable이어야 하므로).
 
@@ -94,7 +90,6 @@ git commit -m "<type>: <한국어 제목>"
 - 이미 토픽 브랜치 위라면 새 브랜치를 또 만들지 말고, 현재 브랜치 스코프에
   맞는 변경만 거기에 커밋할지 사용자에게 확인한다.
 - `bench/results/baseline.jsonl`·`history.jsonl`이 변경에 포함되어 있으면
-  bench full 실행 결과물이므로, 원인이 된 변경과 **같은 커밋**에 넣는다
-  (CONTRIBUTING.md Bench Gate 3항).
+  bench full 실행 결과물이므로, 원인이 된 변경과 **같은 커밋**에 넣는다.
 - untracked 파일은 `git diff`에 안 나온다 — `git status --porcelain`의 `??`
   항목은 파일을 직접 읽어 요약한다.
