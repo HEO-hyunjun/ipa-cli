@@ -23,6 +23,15 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      # The plugin versions independently of the CLI, so the tag is the plugin
+      # version: it must match manifest.json and be listed in versions.json.
+      - run: |
+          tag="${GITHUB_REF_NAME#obsidian-v}"
+          manifest=$(node -p "require('./packages/obsidian/manifest.json').version")
+          if [ "$tag" != "$manifest" ]; then echo "tag $tag does not match manifest.json $manifest"; exit 1; fi
+          node -e "process.exit(require('./packages/obsidian/versions.json')[process.argv[1]] ? 0 : 1)" "$tag" \
+            || { echo "versions.json does not list $tag"; exit 1; }
+
       - run: pnpm run typecheck
 
       - run: node scripts/build.mjs && node scripts/build-obsidian.mjs

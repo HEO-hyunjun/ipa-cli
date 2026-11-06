@@ -75,6 +75,12 @@ are the norm here. Split commits by meaning, not by file.
 - No `develop` / gitflow branch — overkill at this scale.
 - Release from a milestone: a version-bump commit
   (`chore: X.Y.Z 버전업 — highlights`) plus a `vX.Y.Z` tag.
+- The Obsidian plugin can release on its own: bump only
+  `packages/obsidian/{manifest.json,package.json}`, add the version to
+  `packages/obsidian/versions.json`, and tag `obsidian-vX.Y.Z`. The CLI version
+  stays as is. The plugin workflow checks that the tag matches `manifest.json`
+  and never marks its release "Latest" (installers resolve the CLI through
+  `releases/latest`).
 - Sync the repo between machines with `git push`/`pull` (origin), never by
   file-syncing the working tree — file-syncing `.git` risks corrupting it.
 
