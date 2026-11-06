@@ -310,6 +310,33 @@ deploy-kit에서 캐시 빌드, WAR 배포, 로컬 개발 환경 문제를 함�
   assert.match(semantic.source_query, /도메인|권한/);
 });
 
+test("link suggestions offer the indexes similar notes ref, project indexes first", async () => {
+  const vault = await fixtureVault();
+  await mkdir(join(vault, "02 Archive"), { recursive: true });
+  const note = (type, refs, body) =>
+    `---\ndate_created: 2026/05/10 (Sun) 00:00:00\ndate_modified: 2026/05/10 (Sun) 00:00:00\nref: ${JSON.stringify(refs.map((ref) => `[[${ref}]]`))}\ntags: []\ntype: ${type}\n---\n${body}`;
+  await writeFile(join(vault, "01 Project", "🔖 Proj Index.md"), note("index", [], "# Proj Index\n"), "utf8");
+  await writeFile(join(vault, "02 Archive", "🔖 Arch Index.md"), note("index", [], "# Arch Index\n"), "utf8");
+  await writeFile(join(vault, "02 Archive", "Neighbor Proj.md"), note("note", ["🔖 Proj Index"], "## Notes\n\nquasar telemetry pipeline backpressure tuning details\n"), "utf8");
+  await writeFile(join(vault, "02 Archive", "Neighbor Arch.md"), note("note", ["🔖 Arch Index"], "## Notes\n\nquasar telemetry pipeline backpressure ingest notes\n"), "utf8");
+  await writeFile(join(vault, "00 Inbox", "Source.md"), note("note", [], "## Notes\n\nquasar telemetry pipeline backpressure tuning for the ingest cluster\n"), "utf8");
+
+  const { suggestions } = await suggestLinks(vault, "Source");
+  const order = suggestions.map((item) => item.target);
+  const proj = suggestions.find((item) => item.target === "🔖 Proj Index");
+  assert.equal(proj?.reason, "neighbor_ref_match");
+  assert.deepEqual(proj.source_notes, ["Neighbor Proj"]);
+  assert.ok(order.indexOf("🔖 Proj Index") < order.indexOf("🔖 Arch Index"));
+  assert.ok(order.indexOf("🔖 Arch Index") < order.indexOf("Neighbor Proj"));
+  assert.equal(suggestions.find((item) => item.target === "Neighbor Proj")?.target_type, "note");
+
+  // A parent the note already sits under (directly or through an index) is not offered.
+  await writeFile(join(vault, "00 Inbox", "Source.md"), note("note", ["🔖 Proj Index"], "## Notes\n\nquasar telemetry pipeline backpressure tuning for the ingest cluster\n"), "utf8");
+  const after = (await suggestLinks(vault, "Source")).suggestions.map((item) => item.target);
+  assert.ok(!after.includes("🔖 Proj Index"));
+  assert.ok(after.includes("🔖 Arch Index"));
+});
+
 test("search, view, traversal and context work in the JS runtime", async () => {
   const vault = await fixtureVault();
   const search = await searchVault(vault, "Alpha", { threshold: 0, maxResults: 3 });

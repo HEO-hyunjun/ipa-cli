@@ -4814,6 +4814,8 @@ async function pluginFingerprint(vaultPath) {
 }
 
 const LINK_SUGGEST_MAX_PER_NOTE = 30;
+// A note sits under one to a few indexes; more parent candidates crowd out notes.
+const LINK_SUGGEST_MAX_PARENTS = 8;
 const LINK_SUGGEST_QUERY_LIMIT = 24;
 const LINK_SUGGEST_QUERY_TERMS = 10;
 const LINK_SUGGEST_SEARCH_RESULTS_PER_QUERY = 10;
@@ -5035,6 +5037,26 @@ function addRankedLinkSuggestion(byTarget, target, suggestion) {
   if (!current || suggestion.rank > current.rank) byTarget.set(target.id, { ...suggestion, target: target.id });
 }
 
+// Every index/root the note reaches through its refs.
+function ancestorIds(note, lookup) {
+  const out = new Set();
+  const pending = [...note.refs];
+  while (pending.length) {
+    const parent = lookup(pending.pop());
+    if (!parent || out.has(parent.id)) continue;
+    out.add(parent.id);
+    pending.push(...parent.refs);
+  }
+  return out;
+}
+
+// 0: project index/root, 1: other index/root, 2: note.
+function linkSuggestionGroup(target, mapping = DEFAULT_MAPPING) {
+  if (target?.type !== "index" && target?.type !== "root") return 2;
+  const projectDir = mapping?.project_dir ?? DEFAULT_MAPPING.project_dir;
+  return target.folder === projectDir || target.folder.startsWith(`${projectDir}/`) ? 0 : 1;
+}
+
 function linkSuggestionScore(rank) {
   return Number(rank.toFixed(4));
 }
@@ -5095,11 +5117,55 @@ export async function suggestLinks(vaultPath, noteName = null, options = {}) {
           });
         });
       }
+      // Index/root suggestions come from the semantic neighbours: an index that
+      // similar notes ref is where this note likely belongs, ranked by the sum
+      // of those neighbours' ranks. A direct search hit on an index is not used
+      // (above) — child-body and project scores lift indexes for almost any
+      // query. Parents the note already sits under are skipped.
+      const ancestors = ancestorIds(note, lookup);
+      const parents = new Map();
+      for (const item of [...byTarget.values()].sort((a, b) => b.rank - a.rank)) {
+        if (item.reason !== "semantic_search_match") continue;
+        for (const ref of preparedNotes.noteById.get(item.target)?.refs ?? []) {
+          const parent = lookup(ref);
+          if (!parent || (parent.type !== "index" && parent.type !== "root")) continue;
+          if (parent.id === note.id || ancestors.has(parent.id) || alreadyLinked(parent.id, searchableKey(parent.id))) continue;
+          const entry = parents.get(parent.id) ?? { parent, rank: 0, via: [] };
+          entry.rank += item.rank;
+          if (!entry.via.includes(item.target)) entry.via.push(item.target);
+          parents.set(parent.id, entry);
+        }
+      }
+      for (const { parent, rank, via } of parents.values()) {
+        addRankedLinkSuggestion(byTarget, parent, { note: note.id, reason: "neighbor_ref_match", rank, source_notes: via.slice(0, 3) });
+      }
     }
+    // The most relevant targets are kept, then shown parents first: project
+    // index/root notes, other index/root notes, then plain notes — an index is
+    // where the note belongs (a ref), a note is a sideways link.
+    let parentsKept = 0;
     suggestions.push(...[...byTarget.values()]
       .sort((a, b) => b.rank - a.rank || a.target.localeCompare(b.target))
+      .filter((item) => {
+        const type = preparedNotes.noteById.get(item.target)?.type;
+        if (type !== "index" && type !== "root") return true;
+        parentsKept += 1;
+        return parentsKept <= LINK_SUGGEST_MAX_PARENTS;
+      })
       .slice(0, LINK_SUGGEST_MAX_PER_NOTE)
-      .map(({ rank, ...item }) => ({ ...item, score: linkSuggestionScore(rank) })));
+      .map(({ rank, ...item }) => {
+        const target = preparedNotes.noteById.get(item.target);
+        return {
+          ...item,
+          target_type: target?.type || "note",
+          target_path: target?.relPath ?? null,
+          group: linkSuggestionGroup(target, context.mapping),
+          score: linkSuggestionScore(rank),
+          rank
+        };
+      })
+      .sort((a, b) => a.group - b.group || b.rank - a.rank || a.target.localeCompare(b.target))
+      .map(({ rank, group, ...item }) => item));
   }
   return { suggestions };
 }
