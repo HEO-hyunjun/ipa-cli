@@ -102,7 +102,7 @@ test("CLI help and key smoke commands run through ipa-test profile", async () =>
   assert.notEqual(unknownHelp.status, 0);
   assert.match(unknownHelp.stderr, /unknown command: not-a-command/);
   const channels = run(env, ["--profile", "ipa-test", "list-channels"]);
-  assert.match(channels, /search channels \(9\)/);
+  assert.match(channels, /search channels \(10\)/);
   assert.match(channels, /body_match\s+0\.3630/);
   const rules = run(env, ["--profile", "ipa-test", "list-rules"]);
   assert.match(rules, /validator rules \(8\)/);
@@ -409,7 +409,7 @@ test("legacy surface fixture is covered by JS fixtures", async () => {
   assert.match(root, /- 🏷️ Sample Root/);
 
   const channels = run(env, [...profile, "list-channels"]);
-  assert.match(channels, /search channels \(9\)/);
+  assert.match(channels, /search channels \(10\)/);
   assert.match(channels, /fuzzy\s+0\.2680\s+0\.2680\s+Graded fuzzy match/);
   assert.match(channels, /project\s+0\.0330\s+0\.0330\s+Project folder\/ref boost/);
   const rules = run(env, [...profile, "list-rules"]);

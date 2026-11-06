@@ -59,6 +59,8 @@ const CACHE_SCHEMA = "notes-v2";
 export const CHANNELS = [
   { name: "fuzzy", defaultWeight: 0.268, description: "Graded fuzzy match on note id and aliases" },
   { name: "keyword", defaultWeight: 0.055, description: "Token AND match against note id, aliases, refs, tags, and body" },
+  // Weight 0 until tuned: ranking stays the same until a tune result weights it.
+  { name: "keyword_idf", defaultWeight: 0, description: "Like keyword, but each query token counts by its rarity in the vault (BM25 IDF)" },
   { name: "filename", defaultWeight: 0.2, description: "Exact, case-insensitive, substring, and no-space match on note id and aliases" },
   { name: "sequence_match", defaultWeight: 0.078, description: "All query tokens appear in normalized note id or aliases" },
   { name: "filename_partial", defaultWeight: 0.15, description: "Partial token match on normalized note id or aliases" },
@@ -1959,12 +1961,23 @@ function prepareSearchQuery(query, preparedNotes) {
     }
   }
   const tokens = tokenize(raw);
+  const hitList = tokens.map((token) => tokenHits(preparedNotes, token));
+  // keyword_idf: a token found in fewer notes counts more. Document frequency
+  // comes from the same id/aliases/refs/tags/body substring hits as keyword.
+  const n = preparedNotes.length;
+  const tokenIdf = hitList.map((hits) => {
+    let df = 0;
+    for (const hit of hits) if (hit) df += 1;
+    return Math.log(1 + (n - df + 0.5) / (df + 0.5));
+  });
   return {
     raw,
     lower,
     noSpace: lower.replace(/\s+/g, ""),
     tokens,
-    tokenHits: tokens.map((token) => tokenHits(preparedNotes, token)),
+    tokenHits: hitList,
+    tokenIdf,
+    idfTotal: tokenIdf.reduce((sum, idf) => sum + idf, 0),
     trigramSet: new Set(trigrams),
     bm25Scores,
     childBm25Scores
@@ -2029,6 +2042,16 @@ function scorePreparedChannels(prepared, query) {
   channelScores.keyword = keyword;
   if (keyword) reasons.keyword = { coverage: keyword };
 
+  let idfCovered = 0;
+  if (query.idfTotal > 0) {
+    query.tokenHits.forEach((hits, k) => {
+      if (hits[prepared.index]) idfCovered += query.tokenIdf[k];
+    });
+    idfCovered /= query.idfTotal;
+  }
+  channelScores.keyword_idf = idfCovered;
+  if (idfCovered) reasons.keyword_idf = { coverage: idfCovered };
+
   const body = query.tokens.length
     ? query.tokenHits.filter((hits) => hits[prepared.index] & 1).length / query.tokens.length
     : 0;
@@ -2067,6 +2090,7 @@ function scorePreparedNote(prepared, query, weights = {}) {
 const BUILTIN_CHANNEL_PHASES = {
   fuzzy: "base",
   keyword: "base",
+  keyword_idf: "base",
   filename: "base",
   sequence_match: "base",
   filename_partial: "base",

@@ -364,6 +364,25 @@ test("link suggestion IDF cache follows note edits", async () => {
   assert.equal(afterEdit, await fresh());
 });
 
+test("keyword_idf weighs query tokens by rarity while keyword counts them equally", async () => {
+  const vault = await fixtureVault();
+  await mkdir(join(vault, "02 Archive"), { recursive: true });
+  const note = (body) =>
+    `---\ndate_created: 2026/05/10 (Sun) 00:00:00\ndate_modified: 2026/05/10 (Sun) 00:00:00\nref: []\ntags: []\ntype: note\n---\n${body}\n`;
+  for (let i = 0; i < 5; i += 1) {
+    await writeFile(join(vault, "02 Archive", `Filler ${i}.md`), note("a meeting about plans"), "utf8");
+  }
+  await writeFile(join(vault, "02 Archive", "Common Only.md"), note("another meeting"), "utf8");
+  await writeFile(join(vault, "02 Archive", "Rare Only.md"), note("the zymurgy notes"), "utf8");
+
+  const { results } = await searchVault(vault, "meeting zymurgy", { showAll: true, maxResults: 50 });
+  const reasons = (name) => results.find((hit) => hit.note === name)?.reasons ?? {};
+  assert.equal(reasons("Common Only").keyword.coverage, 0.5);
+  assert.equal(reasons("Rare Only").keyword.coverage, 0.5);
+  assert.ok(reasons("Rare Only").keyword_idf.coverage > 0.5);
+  assert.ok(reasons("Common Only").keyword_idf.coverage < 0.5);
+});
+
 test("search, view, traversal and context work in the JS runtime", async () => {
   const vault = await fixtureVault();
   const search = await searchVault(vault, "Alpha", { threshold: 0, maxResults: 3 });
