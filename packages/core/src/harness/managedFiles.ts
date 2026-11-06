@@ -85,7 +85,10 @@ export async function removeManagedBlock(path) {
   const previous = await readFile(path, "utf8");
   const pattern = new RegExp(`\\n?${escaped(begin)}[\\s\\S]*?${escaped(end)}\\n?`);
   if (!pattern.test(previous)) return false;
-  await writeFile(path, previous.replace(pattern, "\n").replace(/\n{3,}/g, "\n\n").trimEnd() + "\n", "utf8");
+  const next = previous.replace(pattern, "\n").replace(/\n{3,}/g, "\n\n").trimEnd();
+  // A file that held only the managed block was created by the harness.
+  if (next.trim()) await writeFile(path, next + "\n", "utf8");
+  else await rm(path, { force: true });
   return true;
 }
 

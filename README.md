@@ -204,7 +204,7 @@ ipa harness install codex --only hook:formatter-gate
 ```
 
 Harness install/init adds user-global IPA skills/hooks for Codex, Claude, or
-OpenCode, vault-local `AGENTS.md` / `CLAUDE.md` guidance blocks, and
+OpenCode, a vault-local `AGENTS.md` guidance block, and
 `.ipa/harness/*` metadata. Add `--with local-skills,plugin-scaffold` when the
 vault also needs focused helper skills and the `.ipa/plugins` authoring
 scaffold. For the `claude` target it also registers a
@@ -596,8 +596,9 @@ For the selected target, install writes:
 - user-global silent post-write Markdown edit ledger
 - user-global `Stop` lint gate that formats and validates edited vault notes
 - vault-local manifest under `.ipa/harness/<target>/`
-- vault-local system prompt block in `AGENTS.md` for Codex/OpenCode or
-  `CLAUDE.md` for Claude
+- vault-local system prompt block in `AGENTS.md`, shared by every target
+  (Claude Code 2.1.277+ reads `AGENTS.md` when the vault has no `CLAUDE.md`;
+  updating a Claude install from an older CLI moves the block out of `CLAUDE.md`)
 - optional (`--with hook:evidence`) prompt evidence recorder
 - optional (`--with local-skills`) vault-local `ipa-rule`, `ipa-config`,
   `ipa-tune`, `ipa-review`, and `ipa-consult` helper skills under the target's

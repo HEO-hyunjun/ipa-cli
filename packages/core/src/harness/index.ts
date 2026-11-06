@@ -216,13 +216,18 @@ export function createHarnessService(deps) {
     const targetManifest = await readTargetManifest(vaultPath, spec.name);
     const previousSkills = targetManifest?.local_skills?.skills ?? [];
     await rm(join(harnessRoot(vaultPath), spec.name), { recursive: true, force: true });
-    await removeManagedBlock(join(vaultPath, spec.localPrompt));
+    // The recorded file may predate a localPrompt change (claude used CLAUDE.md),
+    // and AGENTS.md is shared, so keep the block while another target still uses it.
+    const targets = (await readHarnessIndex(vaultPath)).targets ?? {};
+    const localPrompt = targets[spec.name]?.local_prompt ?? spec.localPrompt;
+    const shared = Object.entries(targets).some(([name, entry]) => name !== spec.name && entry.local_prompt === localPrompt);
+    const promptRemoved = !shared && await removeManagedBlock(join(vaultPath, localPrompt));
     const localSkillRemoved = await deps.uninstallLocalSkills(vaultPath, spec, previousSkills);
     const globalRemoved = await deps.uninstallGlobal(spec);
     const index = await readHarnessIndex(vaultPath);
     if (index.targets) delete index.targets[spec.name];
     await writeHarnessIndex(vaultPath, index);
-    return { status: "ok", target: spec.name, installed: false, removed: [`.ipa/harness/${spec.name}`, spec.localPrompt, ...localSkillRemoved], global_removed: globalRemoved };
+    return { status: "ok", target: spec.name, installed: false, removed: [`.ipa/harness/${spec.name}`, ...(promptRemoved ? [localPrompt] : []), ...localSkillRemoved], global_removed: globalRemoved };
   };
 
   const update = async (vaultPath, target = "codex", options = {}) => {

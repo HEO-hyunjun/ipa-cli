@@ -1411,7 +1411,7 @@ test("harness install, doctor and the Stop lint gate cover raw vault Markdown wr
   assert.ok(claudeInstall.files.includes(".claude/skills/ipa-config/SKILL.md"));
   assert.ok(claudeInstall.files.includes(".claude/skills/ipa-tune/SKILL.md"));
   assert.match(await readFile(join(home, ".claude", "skills", "ipa", "SKILL.md"), "utf8"), /IPA CLI Skill/);
-  assert.match(await readFile(join(vault, "CLAUDE.md"), "utf8"), /IPA CLI Harness/);
+  assert.match(await readFile(join(vault, "AGENTS.md"), "utf8"), /IPA CLI Harness/);
   const claudeTuneSkill = await readFile(join(vault, ".claude", "skills", "ipa-tune", "SKILL.md"), "utf8");
   assert.match(claudeTuneSkill, /name: ipa-tune/);
   assert.match(claudeTuneSkill, /Label Confirmation Protocol/);
@@ -1906,7 +1906,7 @@ test("claude harness install never clobbers an unparseable settings.json", async
   assert.ok(install.skipped_user_owned.includes(settingsPath), "the skipped settings file is reported");
   // Other, file-based components still install.
   assert.ok(existsSync(join(home, ".claude", "skills", "ipa", "SKILL.md")), "file components install despite the skip");
-  assert.match(await readFile(join(vault, "CLAUDE.md"), "utf8"), /IPA CLI Harness/);
+  assert.match(await readFile(join(vault, "AGENTS.md"), "utf8"), /IPA CLI Harness/);
 
   await harnessUninstall(vault, "claude", options);
 });
@@ -1952,6 +1952,36 @@ test("claude harness update auto-joins the permissions default for legacy manife
   assert.ok(!(doctor.issues ?? []).some((issue) => issue.code === "harness.permission_rule_missing"), "doctor stays silent when permissions is omitted");
 
   await harnessUninstall(vault, "claude", options);
+});
+
+test("claude shares the vault AGENTS.md: update moves a legacy CLAUDE.md block, uninstall keeps a block another target uses", async () => {
+  const vault = await fixtureVault();
+  const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));
+  const options = { homeDir: home, profile: "ipa-test" };
+  const agents = join(vault, "AGENTS.md");
+  await harnessInstall(vault, "claude", options);
+  const block = await readFile(agents, "utf8");
+  assert.match(block, /IPA CLI Harness/);
+
+  // An install from CLI 0.5.4 or older kept the block in CLAUDE.md and recorded that file.
+  const indexPath = join(vault, ".ipa", "harness", "manifest.json");
+  const index = JSON.parse(await readFile(indexPath, "utf8"));
+  index.targets.claude.local_prompt = "CLAUDE.md";
+  await writeFile(indexPath, JSON.stringify(index, null, 2) + "\n", "utf8");
+  await rm(agents);
+  await writeFile(join(vault, "CLAUDE.md"), block, "utf8");
+
+  await harnessUpdate(vault, "claude", options);
+  assert.equal(existsSync(join(vault, "CLAUDE.md")), false, "a CLAUDE.md that held only the block is removed, so Claude Code reads AGENTS.md");
+  assert.match(await readFile(agents, "utf8"), /IPA CLI Harness/);
+
+  // Removing codex keeps the block that claude still reads from the same file.
+  await harnessInstall(vault, "codex", options);
+  await harnessUninstall(vault, "codex", options);
+  assert.match(await readFile(agents, "utf8"), /IPA CLI Harness/);
+
+  await harnessUninstall(vault, "claude", options);
+  assert.equal(existsSync(agents), false, "the last target removes the block and the file it alone held");
 });
 
 test("claude harness doctor flags a missing permission rule when the component is selected", async () => {
@@ -2001,7 +2031,7 @@ test("vault fragments are inlined into managed prompt surfaces and accepted by d
   const globalSkill = await readFile(join(home, ".claude", "skills", "ipa", "SKILL.md"), "utf8");
   assert.match(globalSkill, /## Vault Operating Rules/);
   assert.match(globalSkill, /SoT 원칙/);
-  const localPrompt = await readFile(join(vault, "CLAUDE.md"), "utf8");
+  const localPrompt = await readFile(join(vault, "AGENTS.md"), "utf8");
   assert.match(localPrompt, /02 Archive\/회의록 아래에 둔다/);
 
   // Then: doctor accepts fragment-injected artifacts as up to date.
@@ -2077,7 +2107,7 @@ test("harness prompt surfaces render field and folder names from the config mapp
   assert.match(skill, /10 Intake\//);
 
   // Then: the vault-local block carries the mapped folder names.
-  const localPrompt = await readFile(join(vault, "CLAUDE.md"), "utf8");
+  const localPrompt = await readFile(join(vault, "AGENTS.md"), "utf8");
   assert.match(localPrompt, /inbox `10 Intake`/);
 
   assert.equal(existsSync(join(vault, ".claude", "skills", "ipa-triage", "SKILL.md")), false);

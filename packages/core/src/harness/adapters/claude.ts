@@ -33,7 +33,9 @@ export const claudeAdapter = {
       skillFile: join(home, "skills", "ipa", "SKILL.md"),
       hooksDir: join(home, "hooks"),
       hooksConfig: join(home, "settings.json"),
-      localPrompt: "CLAUDE.md",
+      // Claude Code 2.1.277+ loads AGENTS.md when the project has no CLAUDE.md,
+      // so every target shares one vault prompt file.
+      localPrompt: "AGENTS.md",
       globalPromptFile: join(home, "CLAUDE.md"),
       pluginFile: null
     };
@@ -65,7 +67,7 @@ export const claudeAdapter = {
       home: "~/.claude",
       skill: "~/.claude/skills/ipa/SKILL.md",
       hooks_config: "~/.claude/settings.json",
-      prompt: `~/.claude/${spec.localPrompt}`,
+      prompt: "~/.claude/CLAUDE.md",
       opencode_plugin: null
     };
   },
