@@ -1266,6 +1266,18 @@ test("harness install, doctor and the Stop lint gate cover raw vault Markdown wr
   assert.doesNotMatch(await readFile(join(vault, "00 Inbox", "Needs Format.md"), "utf8"), /date_modified: 2026-06-23T/);
   assert.equal(existsSync(pendingPath), false);
 
+  // Nothing pending and only _example-* gate scaffolds: the hook must not spawn
+  // the CLI at all (with an ipa that always fails, a spawn would block).
+  assert.ok(existsSync(join(vault, ".ipa", "plugins", "gates")));
+  const failShim = await mkdtemp(join(tmpdir(), "ipa-fail-shim-"));
+  await writeFile(join(failShim, "ipa"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+  const idleGate = spawnSync(process.execPath, [formatterGate], {
+    input: "{}",
+    env: { ...hookEnv, PATH: `${failShim}:${process.env.PATH}` },
+    encoding: "utf8"
+  });
+  assert.equal(idleGate.status, 0, idleGate.stderr);
+
   // Session-scoped gating: pending notes from another session must not block.
   await writeFile(
     join(vault, "00 Inbox", "Needs Format.md"),

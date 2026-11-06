@@ -434,7 +434,7 @@ process.stdout.write(JSON.stringify({
 function formatterGateScript(vaultPath, options = {}) {
   return `#!/usr/bin/env node
 // ${HARNESS_MARKER}: block final response until the IPA session gate passes.
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
@@ -483,9 +483,13 @@ const input = inputJson();
 const sessionId = sessionIdFrom(input);
 
 // Fast path: nothing pending and no gate plugins installed — skip the CLI spawn.
+// Like core's plugin list, only non-underscore .js files count, so a gates dir
+// holding just the _example-* scaffolds does not cost a CLI run every turn.
 const pendingPath = join(vaultPath, ".ipa", "harness", "formatter-pending.json");
 const gatesDir = join(vaultPath, ".ipa", "plugins", "gates");
-if (!existsSync(pendingPath) && !existsSync(gatesDir)) process.exit(0);
+const hasGatePlugins = existsSync(gatesDir) &&
+  readdirSync(gatesDir).some((name) => name.endsWith(".js") && !name.startsWith("_"));
+if (!existsSync(pendingPath) && !hasGatePlugins) process.exit(0);
 
 const args = ["--vault", vaultPath, "--json", "harness", "gate"];
 if (sessionId) args.push("--session", sessionId);
