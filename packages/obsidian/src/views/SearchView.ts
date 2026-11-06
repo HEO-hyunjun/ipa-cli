@@ -1,16 +1,9 @@
 import { WorkspaceLeaf } from "obsidian";
 import { BaseIpaView } from "./BaseIpaView";
 import { VIEW_TYPE_SEARCH } from "../util/constants";
-import { locationFromPath, refLabel, scoreLabel } from "../util/format";
+import { scoreLabel } from "../util/format";
 import type IpaPlugin from "../main";
-
-interface SearchHit {
-  note?: string;
-  path?: string;
-  type?: string;
-  refs?: unknown[];
-  score?: number;
-}
+import { SearchHit, renderHitMeta } from "./searchHit";
 
 export class SearchView extends BaseIpaView {
   private inputEl!: HTMLInputElement;
@@ -117,16 +110,7 @@ export class SearchView extends BaseIpaView {
     const item = list.createEl("li", { cls: "ipa-item", attr: { tabindex: "0", role: "button" } });
     item.createDiv({ cls: "ipa-item__title", text: hit.note ?? "(untitled)" });
 
-    const meta = item.createDiv({ cls: "ipa-item__meta" });
-    if (hit.type) meta.createSpan({ cls: "ipa-badge ipa-badge--type", text: String(hit.type) });
-    const location = locationFromPath(hit.path);
-    if (location) meta.createSpan({ cls: "ipa-badge", text: location });
-    if (this.plugin.settings.showSearchScore) {
-      meta.createSpan({ cls: "ipa-badge ipa-badge--score", text: scoreLabel(hit.score) });
-    }
-    if (Array.isArray(hit.refs) && hit.refs.length) {
-      meta.createSpan({ text: `→ ${hit.refs.map(refLabel).join(", ")}` });
-    }
+    renderHitMeta(item.createDiv({ cls: "ipa-item__meta" }), hit, this.plugin.settings.showSearchScore);
 
     const open = () => void this.adapter.open(hit.path ?? null, hit.note ?? null);
     item.addEventListener("click", open);

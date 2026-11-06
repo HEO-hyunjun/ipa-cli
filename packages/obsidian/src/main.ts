@@ -11,6 +11,7 @@ import { IpaSettingTab } from "./settings/SettingsTab";
 import { ObsidianVaultAdapter } from "./adapter/ObsidianVaultAdapter";
 import { IpaClient } from "./core/ipaClient";
 import { SearchView } from "./views/SearchView";
+import { SearchModal } from "./views/SearchModal";
 import { TraversalView } from "./views/TraversalView";
 import { ValidationView } from "./views/ValidationView";
 import { RefTrail } from "./views/RefTrail";
@@ -80,8 +81,8 @@ export default class IpaPlugin extends Plugin {
     this.registerView(VIEW_TYPE_TRAVERSAL, (leaf) => new TraversalView(leaf, this));
     this.registerView(VIEW_TYPE_VALIDATION, (leaf) => new ValidationView(leaf, this));
 
-    this.addRibbonIcon(ICON_ID, "IPA: Open search", () => {
-      void this.activateView(VIEW_TYPE_SEARCH);
+    this.addRibbonIcon(ICON_ID, "IPA: Search", () => {
+      this.openSearchModal();
     });
 
     this.registerCommands();
@@ -271,6 +272,12 @@ export default class IpaPlugin extends Plugin {
 
   private registerCommands(): void {
     this.addCommand({
+      id: "search",
+      name: "Search",
+      callback: () => this.openSearchModal()
+    });
+
+    this.addCommand({
       id: "open-search-panel",
       name: "Open search panel",
       callback: () => {
@@ -281,11 +288,7 @@ export default class IpaPlugin extends Plugin {
     this.addCommand({
       id: "search-current-selection",
       name: "Search current selection",
-      callback: async () => {
-        const selection = this.adapter.getSelection().trim();
-        const view = await this.revealView<SearchView>(VIEW_TYPE_SEARCH);
-        if (view && selection) view.setQuery(selection, true);
-      }
+      callback: () => this.openSearchModal(this.adapter.getSelection().trim())
     });
 
     this.addCommand({
@@ -355,6 +358,11 @@ export default class IpaPlugin extends Plugin {
         setting?.openTabById(this.manifest.id);
       }
     });
+  }
+
+  openSearchModal(query = ""): void {
+    if (!this.guardVault()) return;
+    new SearchModal(this.app, this, query).open();
   }
 
   async rebuildCache(): Promise<void> {

@@ -1,5 +1,5 @@
 import { App, FileSystemAdapter, Notice, TFile, normalizePath } from "obsidian";
-import type { EventRef } from "obsidian";
+import type { EventRef, PaneType } from "obsidian";
 
 // Wraps Obsidian's app/vault/workspace APIs so core never depends on Obsidian
 // directly. Resolves the vault path, the active note, opening notes, reading the
@@ -32,24 +32,25 @@ export class ObsidianVaultAdapter {
     return editor?.getSelection() ?? "";
   }
 
-  private async openFile(file: TFile): Promise<void> {
-    await this.app.workspace.getLeaf(false).openFile(file);
+  // newLeaf follows Workspace.getLeaf: false = current tab, true/"tab" = new tab.
+  private async openFile(file: TFile, newLeaf: PaneType | boolean = false): Promise<void> {
+    await this.app.workspace.getLeaf(newLeaf).openFile(file);
   }
 
-  async openByPath(relPath: string): Promise<boolean> {
+  async openByPath(relPath: string, newLeaf: PaneType | boolean = false): Promise<boolean> {
     // core paths can be NFD (macOS fs); Obsidian indexes by NFC.
     const file = this.app.vault.getAbstractFileByPath(normalizePath(relPath).normalize("NFC"));
     if (file instanceof TFile) {
-      await this.openFile(file);
+      await this.openFile(file, newLeaf);
       return true;
     }
     return false;
   }
 
-  async openByTitle(title: string): Promise<boolean> {
+  async openByTitle(title: string, newLeaf: PaneType | boolean = false): Promise<boolean> {
     const match = this.app.vault.getMarkdownFiles().find((file) => file.basename === title);
     if (match) {
-      await this.openFile(match);
+      await this.openFile(match, newLeaf);
       return true;
     }
     return false;
@@ -57,9 +58,9 @@ export class ObsidianVaultAdapter {
 
   // Open a note preferring its vault-relative path (returned by core) and
   // falling back to a title lookup.
-  async open(relPath: string | null, title: string | null): Promise<void> {
-    if (relPath && (await this.openByPath(relPath))) return;
-    if (title && (await this.openByTitle(title))) return;
+  async open(relPath: string | null, title: string | null, newLeaf: PaneType | boolean = false): Promise<void> {
+    if (relPath && (await this.openByPath(relPath, newLeaf))) return;
+    if (title && (await this.openByTitle(title, newLeaf))) return;
     new Notice(`IPA: could not open note (${title ?? relPath ?? "unknown"})`);
   }
 
