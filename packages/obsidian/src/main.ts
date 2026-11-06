@@ -1,5 +1,5 @@
 import { Notice, Plugin, TFile, WorkspaceLeaf, normalizePath } from "obsidian";
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import {
   ICON_ID,
   VIEW_TYPE_SEARCH,
@@ -142,15 +142,26 @@ export default class IpaPlugin extends Plugin {
   // renderer rejects. Inject a loader that reads the file and imports it via a
   // blob URL (verified to work in the renderer). Honors the enableVaultPlugins
   // setting so disabling it makes core skip vault-local plugins gracefully.
+  //
+  // Every import of a new blob URL adds a module record the renderer never
+  // frees, and core imports each rule module on every validate/format (so on
+  // every format-on-save). Reuse the module until the file's mtime changes, the
+  // same cache key the CLI uses.
   private installPluginLoader(): void {
+    const loaded = new Map<string, { mtimeMs: number; module: unknown }>();
     (globalThis as Record<string, unknown>).__ipaImportPlugin = async (absPath: string) => {
       if (!this.settings.enableVaultPlugins) {
         throw new Error("IPA: vault-local plugins are disabled in settings.");
       }
+      const { mtimeMs } = await stat(absPath);
+      const cached = loaded.get(absPath);
+      if (cached?.mtimeMs === mtimeMs) return cached.module;
       const code = rewriteNodeBuiltinImports(await readFile(absPath, "utf8"));
       const url = URL.createObjectURL(new Blob([code], { type: "application/javascript" }));
       try {
-        return await import(url);
+        const module: unknown = await import(url);
+        loaded.set(absPath, { mtimeMs, module });
+        return module;
       } finally {
         URL.revokeObjectURL(url);
       }
