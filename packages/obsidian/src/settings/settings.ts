@@ -19,6 +19,8 @@ export interface IpaSettings {
   showSearchScore: boolean;
   // Traversal
   defaultTraversalTab: TraversalTab;
+  // Show the ref path (root / index / note) instead of the folder path in note headers.
+  showRefTrail: boolean;
 }
 
 export const DEFAULT_SETTINGS: IpaSettings = {
@@ -30,5 +32,6 @@ export const DEFAULT_SETTINGS: IpaSettings = {
   showPluginLoadErrors: true,
   searchResultLimit: 25,
   showSearchScore: true,
-  defaultTraversalTab: "up"
+  defaultTraversalTab: "up",
+  showRefTrail: true
 };

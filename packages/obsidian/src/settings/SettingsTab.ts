@@ -116,6 +116,23 @@ export class IpaSettingTab extends PluginSettingTab {
         })
       );
 
+    new Setting(containerEl).setName("Note header").setHeading();
+
+    new Setting(containerEl)
+      .setName("Show ref path in note header")
+      .setDesc(
+        "Replace the folder path above each note with its ref path (root / index / note). " +
+          "Notes outside the IPA index or without refs keep the folder path."
+      )
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.showRefTrail).onChange(async (value) => {
+          this.plugin.settings.showRefTrail = value;
+          await this.plugin.saveSettings();
+          if (value) this.plugin.refTrail.schedule();
+          else this.plugin.refTrail.clear();
+        })
+      );
+
     void this.renderStatus(containerEl);
   }
 

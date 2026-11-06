@@ -13,6 +13,7 @@ import { IpaClient } from "./core/ipaClient";
 import { SearchView } from "./views/SearchView";
 import { TraversalView } from "./views/TraversalView";
 import { ValidationView } from "./views/ValidationView";
+import { RefTrail } from "./views/RefTrail";
 import { errorMessage } from "./util/format";
 import { ConfirmModal } from "./util/ConfirmModal";
 import { FlowPlan, IpaFlow } from "./core/ipaFlow";
@@ -46,6 +47,7 @@ export default class IpaPlugin extends Plugin {
   declare settings: IpaSettings;
   adapter!: ObsidianVaultAdapter;
   client!: IpaClient;
+  refTrail!: RefTrail;
   private warmTimer: number | null = null;
   private lastMarkdownFile: TFile | null = null;
   private formatGuard = new Set<string>();
@@ -70,6 +72,9 @@ export default class IpaPlugin extends Plugin {
     this.registerEvent(this.app.vault.on("rename", onVaultChange));
 
     this.registerFormatOnSave();
+
+    this.refTrail = new RefTrail(this);
+    this.refTrail.register();
 
     this.registerView(VIEW_TYPE_SEARCH, (leaf) => new SearchView(leaf, this));
     this.registerView(VIEW_TYPE_TRAVERSAL, (leaf) => new TraversalView(leaf, this));
@@ -114,6 +119,7 @@ export default class IpaPlugin extends Plugin {
 
   onunload(): void {
     if (this.warmTimer !== null) window.clearTimeout(this.warmTimer);
+    this.refTrail?.clear();
     if (this.restoreSaveCommand) this.restoreSaveCommand();
     delete (globalThis as Record<string, unknown>).__ipaImportPlugin;
   }

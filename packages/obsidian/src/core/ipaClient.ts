@@ -99,6 +99,29 @@ export class IpaClient {
     return core.traversalAll(this.vault, note, await this.loadNotesCached());
   }
 
+  // The ref trail shown in a note's header: the first upward path (it follows
+  // the first ref), root first, without the note itself. relPath is null for a
+  // ref that does not resolve to a note. Returns null when `path` is not an
+  // IPA-managed note, so callers can keep Obsidian's folder breadcrumb.
+  async refTrail(path: string): Promise<Array<{ id: string; relPath: string | null }> | null> {
+    const notes = await this.loadNotesCached();
+    const target = path.normalize("NFC");
+    const relPathOf = (note: any) => String(note?.relPath ?? "").normalize("NFC");
+    const note = notes.find((candidate) => relPathOf(candidate) === target);
+    if (!note) return null;
+    const result = await core.traversal(this.vault, "up", note.id, { notes });
+    const first: unknown[] = Array.isArray(result?.paths?.[0]) ? result.paths[0] : [];
+    const byId = new Map(notes.map((candidate) => [candidate.id, candidate]));
+    return first
+      .slice(1)
+      .reverse()
+      .map((id) => {
+        const label = String(id);
+        const parent = byId.get(id);
+        return { id: label, relPath: parent ? relPathOf(parent) : null };
+      });
+  }
+
   // Link suggestions score against the search context; reusing the cached one
   // avoids rebuilding the whole context (the dominant cost) per suggestion.
   async suggestLinks(note: string): Promise<any> {

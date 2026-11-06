@@ -265,3 +265,14 @@
 .ipa-more:hover {
   color: var(--text-accent-hover);
 }
+
+/* Ref trail in the note header (views/RefTrail.ts): while a trail is shown,
+   hide Obsidian's folder breadcrumb next to it. */
+.view-header-title-container.ipa-ref-trail-on > .view-header-title-parent:not(.ipa-ref-trail) {
+  display: none;
+}
+
+.ipa-ref-trail .view-header-breadcrumb.is-unresolved {
+  cursor: default;
+  opacity: 0.6;
+}
