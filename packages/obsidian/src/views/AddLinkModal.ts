@@ -91,13 +91,13 @@ export class AddLinkModal extends SuggestModal<Candidate> {
     super(app);
     this.limit = 50;
     this.setPlaceholder(`Add links to ${target.file.basename} — type to search`);
-    const mod = Platform.isMacOS ? "⌘" : "Ctrl";
+    const mod = Platform.isMacOS ? "⌘↵" : "Ctrl+↵";
     this.setInstructions([
-      { command: "↑↓", purpose: "to navigate" },
-      { command: "↵", purpose: "to pick" },
-      { command: "⇧ ↵", purpose: "to pick as ref ↔ link" },
-      { command: `${mod} ↵`, purpose: "to add picked" },
-      { command: "esc", purpose: "to dismiss" }
+      { command: "↵ / click :", purpose: "pick or unpick" },
+      { command: "⇧↵ / ⇧click / badge :", purpose: "pick as ref ↔ link" },
+      { command: `${mod} :`, purpose: "add picked" },
+      { command: "↑↓ :", purpose: "move" },
+      { command: "esc :", purpose: "close" }
     ]);
     this.scope.register(["Mod"], "Enter", () => {
       void this.apply();
@@ -111,6 +111,10 @@ export class AddLinkModal extends SuggestModal<Candidate> {
 
   onOpen(): void {
     super.onOpen();
+    // The key legend sits above the input, where it is read before typing.
+    this.modalEl.addClass("ipa-add-link-modal");
+    const legend = this.modalEl.querySelector(".prompt-instructions");
+    if (legend) this.inputEl.parentElement?.before(legend);
     this.pickedEl = createDiv({ cls: "ipa-add-link__picked" });
     this.resultContainerEl.after(this.pickedEl);
     this.renderPicked();

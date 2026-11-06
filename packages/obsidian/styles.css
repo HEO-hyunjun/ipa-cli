@@ -473,3 +473,13 @@
 .ipa-add-link__mode:hover {
   color: var(--text-accent);
 }
+
+/* Add link: the key legend moved above the input. */
+/* Shown even when the theme hides prompt instructions: this modal has more
+   keys than the usual ↵ and esc. */
+.ipa-add-link-modal .prompt-instructions {
+  display: flex;
+  padding-top: var(--size-4-2);
+  border-top: none;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
