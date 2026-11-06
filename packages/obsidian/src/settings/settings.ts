@@ -17,7 +17,12 @@ export interface IpaSettings {
   showSearchScore: boolean;
   // Show the ref path (root / index / note) instead of the folder path in note headers.
   showRefTrail: boolean;
+  // Dot colours in the traversal picture by note type; "" keeps the theme colour.
+  graphColors: GraphColors;
 }
+
+export type GraphNoteType = "root" | "index" | "note";
+export type GraphColors = Record<GraphNoteType, string>;
 
 export const DEFAULT_SETTINGS: IpaSettings = {
   formatOnSave: false,
@@ -28,5 +33,6 @@ export const DEFAULT_SETTINGS: IpaSettings = {
   showPluginLoadErrors: true,
   searchResultLimit: 25,
   showSearchScore: true,
-  showRefTrail: true
+  showRefTrail: true,
+  graphColors: { root: "", index: "", note: "" }
 };

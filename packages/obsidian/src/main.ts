@@ -56,6 +56,7 @@ export default class IpaPlugin extends Plugin {
 
   async onload(): Promise<void> {
     await this.loadSettings();
+    this.applyGraphColors();
     this.adapter = new ObsidianVaultAdapter(this.app);
     this.client = new IpaClient(() => this.adapter.getVaultPath());
     this.installPluginLoader();
@@ -121,6 +122,7 @@ export default class IpaPlugin extends Plugin {
   onunload(): void {
     if (this.warmTimer !== null) window.clearTimeout(this.warmTimer);
     this.refTrail?.clear();
+    for (const type of ["root", "index", "note"]) document.body.style.removeProperty(`--ipa-graph-${type}`);
     if (this.restoreSaveCommand) this.restoreSaveCommand();
     delete (globalThis as Record<string, unknown>).__ipaImportPlugin;
   }
@@ -492,7 +494,18 @@ export default class IpaPlugin extends Plugin {
   }
 
   async loadSettings(): Promise<void> {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    const data = (await this.loadData()) ?? {};
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, data);
+    this.settings.graphColors = { ...DEFAULT_SETTINGS.graphColors, ...(data.graphColors ?? {}) };
+  }
+
+  // Traversal picture dot colours are CSS variables on body, so a CSS snippet
+  // can set them too; an empty setting leaves the variable (and theme default) alone.
+  applyGraphColors(): void {
+    for (const [type, color] of Object.entries(this.settings.graphColors)) {
+      if (color) document.body.style.setProperty(`--ipa-graph-${type}`, color);
+      else document.body.style.removeProperty(`--ipa-graph-${type}`);
+    }
   }
 
   async saveSettings(): Promise<void> {

@@ -1,6 +1,6 @@
 import { App, PluginSettingTab, Setting } from "obsidian";
 import type IpaPlugin from "../main";
-import type { ValidationScope } from "./settings";
+import type { GraphNoteType, ValidationScope } from "./settings";
 import { errorMessage } from "../util/format";
 
 export class IpaSettingTab extends PluginSettingTab {
@@ -133,7 +133,49 @@ export class IpaSettingTab extends PluginSettingTab {
         })
       );
 
+    new Setting(containerEl).setName("Traversal picture").setHeading();
+
+    const colorLabels: Array<[GraphNoteType, string, string]> = [
+      ["root", "Root color", "--color-orange"],
+      ["index", "Index color", "--interactive-accent"],
+      ["note", "Note color", "--text-muted"]
+    ];
+    for (const [type, name, themeVar] of colorLabels) {
+      const setting = new Setting(containerEl).setName(name).setDesc("Dot color for this note type. Reset to follow the theme.");
+      setting.addColorPicker((picker) => {
+        // An unset color shows the theme color it currently resolves to.
+        const current = this.plugin.settings.graphColors[type] || this.themeColor(themeVar);
+        if (current) picker.setValue(current);
+        picker.onChange(async (value) => {
+          this.plugin.settings.graphColors[type] = value;
+          await this.plugin.saveSettings();
+          this.plugin.applyGraphColors();
+        });
+      });
+      setting.addExtraButton((button) =>
+        button
+          .setIcon("rotate-ccw")
+          .setTooltip("Follow the theme")
+          .onClick(async () => {
+            this.plugin.settings.graphColors[type] = "";
+            await this.plugin.saveSettings();
+            this.plugin.applyGraphColors();
+            this.display();
+          })
+      );
+    }
+
     void this.renderStatus(containerEl);
+  }
+
+  // Resolve a theme CSS variable to a #rrggbb the color picker accepts.
+  private themeColor(variable: string): string {
+    const probe = document.body.createDiv();
+    probe.style.color = `var(${variable})`;
+    const rgb = getComputedStyle(probe).color.match(/\d+(\.\d+)?/g)?.slice(0, 3).map(Number) ?? [];
+    probe.remove();
+    if (rgb.length < 3) return "";
+    return "#" + rgb.map((v) => Math.round(v).toString(16).padStart(2, "0")).join("");
   }
 
   private async renderStatus(containerEl: HTMLElement): Promise<void> {
