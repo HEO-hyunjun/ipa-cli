@@ -133,6 +133,11 @@ ipa obsidian install   # first-time deploy into the active vault
 ipa obsidian sync      # refresh an existing install with the current build
 ```
 
+The file explorer's note menu and the command palette also offer **Delete with
+subgraph**, which runs the same plan as `ipa note delete --subgraph`, lists every
+note it will delete or unlink in a confirmation dialog, and trashes the notes
+through Obsidian's "Deleted files" setting.
+
 Only release assets are copied (`main.js`, `manifest.json`, `styles.css`,
 `versions.json`); the plugin's `data.json` settings are never touched.
 `ipa update --apply` rebuilds the bundle and runs the sync automatically when the

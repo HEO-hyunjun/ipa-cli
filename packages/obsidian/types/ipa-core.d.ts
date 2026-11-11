@@ -70,6 +70,11 @@ declare module "@ipa/core" {
     targetFolder: string,
     apply?: boolean
   ): Promise<any>;
+  export function deleteNote(
+    vaultPath: string,
+    noteName: string,
+    options?: { subgraph?: boolean; apply?: boolean; notes?: any[] | null; withContent?: boolean }
+  ): Promise<any>;
   export function renameNote(
     vaultPath: string,
     oldName: string,

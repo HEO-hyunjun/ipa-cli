@@ -167,6 +167,12 @@ export class IpaClient {
     });
   }
 
+  // Plan only, with each rewritten note's before/after text: main.ts applies it
+  // through Obsidian's API (vault.process, fileManager.trashFile).
+  async subgraphDeletePlan(note: string): Promise<any> {
+    return core.deleteNote(this.vault, note, { subgraph: true, notes: await this.loadFullNotesCached(), withContent: true });
+  }
+
   // IPA Flow / write
   move(note: string, target: string, apply: boolean): Promise<any> {
     return core.moveNote(this.vault, note, target, apply);

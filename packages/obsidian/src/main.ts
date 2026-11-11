@@ -102,6 +102,13 @@ export default class IpaPlugin extends Plugin {
             .setIcon(ICON_ID)
             .onClick(() => void this.moveFilesByConvention([file]))
         );
+        menu.addItem((item) =>
+          item
+            .setTitle("IPA: Delete with subgraph")
+            .setIcon("trash-2")
+            .setWarning(true)
+            .onClick(() => void this.deleteWithSubgraph(file))
+        );
       })
     );
     this.registerEvent(
@@ -392,6 +399,16 @@ export default class IpaPlugin extends Plugin {
     });
 
     this.addCommand({
+      id: "delete-current-note-with-subgraph",
+      name: "Delete current note with its subgraph",
+      callback: () => {
+        const file = this.app.workspace.getActiveFile();
+        if (file) void this.deleteWithSubgraph(file);
+        else new Notice("IPA: open a note to delete.");
+      }
+    });
+
+    this.addCommand({
       id: "reload-vault-plugins",
       name: "Reload vault-local plugins",
       callback: async () => {
@@ -537,6 +554,67 @@ export default class IpaPlugin extends Plugin {
       return;
     }
     await run();
+  }
+
+  // Delete a note and the ref subgraph that only hangs under it (core plans it;
+  // see deleteNote). Always confirmed, whatever the IPA Flow setting.
+  async deleteWithSubgraph(file: TFile): Promise<void> {
+    if (!this.guardVault()) return;
+    let plan: any;
+    try {
+      plan = await this.client.subgraphDeletePlan(file.basename);
+    } catch (error) {
+      new Notice(`IPA: ${errorMessage(error)}`);
+      return;
+    }
+    // Two notes can share a title; never delete the one that was not clicked.
+    if (String(plan.deleted[0]?.path ?? "").normalize("NFC") !== file.path) {
+      new Notice(`IPA: "${file.basename}" resolves to another note with the same title; delete it from the CLI.`);
+      return;
+    }
+    const lines = [`Delete (${plan.deleted.length}):`, ...plan.deleted.map((item: any) => `  ${item.path}`)];
+    if (plan.unref.length) {
+      lines.push("", `Keep, drop refs into the deleted set (${plan.unref.length}):`);
+      for (const item of plan.unref) lines.push(`  ${item.note}: ${item.removed.join(", ")}`);
+    }
+    if (plan.dangling_links.length) {
+      lines.push("", `Body links left pointing at deleted notes (${plan.dangling_links.length}):`);
+      for (const item of plan.dangling_links) lines.push(`  ${item.note}`);
+    }
+    new ConfirmModal(this.app, {
+      title: `Delete "${plan.root}" and ${plan.deleted.length - 1} note(s) under it?`,
+      body: lines.join("\n"),
+      confirmText: "Delete",
+      onConfirm: () => void this.applyDeletePlan(plan)
+    }).open();
+  }
+
+  private async applyDeletePlan(plan: any): Promise<void> {
+    const failed: string[] = [];
+    let unlinked = 0;
+    let trashed = 0;
+    const fileAt = (path: string) => this.app.vault.getAbstractFileByPath(normalizePath(path).normalize("NFC"));
+    for (const item of plan.unref) {
+      const file = fileAt(item.path);
+      // A note edited after the plan keeps its text; its ref is reported instead.
+      const written = file instanceof TFile ? await this.app.vault.process(file, (data) => data === item.raw ? item.content : data) : null;
+      if (written === item.content) unlinked += 1;
+      else failed.push(`${item.note}: changed since the plan, ref kept`);
+    }
+    for (const item of plan.deleted) {
+      const file = fileAt(item.path);
+      try {
+        if (!(file instanceof TFile)) throw new Error("not found");
+        // Follows the user's "Deleted files" setting (.trash/ or system trash).
+        await this.app.fileManager.trashFile(file);
+        trashed += 1;
+      } catch (error) {
+        failed.push(`${item.note}: ${errorMessage(error)}`);
+      }
+    }
+    const lines = [`IPA: deleted ${trashed}/${plan.deleted.length} notes, dropped refs in ${unlinked}/${plan.unref.length}.`];
+    for (const entry of failed) lines.push(`failed — ${entry}`);
+    new Notice(lines.join("\n"));
   }
 
   async reloadVaultPlugins(): Promise<void> {
