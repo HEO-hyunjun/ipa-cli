@@ -660,7 +660,10 @@ the syntax source of truth.
 When a vault note is edited through a raw editor tool, the post-write hook
 silently records it under `.ipa/harness/formatter-pending.json`. At session end
 the `Stop` gate finalizes those notes itself (formatter apply plus note-scoped
-validation), so agents never call `ipa note finalize`. Only validator errors
+validation), so agents never call `ipa note finalize`. A note whose file
+changed after the recorded edit (for example, another device synced a change
+in) is validated but not rewritten, so the gate never races a sync into a
+conflict. Only validator errors
 block, and only once per edit: the linted notes leave the ledger, so an error
 the agent cannot fix never locks the session, while a fix re-records the note.
 Warnings are surfaced without blocking. Outside a harness session, run

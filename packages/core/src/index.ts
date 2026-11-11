@@ -7147,6 +7147,7 @@ export async function selfUpdate(options = {}) {
 // session shut.
 const harnessSessionGateImpl = createHarnessSessionGate({
   finalizeNotes,
+  validateVault,
   formatVault,
   loadPluginModules,
   normalizeGatePlugin,

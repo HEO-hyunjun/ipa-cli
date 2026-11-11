@@ -3220,6 +3220,34 @@ test("session gate clears a clean note whose ledger entry carries a foreign sess
   assert.equal(existsSync(pendingPath), true, "dirty foreign work must survive a gate in another session");
 });
 
+test("session gate does not rewrite a note changed after the recorded edit", async () => {
+  const vault = await fixtureVault();
+  const pendingPath = join(vault, ".ipa", "harness", "formatter-pending.json");
+  await mkdir(dirname(pendingPath), { recursive: true });
+  const notePath = join(vault, "00 Inbox", "Needs Format.md");
+  const text = `---\ndate_created: 2026/05/10 (Sun) 00:00:00\ndate_modified: 2026-06-23T06:48:04.214Z\ntype: note\nref: ["[[🔖 Topic Index]]"]\ntags: [format]\n---\n# Needs Format\n\nBody\n`;
+  await writeFile(notePath, text, "utf8");
+  const seed = (updatedAt) => writeFile(pendingPath, JSON.stringify({
+    version: 1,
+    notes: [{ title: "Needs Format", path: "00 Inbox/Needs Format.md", session_id: "sess-1", updated_at: updatedAt }]
+  }, null, 2) + "\n", "utf8");
+
+  // Given: the file was written after the agent's recorded edit (another
+  // device synced a change in). Then: the gate lints it but leaves it as is,
+  // so the formatter write cannot race that change into a sync conflict.
+  await seed(new Date(Date.now() - 60_000).toISOString());
+  const skipped = await harnessSessionGate(vault, { session: "sess-1" });
+  assert.deepEqual(skipped.errors, []);
+  assert.deepEqual(skipped.notes, ["Needs Format"]);
+  assert.equal(await readFile(notePath, "utf8"), text, "a note changed elsewhere must not be rewritten");
+
+  // When: the agent's edit is the latest write. Then: the gate formats it as before.
+  await seed(new Date().toISOString());
+  const finalized = await harnessSessionGate(vault, { session: "sess-1" });
+  assert.deepEqual(finalized.errors, []);
+  assert.notEqual(await readFile(notePath, "utf8"), text, "the agent's own edit is still finalized");
+});
+
 test("generated formatter-gate hook surfaces gate-plugin errors as a non-blocking warning", async () => {
   const vault = await fixtureVault();
   const home = await mkdtemp(join(tmpdir(), "ipa-harness-home-"));

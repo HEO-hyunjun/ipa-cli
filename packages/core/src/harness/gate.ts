@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -34,6 +34,20 @@ return async function harnessSessionGate(vaultPath, options = {}) {
     .filter((item) => typeof item.path !== "string" || existsSync(join(vaultPath, item.path)))
     .map((item) => typeof item.title === "string" ? item.title.trim() : "")
     .filter(Boolean))];
+  // A note whose file changed after the recorded edit was touched elsewhere
+  // since (another device synced an edit in). It is validated but not
+  // rewritten: a formatter write here would race that change into a sync
+  // conflict. The ledger stamp follows the agent's own write, so only a later
+  // write passes the slack (which absorbs coarse filesystem mtimes).
+  const changedSinceEdit = new Set(owned.filter((item) => {
+    const edited = Date.parse(item?.updated_at ?? "");
+    if (typeof item.path !== "string" || Number.isNaN(edited)) return false;
+    try {
+      return statSync(join(vaultPath, item.path)).mtimeMs > edited + 2000;
+    } catch {
+      return false;
+    }
+  }).map((item) => typeof item.title === "string" ? item.title.trim() : ""));
   const blocks = [];
   const errors = [];
   const warnings = [];
@@ -43,8 +57,11 @@ return async function harnessSessionGate(vaultPath, options = {}) {
     // Only validator errors block. A finalize failure (e.g. a note renamed
     // after its edit) is reported, never blocking.
     try {
-      const lint = await deps.finalizeNotes(vaultPath, ownedTitles);
-      const issues = lint.validation.issues ?? [];
+      const finalizeTitles = ownedTitles.filter((title) => !changedSinceEdit.has(title));
+      const validateTitles = ownedTitles.filter((title) => changedSinceEdit.has(title));
+      const issues = [];
+      if (finalizeTitles.length) issues.push(...((await deps.finalizeNotes(vaultPath, finalizeTitles)).validation.issues ?? []));
+      if (validateTitles.length) issues.push(...((await deps.validateVault(vaultPath, null, { notes: validateTitles })).issues ?? []));
       const lintErrors = issues.filter((issue) => issue.severity === "error");
       const lintWarnings = issues.filter((issue) => issue.severity !== "error");
       if (lintErrors.length) {
