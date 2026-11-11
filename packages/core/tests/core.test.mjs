@@ -39,6 +39,7 @@ import {
   resolveSettings,
   rewriteNote,
   rebuildCache,
+  deleteNote,
   redirectNotes,
   reviewVault,
   searchVault,
@@ -2912,6 +2913,50 @@ test("redirectNotes rewires wikilinks and refs to the target and archives source
   assert.equal(existsSync(join(vault, "02 Archive", "Alpha.md")), true);
 
   await assert.rejects(() => redirectNotes(vault, ["Beta"], "Beta", { apply: false }), /source equals target/);
+});
+
+test("deleteNote deletes one note by default and, with subgraph, the notes that only hang under it", async () => {
+  const vault = await fixtureVault();
+  const note = (title, refs, body = "") => writeFile(
+    join(vault, "00 Inbox", `${title}.md`),
+    `---\ndate_created: 2026/05/10 (Sun) 00:00:00\ndate_modified: 2026/05/10 (Sun) 00:00:00\nref:\n${refs.map((ref) => `  - "[[${ref}]]"\n`).join("")}tags: []\ntype: note\n---\n# ${title}\n\n${body}\n`,
+    "utf8"
+  );
+  await note("Child", ["🔖 Topic Index"], "Child points out to [[Gamma]].");
+  await note("Grandchild", ["Child"]);
+  await note("Both Inside", ["Child", "🔖 Topic Index"]);
+  await note("Shared", ["🔖 Topic Index", "🏷️ Topic Root"]);
+  await note("Under Shared", ["Shared"]);
+  await note("Gamma", ["🏷️ Topic Root"]);
+  await note("Mentions", ["🏷️ Topic Root"], "See [[Grandchild]].");
+  await mkdir(join(vault, ".trash"), { recursive: true });
+  await writeFile(join(vault, ".trash", "Child.md"), "older trash\n", "utf8");
+
+  const single = await deleteNote(vault, "🔖 Topic Index");
+  assert.deepEqual(single.deleted.map((item) => item.note), ["🔖 Topic Index"]);
+  assert.deepEqual(single.unref.map((item) => item.note).sort(), ["Both Inside", "Shared"]);
+  assert.deepEqual(single.orphaned.map((item) => item.note).sort(), ["Alpha", "Beta", "Child"]);
+
+  const preview = await deleteNote(vault, "🔖 Topic Index", { subgraph: true });
+  assert.deepEqual(preview.orphaned, []);
+  const deleted = preview.deleted.map((item) => item.note);
+  assert.deepEqual([...deleted].sort(), ["Alpha", "Beta", "Both Inside", "Child", "Grandchild", "🔖 Topic Index"].sort());
+  assert.equal(deleted[0], "🔖 Topic Index");
+  assert.deepEqual(preview.unref.map((item) => [item.note, item.removed]), [["Shared", ["🔖 Topic Index"]]]);
+  assert.deepEqual(preview.dangling_links.map((item) => item.note), ["Mentions"]);
+  assert.match(preview.warning, /\.trash/);
+  assert.equal(existsSync(join(vault, "00 Inbox", "Child.md")), true);
+  await assert.rejects(() => deleteNote(vault, "Chil"), /exact title required/);
+
+  const applied = await deleteNote(vault, "🔖 Topic Index", { subgraph: true, apply: true });
+  assert.equal(applied.deleted.find((item) => item.note === "Child").trash, ".trash/Child 1.md");
+  assert.equal(await readFile(join(vault, ".trash", "Child.md"), "utf8"), "older trash\n");
+  for (const title of ["Child", "Grandchild", "Both Inside", "Alpha"]) assert.equal(existsSync(join(vault, "00 Inbox", `${title}.md`)), false);
+  assert.equal(existsSync(join(vault, "01 Project", "🔖 Topic Index.md")), false);
+  for (const title of ["Under Shared", "Gamma", "Mentions"]) assert.equal(existsSync(join(vault, "00 Inbox", `${title}.md`)), true);
+  const shared = await readFile(join(vault, "00 Inbox", "Shared.md"), "utf8");
+  assert.doesNotMatch(shared, /Topic Index/);
+  assert.match(shared, /\[\[🏷️ Topic Root\]\]/);
 });
 
 test("cascadeNote plans ref/link wiring and reports overlaps without editing content", async () => {

@@ -20,6 +20,7 @@ import {
   contractValidateOutput,
   conventionShow,
   createProfile,
+  deleteNote,
   digestNote,
   doctor,
   formatVault,
@@ -126,6 +127,7 @@ const COMMAND_DESCRIPTIONS = {
   "note set": "Set or update a mapped frontmatter field",
   "note redirect": "Redirect references from source notes to a target note",
   "note finalize": "Format and validate raw Markdown edits in one call",
+  "note delete": "Delete a note, or with --subgraph the notes that only hang under it",
   add: "Import a draft into the configured inbox (legacy alias)",
   refactor: "Plan or apply refs, tags, and wikilink rewrites",
   config: "Initialize or inspect vault configuration",
@@ -415,6 +417,7 @@ function render(payload) {
   if (payload.operation === "note-finalize") return renderNoteFinalize(payload);
   if (payload.operation === "digest") return renderDigest(payload);
   if (payload.operation === "redirect-notes") return renderRedirect(payload);
+  if (payload.operation === "note-delete") return renderNoteDelete(payload);
   if (payload.operation === "cascade") return renderCascade(payload);
   if (payload.profile !== undefined && payload.vault_path && Object.hasOwn(payload, "created")) return renderKeyValues("Profile", payload);
   if (payload.profile !== undefined && payload.vault_path) return renderKeyValues("Active config", payload);
@@ -482,6 +485,23 @@ function renderRedirect(payload) {
   }
   if (!payload.apply) lines.push("", "Run again with --apply to write the changes.");
   else lines.push("", "Run `ipa validator` to confirm link integrity.");
+  return lines.join("\n");
+}
+
+function renderNoteDelete(payload) {
+  const lines = [`Note delete${payload.subgraph ? " --subgraph" : ""} ${payload.apply ? "(applied)" : "(preview)"} for '${payload.root}'`];
+  lines.push("", `Delete (${payload.deleted.length}):`, ...payload.deleted.map((item) => `  - ${item.path}${item.trash ? ` → ${item.trash}` : ""}`));
+  if (payload.unref.length) {
+    lines.push("", `Keep, drop refs into the deleted set (${payload.unref.length}):`, ...payload.unref.map((item) => `  - ${item.note}: ${item.removed.join(", ")}`));
+  }
+  if (payload.orphaned.length) {
+    lines.push("", `Children left without a parent, ref kept (${payload.orphaned.length}; --subgraph deletes them):`, ...payload.orphaned.map((item) => `  - ${item.note}`));
+  }
+  if (payload.dangling_links.length) {
+    lines.push("", `Body links left pointing at deleted notes (${payload.dangling_links.length}):`, ...payload.dangling_links.map((item) => `  - ${item.note}`));
+  }
+  if (payload.warning) lines.push("", `warning: ${payload.warning}`);
+  if (!payload.apply) lines.push("", "Run again with --apply to move these notes into the vault's .trash/.");
   return lines.join("\n");
 }
 
@@ -1473,6 +1493,20 @@ function buildProgram() {
     .action(async (notes, options) => {
       await withVault(globalOptions(program), async (vault) => print(await redirectNotes(vault, notes, options.to, {
         archive: Boolean(options.archive),
+        apply: Boolean(options.apply)
+      }), jsonOutput(program)));
+    });
+
+  noteCommand
+    .command("delete")
+    .argument("<note>", "Exact title of the note to delete")
+    .option("--subgraph", "Also delete ref descendants whose refs all point into the deleted set")
+    .option("--apply", "Move the notes into the vault's .trash/ and drop refs")
+    .action(async (note, options) => {
+      // Not a trackedMutation: an unapplied preview must not nudge an agent's
+      // Stop gate into applying a delete.
+      await withVault(globalOptions(program), async (vault) => print(await deleteNote(vault, note, {
+        subgraph: Boolean(options.subgraph),
         apply: Boolean(options.apply)
       }), jsonOutput(program)));
     });

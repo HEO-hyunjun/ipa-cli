@@ -9,6 +9,7 @@ Surface:
 - `ipa --help` — concise everyday surface; `ipa help --all` shows advanced and administrative commands
 - `ipa search / view / context / inbox / note / review` — everyday retrieval and note operations
 - `ipa note finalize <notes...>` — format and validate raw Markdown edits in one call
+- `ipa note delete <note> [--subgraph]` — preview (or `--apply`) deleting a note, or with `--subgraph` also the notes that only hang under it
 - `ipa engine search / channels` — multi-channel weighted search
 - `ipa convention check` — validate vault against active convention rules
 - `ipa formatter plan / apply` — autofix issues that rules know how to fix
@@ -716,6 +717,7 @@ old in-package parity oracle has been removed.
 | `note finalize`    | `@ipa/core.finalizeNotes`             | One-call formatter apply plus note-scoped validation after raw editor changes. |
 | `digest`           | `@ipa/core.digestNote`               | One-call index summary: children with modified dates, section titles, and snippets. |
 | `note redirect`    | `@ipa/core.redirectNotes`            | Repoint every wikilink/ref from source notes to a target; optional archive of sources. |
+| `note delete`      | `@ipa/core.deleteNote`               | Delete one note; `--subgraph` also deletes every ref descendant whose refs all point into the deleted set. A surviving note loses its refs into the set, except a child whose only parent is deleted, which keeps the ref and is reported as orphaned. Body links never pull a note in and are reported when left dangling. `--apply` moves the notes into `.trash/` (keep `.trash/**` in `files.exclude`). |
 | `cascade`          | `@ipa/core.cascadeNote`              | Staged ripple for a note: appliable ref/link wiring plus report-only overlap candidates. |
 | `update`           | `@ipa/core.selfUpdate`               | Git-checkout self-update: plan shows behind-count/commands, apply runs ff-only pull + rebuild. |
 | `harness update`   | `@ipa/core.harnessUpdate`            | Uninstall + reinstall harness files with the current templates, preserving component selection. |

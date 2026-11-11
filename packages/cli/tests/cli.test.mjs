@@ -570,6 +570,14 @@ test("multi-title set/digest, note redirect, and cascade run through the CLI", a
   const cascade = run(env, ["--profile", "ipa-test", "cascade", "plan", "--note", "Beta"]);
   assert.match(cascade, /Cascade \(plan\) for 'Beta'/);
 
+  const deleteOne = run(env, ["--profile", "ipa-test", "note", "delete", "🔖 Topic Index"]);
+  assert.match(deleteOne, /Note delete \(preview\) for '🔖 Topic Index'/);
+  assert.match(deleteOne, /without a parent/);
+  const deletePreview = run(env, ["--profile", "ipa-test", "note", "delete", "🔖 Topic Index", "--subgraph"]);
+  assert.match(deletePreview, /Note delete --subgraph \(preview\)/);
+  assert.match(deletePreview, /00 Inbox\/Alpha\.md/);
+  assert.equal(existsSync(join(vault, "00 Inbox", "Alpha.md")), true);
+
   const preview = run(env, ["--profile", "ipa-test", "note", "redirect", "Alpha", "--to", "Beta"]);
   assert.match(preview, /Note redirect \(preview\)/);
   assert.match(preview, /--apply/);

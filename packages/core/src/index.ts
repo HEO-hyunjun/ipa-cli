@@ -5492,6 +5492,93 @@ export async function redirectNotes(vaultPath, sourceNames, targetName, options 
   };
 }
 
+// Delete one note, or with options.subgraph the ref subgraph hanging under it
+// too. A descendant goes only when every ref it has points into the deleted
+// set; a surviving note loses its refs into the set unless they are all it has
+// (a child left without a parent keeps its ref and is reported as orphaned).
+// Body links never pull a note in, and surviving notes whose body links point
+// into the set are reported, not rewritten. Apply moves the notes into the
+// vault's `.trash/` (Obsidian's trash folder). options.withContent adds each
+// rewritten note's before/after text so the Obsidian plugin can write through
+// its own API.
+export async function deleteNote(vaultPath, noteName, options = {}) {
+  const { mapping } = await readVaultConfig(vaultPath);
+  const notes = options.notes ?? await loadNotes(vaultPath, mapping);
+  const root = findNote(notes, noteName);
+  // findNote falls back to fuzzy matching; a delete must never pick a near title.
+  if (!root || !sameNoteName(root.id, noteName)) throw new Error(`note not found (exact title required): ${noteName}`);
+  const queue = [root];
+  const seen = new Set(queue);
+  for (let cursor = 0; options.subgraph && cursor < queue.length; cursor += 1) {
+    for (const child of childrenOf(queue[cursor], notes)) {
+      if (!seen.has(child)) {
+        seen.add(child);
+        queue.push(child);
+      }
+    }
+  }
+  const doomed = new Set([root]);
+  const doomedKeys = new Set([graphKey(root.id)]);
+  for (let grew = queue.length > 1; grew;) {
+    grew = false;
+    for (const note of queue) {
+      if (doomed.has(note) || ![...distinctGraphKeys(note.refs)].every((key) => doomedKeys.has(key))) continue;
+      doomed.add(note);
+      doomedKeys.add(graphKey(note.id));
+      grew = true;
+    }
+  }
+  const pointsIn = (value) => doomedKeys.has(graphKey(stripWiki(value)));
+  const unref = [];
+  const orphaned = [];
+  const dangling = [];
+  for (const note of notes) {
+    if (doomed.has(note)) continue;
+    if (note.links.some(pointsIn)) dangling.push({ note: note.id, path: note.relPath });
+    const removed = note.refs.filter(pointsIn);
+    if (!removed.length) continue;
+    if (removed.length === note.refs.length) {
+      orphaned.push({ note: note.id, path: note.relPath });
+      continue;
+    }
+    const content = syncUpdatedAtText(rewriteListValue(note.raw, mapping.refs, (items) => items.filter((item) => !pointsIn(item)), null), mapping);
+    unref.push({ note, removed, content });
+  }
+  const apply = Boolean(options.apply);
+  const deleted = queue.filter((note) => doomed.has(note)).map((note) => ({ note: note.id, path: note.relPath }));
+  if (apply) {
+    for (const item of unref) await writeFile(item.note.path, item.content, "utf8");
+    const trash = join(vaultPath, ".trash");
+    await mkdir(trash, { recursive: true });
+    for (const row of deleted) {
+      // Same naming as Obsidian's trash: a taken name gets " 1", " 2", ...
+      const name = basename(row.path, ".md");
+      let target = join(trash, `${name}.md`);
+      for (let n = 1; existsSync(target); n += 1) target = join(trash, `${name} ${n}.md`);
+      await rename(join(vaultPath, row.path), target);
+      row.trash = toPosix(relative(vaultPath, target));
+    }
+  }
+  return {
+    operation: "note-delete",
+    root: root.id,
+    subgraph: Boolean(options.subgraph),
+    apply,
+    deleted,
+    unref: unref.map(({ note, removed, content }) => ({
+      note: note.id,
+      path: note.relPath,
+      removed,
+      ...(options.withContent ? { raw: note.raw, content } : {})
+    })),
+    orphaned,
+    dangling_links: dangling,
+    ...(isExcludedPath(".trash/note.md", asList(mapping.exclude))
+      ? {}
+      : { warning: "files.exclude does not cover .trash/, so trashed notes stay indexed; add `.trash/**`." })
+  };
+}
+
 // Staged ripple for a (usually new) note. Tier 1 (appliable): wire refs into
 // the graph and wrap plain-text title mentions as wikilinks in both
 // directions. Tier 2 (report only): overlap candidates the agent/user can
