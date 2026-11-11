@@ -53,6 +53,7 @@ export default class IpaPlugin extends Plugin {
   private warmTimer: number | null = null;
   private lastMarkdownFile: TFile | null = null;
   private formatGuard = new Set<string>();
+  private editedNotes = new WeakSet<TFile>();
   private restoreSaveCommand: (() => void) | null = null;
 
   async onload(): Promise<void> {
@@ -170,15 +171,30 @@ export default class IpaPlugin extends Plugin {
   }
 
   // Auto-apply formatter fixes when the user "saves" a note. Obsidian autosaves,
-  // so we treat leaving a note (switching leaves or closing it) and the explicit
-  // save-file command (Cmd/Ctrl+S) as the save points.
+  // so we treat leaving a note edited here (switching leaves or closing it) and
+  // the explicit save-file command (Cmd/Ctrl+S) as the save points.
   private registerFormatOnSave(): void {
+    // Leaving a note that was only viewed must not rewrite it: if another device
+    // (e.g. an agent host) just changed it, this write races the sync into a
+    // conflict. editor-change also fires for programmatic changes (opening a
+    // file, reloading a synced change), so a note counts as edited only once
+    // the editor buffer diverges from the file.
+    this.registerEvent(
+      this.app.workspace.on("editor-change", (editor, info) => {
+        const file = info.file;
+        if (!file || this.editedNotes.has(file)) return;
+        const text = editor.getValue();
+        void this.app.vault.cachedRead(file).then((saved) => {
+          if (saved !== text) this.editedNotes.add(file);
+        });
+      })
+    );
     this.registerEvent(
       this.app.workspace.on("active-leaf-change", () => {
         const current = this.app.workspace.getActiveFile();
         const previous = this.lastMarkdownFile;
         this.lastMarkdownFile = current && current.extension === "md" ? current : null;
-        if (this.settings.formatOnSave && previous && previous !== current) {
+        if (this.settings.formatOnSave && previous && previous !== current && this.editedNotes.delete(previous)) {
           void this.formatOnSaveApply(previous);
         }
       })
@@ -201,6 +217,7 @@ export default class IpaPlugin extends Plugin {
       const afterSave = () => {
         const file = this.app.workspace.getActiveFile();
         if (this.settings.formatOnSave && file && file.extension === "md") {
+          this.editedNotes.delete(file);
           void this.formatOnSaveApply(file);
         }
       };

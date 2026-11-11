@@ -20,7 +20,7 @@ export class IpaSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Format on save")
       .setDesc(
-        "Automatically apply formatter fixes to a note when you leave it (switch notes, close it) or save with Cmd/Ctrl+S."
+        "Automatically apply formatter fixes to a note you edited when you leave it (switch notes, close it), or to the current note when you save with Cmd/Ctrl+S."
       )
       .addToggle((toggle) =>
         toggle.setValue(this.plugin.settings.formatOnSave).onChange(async (value) => {
