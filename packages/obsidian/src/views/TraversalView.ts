@@ -118,6 +118,13 @@ export class TraversalView extends BaseIpaView {
     }
   }
 
+  // The graph changed (a ref or link edit, a rename): redraw even when the
+  // active note is the one already shown.
+  invalidate(): void {
+    this.notePath = null;
+    this.scheduleRefresh();
+  }
+
   private scheduleRefresh(): void {
     if (this.debounceTimer !== null) window.clearTimeout(this.debounceTimer);
     this.debounceTimer = window.setTimeout(() => {

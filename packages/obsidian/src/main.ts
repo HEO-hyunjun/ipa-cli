@@ -79,6 +79,7 @@ export default class IpaPlugin extends Plugin {
 
     this.refTrail = new RefTrail(this);
     this.refTrail.register();
+    this.registerGraphRefresh();
 
     this.registerView(VIEW_TYPE_SEARCH, (leaf) => new SearchView(leaf, this));
     this.registerView(VIEW_TYPE_TRAVERSAL, (leaf) => new TraversalView(leaf, this));
@@ -327,6 +328,31 @@ export default class IpaPlugin extends Plugin {
       view: ctx instanceof MarkdownView ? ctx : null,
       refsKey: typeof mapping?.refs === "string" ? mapping.refs : "ref"
     }).open();
+  }
+
+  // Redraw the ref trail and the traversal panel when the IPA graph changes: a
+  // ref or body link written by hand, by Add link or by a synced device, and a
+  // rename or delete. A note's signature is its frontmatter plus its body
+  // links, so body-only autosaves are skipped; a note's first change since load
+  // has no signature to compare with and always counts.
+  private registerGraphRefresh(): void {
+    const signatures = new Map<string, string>();
+    const refresh = () => {
+      this.refTrail.schedule();
+      for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_TRAVERSAL)) {
+        if (leaf.view instanceof TraversalView) leaf.view.invalidate();
+      }
+    };
+    this.registerEvent(
+      this.app.metadataCache.on("changed", (file, _data, cache) => {
+        const next = JSON.stringify([cache.frontmatter ?? null, cache.links?.map((link) => link.link) ?? []]);
+        if (signatures.get(file.path) === next) return;
+        signatures.set(file.path, next);
+        refresh();
+      })
+    );
+    this.registerEvent(this.app.vault.on("rename", refresh));
+    this.registerEvent(this.app.vault.on("delete", refresh));
   }
 
   private registerCommands(): void {

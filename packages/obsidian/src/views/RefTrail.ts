@@ -12,11 +12,9 @@ const ACTIVE_CLS = "ipa-ref-trail-on";
 //
 // Obsidian owns the header DOM, so the trail is a sibling element it never
 // touches; CSS hides the folder breadcrumb only while a trail is present.
+// Ref edits and renames reach it through IpaPlugin's graph-change signal.
 export class RefTrail {
   private timer: number | null = null;
-  // Last seen frontmatter per file, so body edits (frequent autosaves) do not
-  // trigger a recompute; only frontmatter edits such as a changed ref do.
-  private frontmatter = new Map<string, string>();
 
   constructor(private readonly plugin: IpaPlugin) {}
 
@@ -25,15 +23,6 @@ export class RefTrail {
     const schedule = () => this.schedule();
     this.plugin.registerEvent(app.workspace.on("layout-change", schedule));
     this.plugin.registerEvent(app.workspace.on("file-open", schedule));
-    this.plugin.registerEvent(app.vault.on("rename", schedule));
-    this.plugin.registerEvent(
-      app.metadataCache.on("changed", (file) => {
-        const next = JSON.stringify(app.metadataCache.getFileCache(file)?.frontmatter ?? null);
-        const prev = this.frontmatter.get(file.path);
-        this.frontmatter.set(file.path, next);
-        if (prev !== undefined && prev !== next) schedule();
-      })
-    );
     app.workspace.onLayoutReady(schedule);
   }
 

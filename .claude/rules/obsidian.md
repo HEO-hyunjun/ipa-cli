@@ -14,7 +14,11 @@ verified: 8ac0c4f4069ca3452b78c6bbc4e0ecb6e58d804f
   에디터/메타데이터 캐시를 우회하므로 금지.
 - 캐시 무효화는 한 벌로: `notesCache`/`fullNotesCache`/`searchContext`/`validationCache`는
   `invalidateNotes()`로 함께 비우며, `main.ts`의 vault 이벤트(modify/create/delete/rename)에서
-  호출한다. 개별 캐시만 비우면 뷰 간 불일치가 생긴다.
+  호출한다. 개별 캐시만 비우면 뷰 간 불일치가 생긴다. 캐시를 채울 때는 `cacheIfCurrent`를 거쳐,
+  로딩 도중 무효화된 결과가 캐시에 남지 않게 한다(`packages/obsidian/tests/ipaClient.test.mjs`).
+- 그래프 갱신 신호는 `main.ts`의 `registerGraphRefresh` 한 곳에서 만든다(노트별 frontmatter + 본문
+  링크 시그니처 변경, rename/delete). RefTrail과 TraversalView는 이 신호로만 다시 그리며, 뷰마다
+  따로 metadataCache 리스너를 두지 않는다.
 - 경로 정규화: core가 주는 경로는 NFD(macOS fs)일 수 있고 Obsidian 인덱스는 NFC다.
   `openByPath`처럼 Obsidian 조회에 쓰는 경로는 `normalizePath(...).normalize("NFC")` 필수.
 - 새 뷰는 `src/views/BaseIpaView.ts`를 상속해 `client`/`adapter` 접근과

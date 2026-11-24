@@ -18,15 +18,25 @@ export class IpaClient {
   private fullNotesCache: any[] | null = null;
   private searchContext: any = null;
   private validationCache: any = null;
+  // Bumped by invalidateNotes. A load still running when the vault changed
+  // hands its result to its caller but is not cached: it may predate the edit,
+  // and caching it would keep the views on the old graph until the next edit.
+  private generation = 0;
+
+  private async cacheIfCurrent<T>(load: () => Promise<T>, store: (value: T) => void): Promise<T> {
+    const generation = this.generation;
+    const value = await load();
+    if (generation === this.generation) store(value);
+    return value;
+  }
 
   async loadNotesCached(): Promise<any[]> {
-    if (!this.notesCache) {
+    // loadNotesForView reuses the .ipa/cache summary (refs/type/links) like the
+    // CLI — no full vault re-parse when the cache is fresh.
+    return this.notesCache ?? this.cacheIfCurrent(async () => {
       const { mapping } = await core.readVaultConfig(this.vault);
-      // loadNotesForView reuses the .ipa/cache summary (refs/type/links) like the
-      // CLI — no full vault re-parse when the cache is fresh.
-      this.notesCache = await core.loadNotesForView(this.vault, mapping);
-    }
-    return this.notesCache;
+      return core.loadNotesForView(this.vault, mapping);
+    }, (notes) => (this.notesCache = notes));
   }
 
   // Full notes (with body + frontmatter) loaded once and shared by validation,
@@ -35,11 +45,19 @@ export class IpaClient {
   // whole vault up to three times (validateVault + formatVault + formatVault's
   // inner validateVault).
   async loadFullNotesCached(): Promise<any[]> {
-    if (!this.fullNotesCache) {
+    return this.fullNotesCache ?? this.cacheIfCurrent(async () => {
       const { mapping } = await core.readVaultConfig(this.vault);
-      this.fullNotesCache = await core.loadNotes(this.vault, mapping);
-    }
-    return this.fullNotesCache;
+      return core.loadNotes(this.vault, mapping);
+    }, (notes) => (this.fullNotesCache = notes));
+  }
+
+  // search scores note bodies, which the cache summary omits, so the context is
+  // prepared from the shared full-note load and reused by later queries.
+  private async searchContextCached(): Promise<any> {
+    return this.searchContext ?? this.cacheIfCurrent(
+      async () => core.prepareSearchContext(this.vault, await this.loadFullNotesCached()),
+      (context) => (this.searchContext = context)
+    );
   }
 
   // A path outside the indexed note set (mapping exclude) is not IPA-managed;
@@ -53,6 +71,7 @@ export class IpaClient {
   }
 
   invalidateNotes(): void {
+    this.generation += 1;
     this.notesCache = null;
     this.fullNotesCache = null;
     this.searchContext = null;
@@ -67,19 +86,13 @@ export class IpaClient {
   // Reuses one prepared search context (notes + prepared channels) across
   // queries so only per-query scoring runs after the first search.
   async searchCached(query: string, options: Record<string, unknown> = {}): Promise<any> {
-    if (!this.searchContext) {
-      // search scores note bodies, which the cache summary omits, so prepare
-      // reuses the shared full-note load; later queries reuse this context.
-      this.searchContext = await core.prepareSearchContext(this.vault, await this.loadFullNotesCached());
-    }
-    return core.searchWithContext(this.searchContext, query, options);
+    return core.searchWithContext(await this.searchContextCached(), query, options);
   }
 
   // Build the search context ahead of the first query (called in the background).
   async warmSearch(): Promise<void> {
-    if (this.searchContext) return;
     try {
-      this.searchContext = await core.prepareSearchContext(this.vault, await this.loadFullNotesCached());
+      await this.searchContextCached();
     } catch {
       // ignore warm-up failures; the next real search surfaces any error
     }
@@ -126,10 +139,7 @@ export class IpaClient {
   // Link suggestions score against the search context; reusing the cached one
   // avoids rebuilding the whole context (the dominant cost) per suggestion.
   async suggestLinks(note: string): Promise<any> {
-    if (!this.searchContext) {
-      this.searchContext = await core.prepareSearchContext(this.vault, await this.loadFullNotesCached());
-    }
-    return core.suggestLinks(this.vault, note, { context: this.searchContext });
+    return core.suggestLinks(this.vault, note, { context: await this.searchContextCached() });
   }
 
   // Validation / format. Both reuse the cached full-note load, so a Validate that
@@ -144,10 +154,10 @@ export class IpaClient {
   // notes, which is cheap, so it is not cached; vault rules still see every note.
   async validate(notes?: string[]): Promise<any> {
     if (notes?.length) return core.validateVault(this.vault, await this.loadFullNotesCached(), { notes });
-    if (!this.validationCache) {
-      this.validationCache = await core.validateVault(this.vault, await this.loadFullNotesCached());
-    }
-    return this.validationCache;
+    return this.validationCache ?? this.cacheIfCurrent(
+      async () => core.validateVault(this.vault, await this.loadFullNotesCached()),
+      (result) => (this.validationCache = result)
+    );
   }
 
   // Plan only. Applying patches goes through Obsidian's Vault API (see
