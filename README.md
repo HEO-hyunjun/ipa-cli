@@ -138,6 +138,11 @@ subgraph**, which runs the same plan as `ipa note delete --subgraph`, lists ever
 note it will delete or unlink in a confirmation dialog, and trashes the notes
 through Obsidian's "Deleted files" setting.
 
+**Add ref** in the same menu (or on a file-explorer multi-selection, or the
+palette command **Add ref to note(s)**) searches for a parent and adds it to the
+ref list of every selected note, like `ipa note set <notes...> --field <refs>
+--add "[[Parent]]" --apply`. Notes that already carry the ref are left untouched.
+
 Only release assets are copied (`main.js`, `manifest.json`, `styles.css`,
 `versions.json`); the plugin's `data.json` settings are never touched.
 `ipa update --apply` rebuilds the bundle and runs the sync automatically when the

@@ -1,4 +1,4 @@
-import { Editor, MarkdownFileInfo, MarkdownView, Notice, Plugin, TFile, WorkspaceLeaf, normalizePath } from "obsidian";
+import { Editor, Notice, Plugin, TFile, WorkspaceLeaf, normalizePath } from "obsidian";
 import { readFile, stat } from "node:fs/promises";
 import {
   ICON_ID,
@@ -93,7 +93,8 @@ export default class IpaPlugin extends Plugin {
     this.addSettingTab(new IpaSettingTab(this.app, this));
 
     // File-explorer context menu: move the clicked note (file-menu) or the
-    // multi-selection (files-menu) by IPA convention without opening them.
+    // multi-selection (files-menu) by IPA convention, or add the same ref to
+    // them, without opening them.
     this.registerEvent(
       this.app.workspace.on("file-menu", (menu, file) => {
         if (!(file instanceof TFile) || file.extension !== "md") return;
@@ -102,6 +103,12 @@ export default class IpaPlugin extends Plugin {
             .setTitle("IPA: Move by convention")
             .setIcon(ICON_ID)
             .onClick(() => void this.moveFilesByConvention([file]))
+        );
+        menu.addItem((item) =>
+          item
+            .setTitle("IPA: Add ref")
+            .setIcon(ICON_ID)
+            .onClick(() => void this.openAddLinkModal([file]))
         );
         menu.addItem((item) =>
           item
@@ -121,6 +128,12 @@ export default class IpaPlugin extends Plugin {
             .setTitle(`IPA: Move ${notes.length} notes by convention`)
             .setIcon(ICON_ID)
             .onClick(() => void this.moveFilesByConvention(notes))
+        );
+        menu.addItem((item) =>
+          item
+            .setTitle(`IPA: Add ref to ${notes.length} notes`)
+            .setIcon(ICON_ID)
+            .onClick(() => void this.openAddLinkModal(notes))
         );
       })
     );
@@ -309,23 +322,24 @@ export default class IpaPlugin extends Plugin {
     return true;
   }
 
-  // Link suggestions plus search for the note in the editor; see AddLinkModal.
-  private async openAddLinkModal(editor: Editor, ctx: MarkdownView | MarkdownFileInfo): Promise<void> {
-    const file = ctx.file;
-    if (!file || file.extension !== "md") return;
-    if (!this.adapter.hasFileSystemAccess()) {
-      new Notice("IPA requires a desktop vault backed by the file system.");
+  // Link suggestions plus search for the note in the editor, or refs only for
+  // notes picked in the file explorer; see AddLinkModal.
+  private async openAddLinkModal(files: TFile[], editor: Editor | null = null): Promise<void> {
+    if (!this.guardVault()) return;
+    const notes: TFile[] = [];
+    for (const file of files) {
+      if (file.extension === "md" && (await this.client.isManagedPath(file.path))) notes.push(file);
+    }
+    const excluded = files.length - notes.length;
+    if (notes.length === 0) {
+      new Notice(files.length === 1 ? "IPA: this note is excluded from indexing." : "IPA: none of these notes is indexed.");
       return;
     }
-    if (!(await this.client.isManagedPath(file.path))) {
-      new Notice("IPA: this note is excluded from indexing.");
-      return;
-    }
+    if (excluded) new Notice(`IPA: skipping ${excluded} note(s) excluded from indexing.`);
     const { mapping } = await this.client.readConfig();
     new AddLinkModal(this.app, this, {
-      file,
+      files: notes,
       editor,
-      view: ctx instanceof MarkdownView ? ctx : null,
       refsKey: typeof mapping?.refs === "string" ? mapping.refs : "ref"
     }).open();
   }
@@ -373,7 +387,19 @@ export default class IpaPlugin extends Plugin {
     this.addCommand({
       id: "add-link",
       name: "Add link",
-      editorCallback: (editor, ctx) => void this.openAddLinkModal(editor, ctx)
+      editorCallback: (editor, ctx) => {
+        if (ctx.file) void this.openAddLinkModal([ctx.file], editor);
+      }
+    });
+
+    this.addCommand({
+      id: "add-ref-to-notes",
+      name: "Add ref to note(s)",
+      callback: () => {
+        const files = this.selectedOrActiveNotes();
+        if (files.length) void this.openAddLinkModal(files);
+        else new Notice("IPA: open or select notes to add a ref to.");
+      }
     });
 
     this.addCommand({
@@ -508,20 +534,19 @@ export default class IpaPlugin extends Plugin {
     return files;
   }
 
-  async moveActiveByConvention(): Promise<void> {
-    // A deliberate multi-selection (2+) in the file explorer wins over the
-    // active note, so the palette command can batch-move too.
+  // A deliberate multi-selection (2+) in the file explorer wins over the
+  // active note, so palette commands can act on a batch too.
+  private selectedOrActiveNotes(): TFile[] {
     const selected = this.explorerSelectedNotes();
-    if (selected.length >= 2) {
-      await this.moveFilesByConvention(selected);
-      return;
-    }
+    if (selected.length >= 2) return selected;
     const file = this.app.workspace.getActiveFile();
-    if (!file) {
-      new Notice("IPA: open a note to move.");
-      return;
-    }
-    await this.moveFilesByConvention([file]);
+    return file ? [file] : [];
+  }
+
+  async moveActiveByConvention(): Promise<void> {
+    const files = this.selectedOrActiveNotes();
+    if (files.length) await this.moveFilesByConvention(files);
+    else new Notice("IPA: open a note to move.");
   }
 
   async moveFilesByConvention(files: TFile[]): Promise<void> {
