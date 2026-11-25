@@ -35,6 +35,7 @@ import {
   readVaultConfig,
   recordHarnessMutation,
   refactorVault,
+  renameNote,
   replaceInNote,
   resolveSettings,
   rewriteNote,
@@ -4020,4 +4021,27 @@ test("validateVault --note scoping filters issues to the requested notes", async
   assert.equal(other.issues.some((item) => item.note === "Scoped"), false, "other-note scope must not include Scoped issues");
 
   await assert.rejects(() => validateVault(vault, null, { notes: ["존재하지 않는 노트"] }), /note not found/);
+});
+
+test("renameNote rewrites only wikilinks whose target is exactly the renamed note", async () => {
+  const vault = await fixtureVault();
+  const sibling = `---\ndate_created: 2026/05/10 (Sun) 00:00:00\ndate_modified: 2026/05/10 (Sun) 00:00:00\nref: ["[[🔖 Topic Index]]"]\ntags: []\ntype: index\n---\n# Topic Index 2\n`;
+  await writeFile(join(vault, "01 Project", "🔖 Topic Index 2.md"), sibling, "utf8");
+  const body = "[[🔖 Topic Index]] [[🔖 Topic Index|목차]] [[🔖 Topic Index#Links]] ![[🔖 Topic Index]] [[01 Project/🔖 Topic Index]]\n[[🔖 Topic Index 2]] 🔖 Topic Index 언급\n";
+  await writeFile(join(vault, "00 Inbox", "Gamma.md"), `---\nref: ["[[🔖 Topic Index 2]]"]\ntags: []\ntype: note\n---\n${body}`, "utf8");
+  await writeFile(join(vault, "00 Inbox", "Delta.md"), "---\ntype: note\n---\n🔖 Topic Index 를 평문으로만 언급한다.\n", "utf8");
+
+  const plan = await renameNote(vault, "🔖 Topic Index", "🏷️ Topic Hub", false);
+  const planned = plan.changes.filter((item) => item.path).map((item) => item.path).sort();
+  assert.deepEqual(planned, ["00 Inbox/Alpha.md", "00 Inbox/Beta.md", "00 Inbox/Gamma.md", "01 Project/🔖 Topic Index 2.md"]);
+
+  await renameNote(vault, "🔖 Topic Index", "🏷️ Topic Hub", true);
+  assert.ok(existsSync(join(vault, "01 Project", "🏷️ Topic Hub.md")));
+  assert.match(await readFile(join(vault, "00 Inbox", "Alpha.md"), "utf8"), /"\[\[🏷️ Topic Hub\]\]"/);
+  assert.equal(
+    await readFile(join(vault, "00 Inbox", "Gamma.md"), "utf8"),
+    `---\nref: ["[[🔖 Topic Index 2]]"]\ntags: []\ntype: note\n---\n[[🏷️ Topic Hub]] [[🏷️ Topic Hub|목차]] [[🏷️ Topic Hub#Links]] ![[🏷️ Topic Hub]] [[01 Project/🏷️ Topic Hub]]\n[[🔖 Topic Index 2]] 🔖 Topic Index 언급\n`
+  );
+  assert.equal(await readFile(join(vault, "01 Project", "🔖 Topic Index 2.md"), "utf8"), sibling.replace('ref: ["[[🔖 Topic Index]]"]', 'ref: ["[[🏷️ Topic Hub]]"]'));
+  assert.match(await readFile(join(vault, "00 Inbox", "Delta.md"), "utf8"), /🔖 Topic Index 를 평문으로만/);
 });

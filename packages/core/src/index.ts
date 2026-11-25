@@ -5314,14 +5314,15 @@ export async function renameNote(vaultPath, oldName, newName, apply = false) {
   if (existsSync(target)) throw new Error(`target already exists: ${newName}`);
   const changes = [{ from: note.relPath, to: toPosix(relative(vaultPath, target)) }];
   // 치환 결과를 계획 단계에서 한 번만 계산하고, apply는 실제로 바뀐 노트만 쓴다.
+  // 대상이 정확히 이 노트인 wikilink만 바꾼다([[X]], [[X|별칭]], [[X#헤딩]], [[폴더/X]], ![[X]]).
+  // 평문 치환은 [[X 2]]처럼 이름이 X로 시작하는 다른 노트 링크와 본문 언급까지 바꿔 버린다.
+  const linkRe = new RegExp(`\\[\\[([^\\[\\]|#]*/)?${escapeRegExpText(note.id)}(?=[\\]|#])`, "g");
   const rewrites = [];
   for (const item of notes) {
-    if (item.raw.includes(`[[${oldName}]]`) || item.raw.includes(oldName)) {
-      changes.push({ path: item.relPath, replace: oldName, with: newName });
-      if (item.id === oldName) continue;
-      const next = item.raw.replaceAll(`[[${oldName}]]`, `[[${newName}]]`).replaceAll(oldName, newName);
-      if (next !== item.raw) rewrites.push({ path: item.path, text: next });
-    }
+    const next = item.raw.replace(linkRe, (_, folder = "") => `[[${folder}${newName}`);
+    if (next === item.raw) continue;
+    changes.push({ path: item.relPath, replace: note.id, with: newName });
+    rewrites.push({ path: item === note ? target : item.path, text: next });
   }
   if (apply) {
     await rename(note.path, target);
