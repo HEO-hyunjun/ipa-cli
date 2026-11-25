@@ -195,7 +195,8 @@ function parseYamlBlock(lines, start, indent) {
         break;
       }
       const parsed = parseYamlBlock(lines, i + 1, childIndent);
-      container[key] = parsed.value;
+      // `key:` 아래에 하위 줄이 없으면 YAML에서 값은 null이다. 빈 객체로 두면 빈 프로퍼티가 객체 타입으로 보인다.
+      container[key] = !Array.isArray(parsed.value) && Object.keys(parsed.value).length === 0 ? null : parsed.value;
       i = parsed.next;
     }
   }

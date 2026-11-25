@@ -35,6 +35,7 @@ import {
   readVaultConfig,
   recordHarnessMutation,
   refactorVault,
+  parseYaml,
   renameNote,
   replaceInNote,
   resolveSettings,
@@ -4044,4 +4045,9 @@ test("renameNote rewrites only wikilinks whose target is exactly the renamed not
   );
   assert.equal(await readFile(join(vault, "01 Project", "🔖 Topic Index 2.md"), "utf8"), sibling.replace('ref: ["[[🔖 Topic Index]]"]', 'ref: ["[[🏷️ Topic Hub]]"]'));
   assert.match(await readFile(join(vault, "00 Inbox", "Delta.md"), "utf8"), /🔖 Topic Index 를 평문으로만/);
+});
+
+test("parseYaml reads a key with no value and no children as null", () => {
+  const parsed = parseYaml("obsidianUIMode:\nref:\n  - \"[[A]]\"\ntags:\ntype: note\nnested:\n  child: 1\n");
+  assert.deepEqual(parsed, { obsidianUIMode: null, ref: ["[[A]]"], tags: null, type: "note", nested: { child: 1 } });
 });
