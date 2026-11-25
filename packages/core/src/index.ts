@@ -213,7 +213,8 @@ function yamlScalar(value) {
   if (value === null || value === undefined) return "null";
   if (typeof value === "boolean" || typeof value === "number") return String(value);
   const text = String(value);
-  if (!text || /[:#\[\]{}'",\n]/.test(text) || text.startsWith(" ") || text.endsWith(" ")) {
+  // "330"·"true"처럼 다시 읽으면 문자열이 아닌 값이 되는 텍스트도 따옴표로 감싼다.
+  if (!text || typeof parseScalar(text) !== "string" || /[:#\[\]{}'",\n]/.test(text) || text.startsWith(" ") || text.endsWith(" ")) {
     return JSON.stringify(text);
   }
   return text;
@@ -711,6 +712,8 @@ function parseInlineTags(body, offsetLine = 1) {
     const re = /(^|[\s([{])#([A-Za-z0-9_/-]+)/g;
     let match;
     while ((match = re.exec(line))) {
+      // Obsidian은 숫자로만 된 #311 같은 문자열(PR·이슈 번호)을 태그로 보지 않는다.
+      if (/^\d+$/.test(match[2])) continue;
       tags.push({
         kind: "tag",
         tag: match[2],

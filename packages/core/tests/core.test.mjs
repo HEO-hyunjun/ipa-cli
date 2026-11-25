@@ -35,6 +35,7 @@ import {
   readVaultConfig,
   recordHarnessMutation,
   refactorVault,
+  dumpYaml,
   parseYaml,
   renameNote,
   replaceInNote,
@@ -4050,4 +4051,10 @@ test("renameNote rewrites only wikilinks whose target is exactly the renamed not
 test("parseYaml reads a key with no value and no children as null", () => {
   const parsed = parseYaml("obsidianUIMode:\nref:\n  - \"[[A]]\"\ntags:\ntype: note\nnested:\n  child: 1\n");
   assert.deepEqual(parsed, { obsidianUIMode: null, ref: ["[[A]]"], tags: null, type: "note", nested: { child: 1 } });
+});
+
+test("inline tags skip numeric-only hashes and YAML keeps numeric-looking text as strings", () => {
+  const doc = new MarkdownDocument("---\ntype: note\n---\n'개선' PR(#311)로 병합했습니다. #todo #ai_1355\n");
+  assert.deepEqual(doc.inlineTags().map((item) => item.tag), ["todo", "ai_1355"]);
+  assert.deepEqual(parseYaml(dumpYaml({ tags: ["330", "true", "scrum"] })), { tags: ["330", "true", "scrum"] });
 });
